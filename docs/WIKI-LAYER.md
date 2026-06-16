@@ -59,13 +59,20 @@ Memory survives a machine wipe because the vault is **its own git repo** (create
 independent of the product repo). But free-form agent memory CAN contain a token someone pasted into a
 lesson or that landed in `inbox.md`, and **git history is forever** — so durability is **scan-gated**:
 - `home/.gitignore` never tracks `secrets/` (the structured cred store), `state/`, `logs/`, `uploads/`.
-- **`enclave snapshot`** stages → **scans for credential patterns** → commits only if clean; a hit
-  **blocks the commit** (fail-closed) and names the file to redact. The agent can't `git` at all
-  (guard-blocked) — the runtime/operator snapshots.
+- **Saved by default, continuously**: the runtime **auto-snapshots after every tick** (`runtime.sh`
+  → `vault_snapshot.py`, isolated so it can never abort the loop; set `VAULT_SNAPSHOT=0` to disable).
+  `enclave snapshot ["msg"]` does it on demand. Each: stage → **scan for credential patterns** →
+  commit only if clean; a hit **blocks the commit** (fail-closed) and names the file to redact. The
+  agent can't `git` at all (guard-blocked) — the runtime owns the commit (as the master owns commits).
 - A **pre-commit hook** in the vault repo blocks even a *manual* `git commit` containing a credential.
+- **Encryption at rest (stronger option)**: `enclave vault-encrypt` writes an AES-256+PBKDF2 archive
+  of the brain (key in `secrets/vault.key`, never committed) so an **off-machine copy is ciphertext**,
+  not plaintext — covering a scanner miss. `enclave vault-decrypt <blob>` restores it. (Drop-in
+  upgrades when installed: `age` / `git-crypt` for transparent per-file at-rest encryption.)
 
-So memory is saved by default *and* a leaked secret can never reach history. (For defense beyond
-pattern-matching, encrypt the vault at rest — git-crypt/age — so a scanner miss is still ciphertext.)
+The scan-gate and the encryption share one implementation — `platform/agentd/vault_snapshot.py` — so
+the secret patterns have a single source of truth across the CLI and the runtime. Net: memory is saved
+by default, a leaked secret can never reach history, and the off-machine copy can be ciphertext.
 
 ## How an agent uses it
 The agent's `CLAUDE.md` points it at `knowledge/` and the workflow. On a new source: `wiki.py new …`,

@@ -305,3 +305,12 @@ fi
 [ "$rc" -eq 124 ] && log "tick TIMED OUT — killed after ${TICK_TIMEOUT:-2400}s (loop recovers)"
 [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && log "tick error (exit $rc)"
 log "tick end"
+
+# Auto-snapshot the vault so memory is saved BY DEFAULT (survives a machine wipe). Only if the
+# operator made home/ a git vault (`enclave init`); SCAN-GATED (a leaked credential blocks the commit,
+# never reaches history). The agent can't git (guard-blocked) — the runtime owns this commit, like the
+# master owns commits. FULLY ISOLATED (subshell + redirects + `|| true`) so it can NEVER abort the loop.
+if [ "${VAULT_SNAPSHOT:-1}" = "1" ] && [ -d "$AGENT_DIR/.git" ]; then
+  ( python3 "$(dirname "$0")/vault_snapshot.py" snapshot "$AGENT_DIR" --msg "tick $(date -u +%FT%TZ)" \
+      >> "$LOG" 2>&1 && log "vault snapshot ok" ) || log "vault snapshot skipped (blocked or no-op)"
+fi
