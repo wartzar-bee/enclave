@@ -11,7 +11,7 @@ patterns, used by both `bin/enclave` (host) and runtime.sh (post-tick auto-snaps
   snapshot  stage -> SCAN tracked files for credential patterns -> commit ONLY if clean (fail-closed).
             git history is forever, so a token pasted into a lesson must never reach it.
   encrypt   strong at-rest option: an encrypted archive of the brain (openssl AES-256 + PBKDF2;
-            key in secrets/vault.key, never committed) so an off-machine copy is CIPHERTEXT, not
+            key in .vault/key, never committed) so an off-machine copy is CIPHERTEXT, not
             plaintext — covers a scanner miss. (age/git-crypt are drop-in upgrades when installed.)
   decrypt   restore the brain from an encrypted archive.
 
@@ -42,7 +42,8 @@ _SECRET_RE = [re.compile(p) for p in SECRET_PATTERNS]
 
 VAULT_GITIGNORE = (
     "# Enclave deployment vault — durable memory is TRACKED; secrets + runtime state are NOT.\n"
-    "secrets/\n"        # NEVER commit credentials (the structured cred store)
+    "secrets/\n"        # defensive: never commit a stray cred dir
+    ".vault/\n"         # the vault encryption key lives here — NEVER commit it
     "state/\n"          # transient per-tick runtime state
     "logs/\n"
     "uploads/\n"
@@ -132,7 +133,7 @@ def snapshot(home, msg=None):
 def _vault_key(home):
     """A 256-bit key in secrets/ (gitignored, 600). Generated once; back it up SEPARATELY — lose it
     and the encrypted archive is unrecoverable."""
-    keyf = home / "secrets" / "vault.key"
+    keyf = home / ".vault" / "key"
     keyf.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not keyf.exists():
         keyf.write_text(os.urandom(32).hex() + "\n"); os.chmod(keyf, 0o600)
@@ -169,7 +170,7 @@ def decrypt(home, blob):
     """Restore the brain from an encrypted archive into home/ (overwrites the brain dirs)."""
     if shutil.which("openssl") is None:
         raise SystemExit("openssl not found.")
-    keyf = home / "secrets" / "vault.key"
+    keyf = home / ".vault" / "key"
     if not keyf.exists():
         raise SystemExit(f"missing key {keyf} — the archive is unrecoverable without it.")
     p = subprocess.run(["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-pass", f"file:{keyf}"],
