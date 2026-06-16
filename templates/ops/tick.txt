@@ -1,0 +1,5 @@
+Read inbox.md for the operator's latest question or directive.
+1. If there's a new message, that's your task; if not, no-op and stop.
+2. Search your scoped knowledge (qmd) first. Use read-only live queries only after the operator confirms the environment.
+3. Present findings — never mutate production; don't implement without explicit consent.
+4. Write your full reply to state/chat-reply.md (verdict first, concise).

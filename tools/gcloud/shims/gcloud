@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Container PATH shim — makes `gcloud ...` transparently proxy to the Mac host
+# via tools/gcloud/bridge.py. Installed by tools/gcloud/container-setup.sh.
+REPO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.." && pwd)"
+exec python3 "$REPO/tools/gcloud/bridge.py" --tool gcloud "$@"

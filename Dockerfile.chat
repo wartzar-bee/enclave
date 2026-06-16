@@ -1,0 +1,32 @@
+# Dockerfile.chat — web chat sidecar for Enclave
+#
+# Build context: repo root (two levels up from experiments/enclave/)
+#   docker build -f experiments/enclave/Dockerfile.chat -t enclave-chat:latest .
+#
+# The script lives at platform/agentd/web_chat.py relative to the repo root.
+# docker-compose.yml sets build.context to ../.. (repo root) so the COPY path
+# below resolves correctly.
+#
+# No third-party deps — pure stdlib only.
+# Runs as non-root user "chat" (uid 1000).
+
+FROM python:3.12-slim-bookworm@sha256:76d4b7b6305788c6b4c6a19d6a22a3921bf802e9af4d5e1e5bd771208dba74bf
+
+# No pip installs needed — pure stdlib
+
+RUN useradd -r -u 1000 -s /sbin/nologin chat
+
+COPY platform/agentd/web_chat.py /app/web_chat.py
+
+RUN chown chat:chat /app/web_chat.py
+
+USER chat
+
+ENV AGENT_DIR=/agent \
+    WEB_CHAT_PORT=8888 \
+    WEB_CHAT_TOKEN="" \
+    AGENT_NAME="Agent"
+
+EXPOSE 8888
+
+CMD ["python3", "/app/web_chat.py"]

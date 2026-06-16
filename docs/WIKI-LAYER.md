@@ -1,0 +1,44 @@
+# Wiki layer — the portable, zero-infra default knowledge base
+
+Enclave's default knowledge store is an **LLM-maintained markdown wiki** (Karpathy-style). It needs
+no database, no embeddings, no GPU, no host service — it's a folder of markdown the agent reads and
+writes. That makes it the **cross-platform floor** that runs in any container on any OS; semantic
+engines (qmd / LanceDB / Cognee) are opt-in accelerators *on top* of it (see `MEMORY-PROVIDERS.md`).
+
+## Why a wiki instead of pure RAG
+- **Traceable**: every claim links back to an immutable `raw/` source ("manual Graph RAG").
+- **Human-readable + Git-diffable**: open it in Obsidian, review it, version it.
+- **Stateful**: knowledge compounds across sessions instead of being re-derived per query.
+- **Zero infra**: a folder + an LLM. Nothing to install or security-review.
+- Sweet spot: personal/team scale (~hundreds of sources); past that, add a retrieval accelerator.
+
+## Layout (in the agent's home, `home/knowledge/`)
+```
+raw/                    immutable sources (read, never edit)
+wiki/concepts/*.md      one idea per page
+wiki/entities/*.md      people / orgs / systems
+wiki/sources/*.md       one summary per ingested raw source (→ back to raw/)
+wiki/syntheses/*.md     cross-cutting rollups
+index.md                generated catalog — read FIRST to navigate
+log.md                  append-only operation log
+WIKI.md                 the schema (written by `wiki.py init`)
+```
+Each page carries frontmatter: `title, type, created, updated, sources[], related[[..]], confidence, status`.
+Pages link with `[[page-stem]]`.
+
+## Division of labor
+- **The LLM does the semantic work** — ingest (summarize a source, cascade updates to concept/entity
+  pages, link them), query (read `index.md` → follow `[[links]]` → answer with citations).
+- **`wiki.py` does the mechanical, verifiable work** — so the model can't drift:
+  - `wiki.py init [dir]` — scaffold the layout + schema
+  - `wiki.py index [dir]` — rebuild `index.md`
+  - `wiki.py new [dir] --type concept --title "…" [--sources raw/x]` — scaffold a page with frontmatter
+  - `wiki.py lint [dir]` — report broken `[[links]]`, orphans, stale pages, bad/missing frontmatter (exit 1 only on broken frontmatter)
+  - `wiki.py log [dir] "…"` — append to the log
+
+`wiki.py` is baked into the image at `/workspace/platform/agentd/wiki.py` (stdlib + pyyaml, cross-platform).
+
+## How an agent uses it
+The agent's `CLAUDE.md` points it at `knowledge/` and the workflow. On a new source: `wiki.py new …`,
+write the page, link related pages, `wiki.py index`, `wiki.py log`. On a question: read `index.md`,
+follow links, answer with `raw/` citations. Periodically: `wiki.py lint` and fix.

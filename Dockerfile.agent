@@ -1,0 +1,29 @@
+# Enclave agent runtime — lean, self-contained, no extra baked content.
+#
+#   docker build -f Dockerfile.agent -t enclave-agent:latest .
+#
+# Per-agent run: mount the agent's home dir -> /agent, its scoped secrets -> /workspace/.secrets.
+# The agent reaches optional host tools (qmd / gcloud bridge) via host.docker.internal.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip nodejs npm git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+# Minimal python deps the runtime uses (no content-creation libs).
+RUN pip3 install --no-cache-dir --break-system-packages pyyaml requests
+# Pinned Claude CLI (BRAIN=claude). Fail loud — a missing CLI = a dead agent.
+RUN npm i -g @anthropic-ai/claude-code@2.1.170
+ENV PATH=/usr/local/bin:$PATH
+
+# Bake ONLY the Enclave runtime (the layout the scripts assume: W=/workspace). No venture content.
+COPY platform/agentd/  /workspace/platform/agentd/
+COPY tools/            /workspace/tools/
+
+# Non-root (claude refuses --dangerously-skip-permissions as root).
+RUN useradd -m -u 1001 -s /bin/bash agent && chown -R agent:agent /workspace
+WORKDIR /agent
+USER agent
+ENV HOME=/home/agent AGENT_DIR=/agent
+# Reads /agent/agent.env for DEFAULTS (docker -e overrides win), then runs the event-driven loop
+# (RUNTIME_MODE=daemon) or the fixed-interval loop (RUNTIME_MODE=tick).
+CMD ["bash","-c","while IFS='=' read -r k v; do case \"$k\" in (''|\\#*) ;; (*) [ -z \"${!k+x}\" ] && export \"$k=$v\";; esac; done < \"${AGENT_DIR}/agent.env\"; case \"${RUNTIME_MODE:-daemon}\" in tick) while true; do bash /workspace/platform/agentd/runtime.sh ${AGENT_DIR}; sleep ${INTERVAL_SECONDS:-10800}; done ;; *) exec python3 /workspace/platform/agentd/agentloop.py ${AGENT_DIR} ;; esac"]

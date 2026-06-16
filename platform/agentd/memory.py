@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""
+memory.py — durable memory + self-improvement (skill persistence) for agents.
+
+ONE substrate used by deployed agents AND the host agent itself. It implements
+the closed learning loop the platform must enforce:
+
+    RECALL (cheap, before acting)  ->  ACT  ->  WRITE-BACK (remember + learn)
+
+Why: a scheduled agent's conversation context is wiped between ticks (and even
+compacted mid-session). Without durable, cheaply-recalled memory it re-derives
+the world every tick and never improves. This fixes that: state lives in files,
+recall is a grep (not a re-read of everything), and the agent writes back lessons
+and reusable SKILLS so the next tick is smarter than the last.
+
+Layout under <base>/ (default: the agent dir; the host can point elsewhere):
+  memory/INDEX.md            one-line pointer per memory (cheap to load each tick)
+  memory/<type>/<slug>.md    ONE fact per file  (type: fact|decision|lesson|user)
+  skills/INDEX.md            one-line pointer per skill
+  skills/<slug>.md           a reusable PROCEDURE the agent learned (the ⭐ loop)
+
+CLI:
+  memory.py --base D remember --type lesson "text" [--tags a,b] [--slug s]
+  memory.py --base D recall   "query terms" [-k 5]
+  memory.py --base D learn    <slug> "Title" (--body "..." | --body-file f)
+  memory.py --base D index    [skills]
+  memory.py --base D forget   <type>/<slug>
+"""
+import sys, os, re, json, argparse, pathlib, datetime, subprocess, math, time
+
+def _slug(s, n=48):
+    s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+    return (s[:n] or "x").strip("-")
+
+class Memory:
+    TYPES = ("fact", "decision", "lesson", "user")
+    REPO = pathlib.Path(__file__).resolve().parents[2]
+    def __init__(self, base):
+        self.base = pathlib.Path(base)
+        self.mem = self.base / "memory"; self.skills = self.base / "skills"
+        self.users = self.mem / "users"
+        for d in (self.mem, self.skills, self.users): d.mkdir(parents=True, exist_ok=True)
+        for idx, hdr in ((self.mem / "INDEX.md", "# Memory index\n"),
+                         (self.skills / "INDEX.md", "# Skills index\n")):
+            if not idx.exists(): idx.write_text(hdr)
+
+    def _now(self): return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def remember(self, text, mtype="lesson", tags=None, slug=None):
+        if mtype not in self.TYPES: mtype = "fact"
+        slug = slug or _slug(text)
+        d = self.mem / mtype; d.mkdir(exist_ok=True)
+        f = d / f"{slug}.md"
+        f.write_text(f"---\ntype: {mtype}\ntags: {','.join(tags or [])}\nts: {self._now()}\n---\n\n{text.strip()}\n")
+        line = f"- [{mtype}] {text.strip().splitlines()[0][:120]} → `{mtype}/{slug}.md`"
+        idx = self.mem / "INDEX.md"; lines = idx.read_text().splitlines()
+        lines = [l for l in lines if f"`{mtype}/{slug}.md`" not in l]  # de-dup
+        idx.write_text("\n".join(lines + [line]) + "\n")
+        return f
+
+    def learn(self, slug, title, body):
+        slug = _slug(slug)
+        f = self.skills / f"{slug}.md"
+        ver = 1
+        if f.exists():
+            m = re.search(r"version:\s*(\d+)", f.read_text()); ver = int(m.group(1)) + 1 if m else 2
+        f.write_text(f"---\nskill: {slug}\nversion: {ver}\nts: {self._now()}\n---\n\n# {title}\n\n{body.strip()}\n")
+        line = f"- **{title}** → `{slug}.md` (v{ver})"
+        idx = self.skills / "INDEX.md"; lines = idx.read_text().splitlines()
+        lines = [l for l in lines if f"`{slug}.md`" not in l]
+        idx.write_text("\n".join(lines + [line]) + "\n")
+        return f, ver
+
+    def _entries(self):
+        out = []
+        for f in self.mem.rglob("*.md"):
+            if f.name == "INDEX.md": continue
+            if f.parent.name == "activity": continue        # auto-captured tick log — qmd-searchable, not ranked in recall
+            txt = f.read_text(); body = txt.split("---", 2)[-1].strip()
+            out.append((f, body, txt))
+        return out
+
+    def _kw_rank(self, query, entries):
+        terms = [t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 2]
+        scored = [(sum(txt.lower().count(t) for t in terms), f, body) for f, body, txt in entries]
+        return sorted([s for s in scored if s[0]], key=lambda x: -x[0])
+
+    # ── REINFORCEMENT + DECAY (jcode roadmap #2): used memories rise, stale ones fade. Lifecycle
+    #    (access_count, last_used) lives in a SIDECAR so the agents' memory markdown is never rewritten.
+    HALF_LIFE = {"correction": 365, "preference": 90, "decision": 120, "procedure": 60, "lesson": 45,
+                 "fact": 30, "inferred": 7}
+
+    def _ls(self):
+        try: return json.loads((self.mem / ".lifecycle.json").read_text())
+        except Exception: return {}
+    def _ls_save(self, d):
+        try: (self.mem / ".lifecycle.json").write_text(json.dumps(d))
+        except Exception: pass
+    def _age_days(self, f):
+        try:
+            m = re.search(r"\bts:\s*(\S+)", f.read_text())
+            t = datetime.datetime.strptime(m.group(1)[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc)
+            return max(0.0, (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() / 86400.0)
+        except Exception:
+            return 0.0
+    def _life_weight(self, f, lc):
+        """Multiplier on a memory's rank: confidence DECAYS by per-type half-life, boosted by
+        access_count and recency-of-last-use. Floor 0.05 (never fully buried)."""
+        rel = str(f.relative_to(self.mem)); meta = lc.get(rel, {}); acc = meta.get("acc", 0)
+        decay = math.exp(-self._age_days(f) / self.HALF_LIFE.get(f.parent.name, 45)) * (1 + 0.1 * math.log(acc + 1))
+        used = meta.get("used")
+        rec = (1.0 + 0.5 * math.exp(-(time.time() - used) / 86400.0)) if used else 1.0
+        return max(0.05, decay) * rec
+
+    def _semantic_rerank(self, query, cands, k):
+        """Rerank candidate bodies by MEANING via the local LLM router ($0, off-cap,
+        private). Returns indices into `cands`, or None on any failure (→ keyword)."""
+        listing = "\n".join(f"{i}) {b[:220]}" for i, (_, b, _) in enumerate(cands))
+        prompt = (f"You are a memory retrieval reranker. Return ONLY a JSON array of the candidate "
+                  f"numbers most RELEVANT IN MEANING to the query (best first, max {k}), e.g. [3,0,7].\n"
+                  f"QUERY: {query}\nCANDIDATES:\n{listing}")
+        try:
+            r = subprocess.run(["node", str(self.REPO / "tools/llm/route.mjs"), "--task", "classify",
+                                "--sensitivity", "internal"], input=prompt, capture_output=True,
+                               text=True, timeout=40, cwd=str(self.REPO))
+            m = re.search(r"\[[\d,\s]*\]", r.stdout)
+            return [i for i in json.loads(m.group(0)) if isinstance(i, int)] if m else None
+        except Exception:
+            return None
+
+    def recall(self, query, k=5, semantic=False):
+        entries = self._entries()
+        if not entries: return []
+        ranked = self._kw_rank(query, entries)
+        lc = self._ls()                                    # reinforcement+decay: re-weight by lifecycle
+        ranked = sorted(((sc * self._life_weight(f, lc), f, b) for sc, f, b in ranked), key=lambda x: -x[0])
+        if not semantic:
+            picks = [(f, b) for _, f, b in ranked[:k]]
+        else:
+            # prefilter to a sane pool (keyword hits, else everything), then rerank by meaning
+            pool = [(f, b) for _, f, b in ranked][:20] or [(f, b) for f, b, _ in entries][:20]
+            cands = [(f, b, "") for f, b in pool]
+            order = self._semantic_rerank(query, cands, k)
+            picks = ([pool[i] for i in order if i < len(pool)][:k]) if order else [(f, b) for _, f, b in ranked[:k]]
+        now = time.time()                                  # REINFORCE: surfaced ⇒ used ⇒ bump (jcode on_used)
+        for f, _ in picks:
+            m = lc.setdefault(str(f.relative_to(self.mem)), {}); m["acc"] = m.get("acc", 0) + 1; m["used"] = now
+        self._ls_save(lc)
+        return [f"[{f.parent.name}/{f.stem}] {b[:200]}" for f, b in picks]
+
+    # ── COMPACTION (P3.6): scheduled lean-up so continuous ticks don't bloat the store / qmd index.
+    def _llm_summarize(self, raw, target="a compact bulleted digest of what was done (keep dates, "
+                                          "decisions, outcomes; drop noise)"):
+        """Summarize via the LOCAL LLM router ($0/off-cap). None on failure (caller keeps raw)."""
+        try:
+            r = subprocess.run(["node", str(self.REPO / "tools/llm/route.mjs"), "--task", "write",
+                                "--sensitivity", "internal"],
+                               input=f"Compress the following activity log into {target}. Be terse.\n\n{raw[:24000]}",
+                               capture_output=True, text=True, timeout=90, cwd=str(self.REPO))
+            out = (r.stdout or "").strip()
+            return out if len(out) > 40 else None
+        except Exception:
+            return None
+
+    def compact(self, keep_days=14, month_cap=30000):
+        """Daily housekeeping: (1) roll old activity captures into monthly archives, (2) CONSOLIDATE
+        lessons (dedup + supersede). Always runs both. Safe: archives, never silently drops content."""
+        return "compact: " + self._roll_activity(keep_days, month_cap) + "; " + self._consolidate()
+
+    def _roll_activity(self, keep_days, month_cap):
+        actdir = self.mem / "activity"
+        if not actdir.is_dir():
+            return "no activity/"
+        cutoff = datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=keep_days)
+        by_month = {}
+        for f in sorted(actdir.glob("20*-*-*.md")):
+            try:
+                d = datetime.date.fromisoformat(f.stem)
+            except Exception:
+                continue
+            if d >= cutoff:
+                continue
+            by_month.setdefault(d.strftime("%Y-%m"), []).append(f)
+        if not by_month:
+            return "nothing older than %dd" % keep_days
+        arc = actdir / "_archive"; arc.mkdir(exist_ok=True)
+        rolled = 0
+        for month, files in by_month.items():
+            af = arc / f"{month}.md"
+            prior = af.read_text() if af.exists() else f"# Activity archive {month} (compacted)\n"
+            raw = prior + "\n\n" + "\n\n".join(f"## {f.stem}\n{f.read_text()}" for f in files)
+            if len(raw) > month_cap:
+                raw = f"# Activity archive {month} (compacted, summarized)\n\n" + (self._llm_summarize(raw) or raw[:month_cap])
+            af.write_text(raw)
+            for f in files:
+                f.unlink(); rolled += 1
+        return f"rolled {rolled} daily capture(s) into {len(by_month)} monthly archive(s)"
+
+    def _consolidate(self, max_action=6):
+        """CONSOLIDATION (jcode roadmap #3): dedup near-duplicate LESSONS + supersede contradictions via
+        ONE local-LLM pass ($0, off-cap). ARCHIVES (never hard-deletes) the redundant/superseded to
+        memory/_archive/consolidated/, folds their access into the survivor, drops them from INDEX.
+        Conservative + bounded (<= max_action)."""
+        ld = self.mem / "lesson"
+        files = sorted(ld.glob("*.md")) if ld.is_dir() else []
+        if len(files) < 4:
+            return "consolidate: <4 lessons, skip"
+        items = []
+        for i, f in enumerate(files):
+            body = f.read_text().split("---", 2)[-1].strip().splitlines()
+            items.append((i, f, (body[0] if body else "")[:160]))
+        listing = "\n".join(f"{i}: {one}" for i, _, one in items)
+        prompt = ('Dedup an agent lesson-memory. Return ONLY JSON {"dups":[[i,j,..]],"contradicts":[[old_i,new_j]]}. '
+                  '"dups"=groups stating the SAME thing (near-identical); "contradicts"=pairs where one OVERTURNS '
+                  f'the other (newer wins). Empty arrays if none. BE CONSERVATIVE.\nLESSONS:\n{listing}')
+        try:
+            r = subprocess.run(["node", str(self.REPO / "tools/llm/route.mjs"), "--task", "classify",
+                                "--sensitivity", "internal"], input=prompt, capture_output=True,
+                               text=True, timeout=90, cwd=str(self.REPO))
+            mm = re.search(r"\{.*\}", r.stdout, re.S)
+            plan = json.loads(mm.group(0)) if mm else {}
+        except Exception:
+            return "consolidate: LLM unavailable, skip"
+        lc = self._ls(); arc = self.mem / "_archive" / "consolidated"; archived = []
+        byidx = {i: f for i, f, _ in items}
+        def acc(f): return lc.get(str(f.relative_to(self.mem)), {}).get("acc", 0)
+        def merge(victim, survivor):
+            if victim == survivor or not victim.exists() or len(archived) >= max_action: return
+            sm = lc.setdefault(str(survivor.relative_to(self.mem)), {})
+            sm["acc"] = sm.get("acc", 0) + acc(victim) + 1                 # fold access into survivor (reinforce)
+            arc.mkdir(parents=True, exist_ok=True)
+            victim.rename(arc / victim.name); lc.pop(str(victim.relative_to(self.mem)), None)
+            archived.append(victim.name)
+        for grp in (plan.get("dups") or []):
+            g = [byidx[i] for i in grp if isinstance(i, int) and i in byidx and byidx[i].exists()]
+            if len(g) < 2: continue
+            survivor = max(g, key=acc)                                    # keep the most-used
+            for v in g: merge(v, survivor)
+        for pair in (plan.get("contradicts") or []):
+            if isinstance(pair, list) and len(pair) == 2 and pair[0] in byidx and pair[1] in byidx:
+                merge(byidx[pair[0]], byidx[pair[1]])                     # older superseded by newer
+        self._ls_save(lc)
+        if archived:                                                      # drop archived lessons from INDEX
+            idx = self.mem / "INDEX.md"
+            if idx.exists():
+                keep = [l for l in idx.read_text().splitlines() if not any(f"lesson/{n}" in l for n in archived)]
+                idx.write_text("\n".join(keep) + "\n")
+        return f"consolidate: archived {len(archived)} redundant/superseded" if archived else "consolidate: 0 redundant"
+
+    # ── USER memory (per-entity modeling — for support / relationship agents) ──
+    def user_note(self, uid, note):
+        f = self.users / f"{_slug(uid)}.md"
+        if not f.exists(): f.write_text(f"# user: {uid}\n\n")
+        with f.open("a") as h: h.write(f"- {self._now()} — {note.strip()}\n")
+        return f
+
+    def user_get(self, uid):
+        f = self.users / f"{_slug(uid)}.md"
+        return f.read_text() if f.exists() else f"(no record for user '{uid}')"
+
+    # ── WORK QUEUE (continuity across ticks — the "what am I in the middle of") ──
+    def _workf(self): return self.base / "work.json"
+    def work_list(self):
+        return json.loads(self._workf().read_text()) if self._workf().exists() else []
+    def work_add(self, text, verify=""):
+        w = self.work_list(); wid = max([i["id"] for i in w], default=0) + 1
+        w.append({"id": wid, "text": text, "status": "todo", "ts": self._now(), "evidence": "", "verify": verify})
+        self._workf().write_text(json.dumps(w, indent=2) + "\n"); return wid
+    def _run_verify(self, cmd):
+        """Run an item's verify command (cwd=base). Returns (ok, output). Deterministic completion gate
+        so the model can't self-mark 'done' without the work actually being verifiable (anti-fabrication)."""
+        import subprocess
+        try:
+            p = subprocess.run(["bash", "-lc", cmd], cwd=str(self.base), capture_output=True, text=True, timeout=180)
+            return p.returncode == 0, (p.stdout + p.stderr)[-500:]
+        except Exception as e:
+            return False, str(e)
+    def work_set(self, wid, status, evidence=""):
+        w = self.work_list()
+        for i in w:
+            if i["id"] == int(wid):
+                # VERIFY GATE: 'done' requires the item's verify command to pass (if one is set).
+                if status == "done" and i.get("verify"):
+                    ok, out = self._run_verify(i["verify"])
+                    if not ok:
+                        return {"ok": False, "id": i["id"], "reason": "verify FAILED — not marked done", "output": out}
+                    evidence = (evidence + f" | verify PASSED: {i['verify']}").strip(" |")
+                i["status"] = status; i["ts"] = self._now()
+                if evidence: i["evidence"] = evidence
+        self._workf().write_text(json.dumps(w, indent=2) + "\n")
+        return {"ok": True, "id": int(wid), "status": status}
+
+    def _auto_query(self):
+        """Derive a recall focus from the agent's current state: pending inbox directives +
+        the latest rollup line. Used by digest() so recall needs no hand-authored query."""
+        parts = []
+        ib = self.base / "inbox.md"
+        if ib.exists():
+            parts += [ln.strip()[5:].strip() for ln in ib.read_text().splitlines() if ln.strip().startswith("- [ ]")]
+        rl = self.base / "state" / "rollup.md"
+        if rl.exists():
+            body = [l for l in rl.read_text().splitlines() if l.strip() and not l.strip().startswith("#")]
+            if body: parts.append(body[0])
+        return " ".join(parts)[:500]
+
+    def _qmd_query(self, query, k=6, timeout=12):
+        """PASSIVE SEMANTIC recall via the host qmd MCP (vector search — embeddings, $0, fast).
+        Returns [(pct, filename, snippet)] filtered to THIS agent's memory + shared knowledge/.
+        [] on any failure (caller keeps keyword recall). This is the embeddings-backed upgrade to
+        the digest — relevant memory + knowledge by MEANING, not keyword (jcode cascade-retrieval idea)."""
+        import urllib.request
+        url = os.environ.get("QMD_URL", "http://host.docker.internal:18181/mcp")
+        aid = os.environ.get("AGENT_ID", "")
+        def _post(method, params, sid=None):
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+            h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+            if sid: h["Mcp-Session-Id"] = sid
+            r = urllib.request.urlopen(urllib.request.Request(url, data=body, headers=h), timeout=timeout)
+            raw = r.read().decode()
+            if "data:" in raw[:24]:
+                for ln in raw.splitlines():
+                    if ln.startswith("data:"): raw = ln[5:].strip(); break
+            return r.headers.get("Mcp-Session-Id"), (json.loads(raw) if raw.strip() else {})
+        try:
+            sid, _ = _post("initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
+                                          "clientInfo": {"name": "digest", "version": "1"}})
+            try: _post("notifications/initialized", {}, sid)
+            except Exception: pass
+            _, res = _post("tools/call", {"name": "query", "arguments": {
+                "intent": f"pre-tick recall for {aid}", "searches": [{"type": "vec", "query": query[:300]}]}}, sid)
+            text = res.get("result", {}).get("content", [{}])[0].get("text", "")
+        except Exception:
+            return []
+        hits = []
+        for ln in text.splitlines():
+            m = re.match(r"#\w+\s+(\d+)%\s+(\S+)\s+-\s+(.*)", ln.strip())
+            if not m: continue
+            pct, path, snip = int(m.group(1)), m.group(2), m.group(3)
+            if pct < 35: continue
+            # KNOWLEDGE-type files only (lessons/skills/shared knowledge) from ANY source — surfaces
+            # peers' learnings too (network compounding). Excludes operational state/content/tmp/reports.
+            if ("/memory/" in path) or ("/skills/" in path) or ("/knowledge/" in path):
+                hits.append((pct, path.split("/")[-1], snip[:140]))
+        return hits[:k]
+
+    def digest(self, query=None, k=5):
+        """Pre-tick recall digest (P3): the agent's OPEN WORK + the most relevant past memory for
+        the current focus, so a context-wiped tick doesn't re-derive the world. Keyword-ranked over
+        own memory + PASSIVE SEMANTIC recall via qmd (relevant memory + shared knowledge by meaning)."""
+        work = [i for i in self.work_list() if i["status"] not in ("done", "dropped")]
+        q = query if query is not None else self._auto_query()
+        hits = self.recall(q, k=k, semantic=False) if q else []
+        # Unacked BOARD directives OVERRIDE the work queue — surface them at the very top so the loop's
+        # momentum (a 'doing' work item) can't bury a board pause/redirect. (Governance: directives win.)
+        directives = []
+        ib = self.base / "inbox.md"
+        if ib.exists():
+            for ln in ib.read_text().splitlines():
+                s = ln.strip()
+                if s.startswith("- [ ]") and re.search(r"\bboard\b|via comms|BOARD", s):
+                    directives.append(s[5:].strip()[:280])
+        out = ["# Recall — auto-loaded for this tick (read FIRST, alongside inbox.md)\n"]
+        if directives:
+            out.append("## ⚠ BOARD DIRECTIVES — ACT ON THESE FIRST (they OVERRIDE your work queue)\n" +
+                       "\n".join(f"- {d}" for d in directives[:5]) + "\n")
+        out.append("## Open work (continue 'doing' before starting new)\n" +
+                   ("\n".join(f"- #{i['id']} [{i['status']}] {i['text']}" for i in work) if work else "- (none)"))
+        out.append("\n## Relevant past memory (keyword)\n" +
+                   ("\n".join(f"- {h}" for h in hits) if hits else "- (none yet)"))
+        # query qmd on the single FOCUS task (top 'doing', else top item) — a focused vector matches
+        # distilled lessons/knowledge better than a verbose directive or a diluted multi-task concat.
+        doing = [i for i in work if i["status"] == "doing"] or work
+        sem_q = (doing[0]["text"][:240]) if doing else q
+        sem = self._qmd_query(sem_q) if sem_q else []           # passive SEMANTIC recall (qmd embeddings)
+        if sem:
+            out.append("\n## Relevant by MEANING (semantic — your memory + shared knowledge)\n" +
+                       "\n".join(f"- ({p}%) {fn}: {snip}" for p, fn, snip in sem))
+        out.append(f"\n_focus: {q[:160] or '(none)'}_\n")
+        return "\n".join(out)
+
+    def index(self, which="memory"):
+        f = (self.skills if which == "skills" else self.mem) / "INDEX.md"
+        return f.read_text() if f.exists() else ""
+
+    def forget(self, rel):
+        f = self.mem / rel
+        if not f.suffix: f = f.with_suffix(".md")
+        if f.exists():
+            f.unlink()
+            idx = self.mem / "INDEX.md"
+            idx.write_text("\n".join(l for l in idx.read_text().splitlines() if f"`{rel}`" not in l and f"`{rel}.md`" not in l) + "\n")
+            return True
+        return False
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base", default=".")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("remember"); r.add_argument("text"); r.add_argument("--type", default="lesson"); r.add_argument("--tags", default=""); r.add_argument("--slug")
+    c = sub.add_parser("recall"); c.add_argument("query"); c.add_argument("-k", type=int, default=5); c.add_argument("--semantic", action="store_true")
+    l = sub.add_parser("learn"); l.add_argument("slug"); l.add_argument("title"); l.add_argument("--body", default=""); l.add_argument("--body-file")
+    i = sub.add_parser("index"); i.add_argument("which", nargs="?", default="memory")
+    dg = sub.add_parser("digest"); dg.add_argument("--query", default=None); dg.add_argument("-k", type=int, default=5)
+    fg = sub.add_parser("forget"); fg.add_argument("rel")
+    un = sub.add_parser("user-note"); un.add_argument("uid"); un.add_argument("note")
+    ug = sub.add_parser("user-get"); ug.add_argument("uid")
+    w = sub.add_parser("work"); w.add_argument("op", choices=["list", "add", "doing", "done", "drop"]); w.add_argument("arg", nargs="?", default=""); w.add_argument("--evidence", default=""); w.add_argument("--verify", default="")
+    cp = sub.add_parser("compact"); cp.add_argument("--keep-days", type=int, default=14); cp.add_argument("--month-cap", type=int, default=30000)
+    a = ap.parse_args()
+    m = Memory(a.base)
+    if a.cmd == "remember":
+        f = m.remember(a.text, a.type, [t for t in a.tags.split(",") if t], a.slug); print(f"remembered → {f}")
+    elif a.cmd == "recall":
+        hits = m.recall(a.query, a.k, a.semantic); print("\n".join(hits) if hits else "(no memory matches)")
+    elif a.cmd == "user-note":
+        print(f"noted → {m.user_note(a.uid, a.note)}")
+    elif a.cmd == "user-get":
+        print(m.user_get(a.uid))
+    elif a.cmd == "work":
+        if a.op == "add": print(f"added work #{m.work_add(a.arg, a.verify)}")
+        elif a.op in ("doing", "done", "drop"):
+            r = m.work_set(a.arg, {"doing": "doing", "done": "done", "drop": "dropped"}[a.op], a.evidence)
+            if isinstance(r, dict) and not r.get("ok"):
+                print(f"#{a.arg} REFUSED: {r.get('reason')}\n{r.get('output','')}")
+            else: print(f"#{a.arg} → {a.op}")
+        else:
+            items = [i for i in m.work_list() if i["status"] not in ("done", "dropped")]
+            print("\n".join(f"#{i['id']} [{i['status']}] {i['text']}" for i in items) if items else "(work queue empty)")
+    elif a.cmd == "learn":
+        body = pathlib.Path(a.body_file).read_text() if a.body_file else a.body
+        f, v = m.learn(a.slug, a.title, body); print(f"learned skill → {f} (v{v})")
+    elif a.cmd == "digest": print(m.digest(a.query, a.k))
+    elif a.cmd == "index": print(m.index(a.which))
+    elif a.cmd == "forget": print("forgot" if m.forget(a.rel) else "not found")
+    elif a.cmd == "compact": print(m.compact(a.keep_days, a.month_cap))
+
+if __name__ == "__main__":
+    main()

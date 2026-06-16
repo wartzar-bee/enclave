@@ -1,0 +1,32 @@
+# Dockerfile.relay — Telegram relay sidecar for Enclave
+#
+# Build context: repo root (two levels up from experiments/enclave/)
+#   docker build -f experiments/enclave/Dockerfile.relay -t enclave-relay:latest .
+#
+# The script lives at platform/agentd/telegram_relay.py relative to the repo root.
+# docker-compose.yml sets build.context to ../.. (repo root) so the COPY path
+# below resolves correctly.
+#
+# No third-party deps — pure stdlib only (urllib for Telegram long-poll).
+# Runs as non-root user "relay" (uid 1001).
+
+FROM python:3.12-slim-bookworm@sha256:76d4b7b6305788c6b4c6a19d6a22a3921bf802e9af4d5e1e5bd771208dba74bf
+
+# No pip installs needed — pure stdlib
+
+RUN useradd -r -u 1001 -s /sbin/nologin relay
+
+COPY platform/agentd/telegram_relay.py /app/telegram_relay.py
+
+RUN chown relay:relay /app/telegram_relay.py
+
+USER relay
+
+ENV AGENT_DIR=/agent \
+    TELEGRAM_BOT_TOKEN="" \
+    TELEGRAM_CHAT_ID="" \
+    RELAY_ADMIN_IDS="" \
+    RELAY_POLL_SECONDS=30 \
+    RELAY_CHECK_SECONDS=2
+
+CMD ["python3", "/app/telegram_relay.py"]

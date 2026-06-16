@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""
+enclave — CLI for the Enclave agent runtime.
+
+Commands:
+  enclave init                     Interactive wizard: configure this deployment (home/, secrets/, .env)
+  enclave run                      Build + start the agent, then open the chat in your browser
+  enclave send <msg>               Send a message to the agent's inbox
+  enclave logs                     Tail the agent's runner log
+  enclave status                   Show agent health and recent activity
+  enclave stop                     Stop the agent containers
+  enclave chat                     Interactive terminal chat (reads the reply file)
+
+The wizard + run/stop/etc. all operate on the Enclave repo this script lives in
+(the clone IS the deployment, like a configured ps-ops checkout). `init` populates
+./home (the agent's mounted /agent), ./secrets (read-only creds), and ./.env.
+
+Flags for non-interactive init (CI / scripted):
+  --name N --brain claude|api|local --model M --template T
+  --port 8888 --token TOK --bind 127.0.0.1:8888 --yes --force
+Flags for run:
+  --no-open   don't auto-open the browser     --no-build  skip the image build
+"""
+import sys, os, json, time, pathlib, subprocess, shutil, getpass, urllib.request
+
+HERE = pathlib.Path(__file__).resolve().parent
+REPO = HERE.parent  # bin/ -> repo root
+
+# Brain presets: default model + the secret file/key the runtime reads from ./secrets/.
+BRAINS = {
+    "claude": {"model": "claude-sonnet-4-6", "secret_file": "anthropic.env",
+               "secret_key": "CLAUDE_CODE_OAUTH_TOKEN",
+               "cred_prompt": "Claude Code OAuth token (from `claude setup-token`)"},
+    "api":    {"model": "deepseek/deepseek-chat", "secret_file": "openrouter.env",
+               "secret_key": "OPENROUTER_API_KEY",
+               "cred_prompt": "OpenRouter API key (sk-or-...)"},
+    "local":  {"model": "qwen2.5:7b", "secret_file": None, "secret_key": None,
+               "cred_prompt": None},
+}
+
+
+# ── small interactive helpers ────────────────────────────────────────────────
+def _interactive():
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+def _ask(label, default=None, choices=None, yes=False):
+    if choices:
+        label = f"{label} [{'/'.join(choices)}]"
+    if default is not None:
+        label = f"{label} ({default})"
+    if yes or not _interactive():
+        return default
+    while True:
+        try:
+            ans = input(f"  {label}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted."); sys.exit(1)
+        if not ans:
+            return default
+        if choices and ans not in choices:
+            print(f"    please choose one of: {', '.join(choices)}"); continue
+        return ans
+
+def _ask_secret(label, yes=False):
+    if yes or not _interactive():
+        return ""
+    try:
+        return getpass.getpass(f"  {label}\n  (paste, or press Enter to skip and add it later): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print(); return ""
+
+def _flag(args, name, default=None):
+    if name in args:
+        i = args.index(name)
+        if i + 1 < len(args):
+            return args[i + 1]
+    return default
+
+def _has(args, name):
+    return name in args
+
+
+# ── init wizard ──────────────────────────────────────────────────────────────
+def _templates():
+    tdir = REPO / "templates"
+    return sorted(p.name for p in tdir.iterdir() if p.is_dir()) if tdir.exists() else []
+
+def _write(path, text, mode=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    if mode is not None:
+        os.chmod(path, mode)
+
+def cmd_init(args):
+    yes = _has(args, "--yes")
+    force = _has(args, "--force")
+    home = REPO / "home"
+    secrets = REPO / "secrets"
+    envf = REPO / ".env"
+
+    populated = home.exists() and any(p.name != ".gitkeep" for p in home.iterdir())
+    if populated and not force:
+        sys.exit(f"./home is already populated ({home}). Re-run with --force to overwrite, "
+                 f"or edit it directly. (secrets/ and .env are left untouched.)")
+
+    print("\nEnclave setup — configure this deployment.\n")
+
+    templates = _templates()
+    tpl = _flag(args, "--template") or _ask("Template", default=("ops" if "ops" in templates else (templates[0] if templates else "ops")), choices=(templates or None), yes=yes)
+    name = _flag(args, "--name") or _ask("Agent name", default="enclave-agent", yes=yes)
+    brain = _flag(args, "--brain") or _ask("Brain", default="claude", choices=list(BRAINS), yes=yes)
+    if brain not in BRAINS:
+        sys.exit(f"Unknown brain '{brain}'. Choose: {', '.join(BRAINS)}")
+    bspec = BRAINS[brain]
+    model = _flag(args, "--model") or _ask("Model", default=bspec["model"], yes=yes)
+    bind = _flag(args, "--bind") or _ask("Web chat bind (host:port)", default="127.0.0.1:8888", yes=yes)
+    port = _flag(args, "--port") or (bind.split(":")[-1] if ":" in bind else "8888")
+    token = _flag(args, "--token", "")  # web UI ?token= gate (optional)
+
+    # credential (paste now or later)
+    cred = ""
+    if bspec["secret_key"]:
+        cred = _flag(args, "--cred") or _ask_secret(bspec["cred_prompt"], yes=yes)
+
+    tdir = REPO / "templates" / tpl
+    if not tdir.exists():
+        sys.exit(f"Template '{tpl}' not found in {REPO/'templates'} (have: {', '.join(templates) or 'none'})")
+
+    # 1) home/ from the template (CLAUDE.md, tick.txt, .mcp.json, .claude/settings.json)
+    if home.exists() and force:
+        # preserve runtime state if any; only replace the definition files
+        pass
+    home.mkdir(parents=True, exist_ok=True)
+    for rel in ["CLAUDE.md", "tick.txt", ".mcp.json"]:
+        src = tdir / rel
+        if src.exists():
+            _write(home / rel, src.read_text().replace("{AGENT_NAME}", name))
+    csrc = tdir / ".claude"
+    if csrc.exists():
+        shutil.copytree(csrc, home / ".claude", dirs_exist_ok=True)
+
+    # 2) agent.env (runtime defaults; NO inline comments after values — loader keeps everything after '=')
+    lines = [
+        "# Agent runtime config. NO inline comments after values.",
+        f"AGENT_ID={name}",
+        f"BRAIN={brain}",
+    ]
+    if brain == "claude":
+        lines.append(f"MODEL={model}")
+    else:
+        lines.append(f"BRAIN_MODEL={model}")
+        if brain == "local":
+            lines.append("BRAIN_API_BASE=http://host.docker.internal:11434/v1")
+    lines += ["RUNTIME_MODE=daemon", "INTERVAL_SECONDS=86400", "PERMISSION=dangerous", "TOOLS_ROOT=/workspace"]
+    _write(home / "agent.env", "\n".join(lines) + "\n")
+
+    # 3) runtime I/O files
+    _write(home / "inbox.md", f"# inbox — initialized {time.strftime('%Y-%m-%d')}\n\n")
+    _write(home / "work.json", "[]\n")          # BARE list — memory.py requires it (not {"items":[]})
+    _write(home / "state" / "rollup.md", f"# {name} status\n\n(no ticks yet)\n")
+    (home / "logs").mkdir(parents=True, exist_ok=True)
+
+    # 4) knowledge wiki = the portable default memory (no DB/GPU/service)
+    wiki = REPO / "platform" / "agentd" / "wiki.py"
+    if wiki.exists():
+        r = subprocess.run([sys.executable, str(wiki), "init", "knowledge"], cwd=home)
+        if r.returncode != 0:
+            print("  (wiki init returned nonzero — continuing; you can run it later)")
+
+    # 5) secrets/ (read-only creds, written 600 inside a 700 dir)
+    secrets.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(secrets, 0o700)
+    except OSError:
+        pass
+    if bspec["secret_file"]:
+        sfile = secrets / bspec["secret_file"]
+        if cred:
+            _write(sfile, f"{bspec['secret_key']}={cred}\n", mode=0o600)
+        elif not sfile.exists():
+            _write(sfile, f"# add your credential here, no quotes:\n{bspec['secret_key']}=\n", mode=0o600)
+    # ensure anthropic.env exists so compose's env_file never errors (it's required:false anyway)
+    apath = secrets / "anthropic.env"
+    if not apath.exists():
+        _write(apath, "# Claude Code OAuth token (BRAIN=claude). Leave blank for other brains.\nCLAUDE_CODE_OAUTH_TOKEN=\n", mode=0o600)
+
+    # 6) .env (compose-level interpolation: AGENT_ID/BRAIN/MODEL/.../WEB_CHAT_*)
+    env_lines = [
+        f"AGENT_ID={name}",
+        f"BRAIN={brain}",
+        f"MODEL={model}",
+        "RUNTIME_MODE=daemon",
+        "INTERVAL_SECONDS=86400",
+        "PERMISSION=dangerous",
+        f"WEB_CHAT_BIND={bind}",
+        f"WEB_CHAT_TOKEN={token}",
+    ]
+    _write(envf, "\n".join(env_lines) + "\n")
+
+    print(f"\n✓ Configured agent '{name}' (brain={brain}, model={model}, template={tpl}).")
+    print(f"  home/    → mounts to /agent (CLAUDE.md, agent.env, work.json, knowledge/ wiki)")
+    needs_cred = bool(bspec["secret_key"])
+    cred_present = bool(cred)
+    if needs_cred and not cred_present:  # maybe it's already in the file from a prior setup
+        sfile = secrets / bspec["secret_file"]
+        if sfile.exists():
+            for ln in sfile.read_text().splitlines():
+                if ln.startswith(bspec["secret_key"] + "=") and ln.split("=", 1)[1].strip():
+                    cred_present = True; break
+    print(f"  secrets/ → read-only creds" + ("  ⚠ credential not set yet" if (needs_cred and not cred_present) else ""))
+    print(f"  .env     → compose config (chat on http://{bind}/)")
+    if needs_cred and not cred_present:
+        print(f"\n  ⚠ Add your credential before running:")
+        print(f"      echo '{bspec['secret_key']}=<your-key>' > secrets/{bspec['secret_file']} && chmod 600 secrets/{bspec['secret_file']}")
+    # offer to run
+    if _interactive() and not yes:
+        if _ask("Start the agent now?", default="y", choices=["y", "n"]) == "y":
+            return cmd_run([])
+    print("\nNext: enclave run   (build + start + open the browser)")
+
+
+# ── run / lifecycle ──────────────────────────────────────────────────────────
+def _read_env(key, default=None):
+    envf = REPO / ".env"
+    if envf.exists():
+        for line in envf.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and line.split("=", 1)[0] == key:
+                return line.split("=", 1)[1]
+    return default
+
+def _open_browser(url):
+    import webbrowser
+    try:
+        if webbrowser.open(url):
+            return True
+    except Exception:
+        pass
+    for cmd in (["open", url], ["xdg-open", url], ["cmd", "/c", "start", "", url]):
+        try:
+            if subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+def _wait_reachable(url, timeout=40):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                if r.status < 500:
+                    return True
+        except Exception:
+            time.sleep(1)
+    return False
+
+def cmd_run(args):
+    if not (REPO / "docker-compose.yml").exists():
+        sys.exit("No docker-compose.yml in the repo — is this an Enclave checkout?")
+    if not (REPO / "home").exists() or not any((REPO / "home").iterdir()):
+        sys.exit("./home is empty — run 'enclave init' first.")
+
+    cmd = ["docker", "compose", "up", "-d"]
+    if not _has(args, "--no-build"):
+        cmd.append("--build")
+    print("Starting Enclave (docker compose up)…")
+    r = subprocess.run(cmd, cwd=REPO)
+    if r.returncode != 0:
+        sys.exit(r.returncode)
+
+    bind = _read_env("WEB_CHAT_BIND", "127.0.0.1:8888")
+    host, _, port = bind.partition(":")
+    host = host or "127.0.0.1"
+    port = port or "8888"
+    token = _read_env("WEB_CHAT_TOKEN", "")
+    url = f"http://{host}:{port}/" + (f"?token={token}" if token else "")
+
+    if _has(args, "--no-open"):
+        print(f"\nAgent running. Chat: {url}")
+        return
+
+    print(f"\nWaiting for the chat UI at http://{host}:{port}/ …")
+    if _wait_reachable(f"http://{host}:{port}/", timeout=40):
+        if _open_browser(url):
+            print(f"Opened {url} in your browser.")
+        else:
+            print(f"Could not auto-open a browser. Open it manually: {url}")
+    else:
+        print(f"Chat UI not reachable yet (the agent may still be building). Try: {url}")
+        print("  enclave logs   # to watch startup")
+
+def cmd_stop(args):
+    subprocess.run(["docker", "compose", "down"], cwd=REPO)
+
+def cmd_logs(args):
+    log = REPO / "home" / "logs" / "runner.log"
+    if log.exists():
+        subprocess.run(["tail", "-f", str(log)])
+    else:
+        subprocess.run(["docker", "compose", "logs", "-f", "agent"], cwd=REPO)
+
+def cmd_send(args):
+    if not args:
+        sys.exit("Usage: enclave send <message>")
+    message = " ".join(a for a in args if not a.startswith("--"))
+    inbox = REPO / "home" / "inbox.md"
+    ts = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime())
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    with inbox.open("a") as f:
+        f.write(f"\n\n---\n**[Operator at {ts}]**\n\n{message}\n\n*Reply by writing to state/chat-reply.md*\n")
+    print(f"Delivered to {inbox}")
+
+def cmd_status(args):
+    state = REPO / "home" / "state"
+    rollup = state / "rollup.md"
+    if rollup.exists():
+        print("=== Status ===")
+        print(rollup.read_text()[-2000:])
+    hb = state / ".heartbeat"
+    if hb.exists():
+        try:
+            age = int(time.time()) - int(hb.read_text().strip())
+            print(f"\nLast heartbeat: {age}s ago")
+        except ValueError:
+            pass
+
+def cmd_chat(args):
+    data = REPO / "home"
+    inbox = data / "inbox.md"
+    reply_file = data / "state" / "chat-reply.md"
+    print("Terminal chat — type a message, Enter to send. Ctrl-C to exit.\n")
+    last = None
+    try:
+        last = reply_file.stat().st_mtime
+    except OSError:
+        pass
+    while True:
+        try:
+            msg = input("You: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nExiting."); break
+        if not msg:
+            continue
+        ts = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime())
+        inbox.parent.mkdir(parents=True, exist_ok=True)
+        with inbox.open("a") as f:
+            f.write(f"\n\n---\n**[Operator at {ts}]**\n\n{msg}\n\n*Write your reply to state/chat-reply.md*\n")
+        print("(delivered — waiting for reply…)")
+        deadline = time.time() + 600
+        while time.time() < deadline:
+            time.sleep(2)
+            try:
+                m = reply_file.stat().st_mtime
+            except OSError:
+                continue
+            if m != last:
+                content = ""
+                try:
+                    content = reply_file.read_text().strip()
+                except OSError:
+                    pass
+                if content:
+                    last = m
+                    print(f"\nAgent: {content}\n")
+                    try:
+                        reply_file.write_text("")
+                    except OSError:
+                        pass
+                    break
+        else:
+            print("(no reply yet — the agent may still be working)")
+
+
+COMMANDS = {
+    "init": cmd_init, "run": cmd_run, "stop": cmd_stop, "logs": cmd_logs,
+    "send": cmd_send, "status": cmd_status, "chat": cmd_chat,
+}
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); sys.exit(0)
+    cmd = args[0]
+    if cmd not in COMMANDS:
+        sys.exit(f"Unknown command '{cmd}'. Available: {', '.join(COMMANDS)}")
+    COMMANDS[cmd](args[1:])
+
+if __name__ == "__main__":
+    main()

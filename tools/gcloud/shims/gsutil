@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Container PATH shim — proxies `gsutil ...` to the Mac host via the gcloud bridge.
+REPO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.." && pwd)"
+exec python3 "$REPO/tools/gcloud/bridge.py" --tool gsutil "$@"

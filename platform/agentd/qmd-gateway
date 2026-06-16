@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# qmd-gateway — launch the scoped qmd MCP gateway.
+#
+# qmd_gateway.mjs is ESM and imports @tobilu/qmd + @modelcontextprotocol/sdk + zod.
+# ESM ignores NODE_PATH for bare specifiers, so we build a tiny node_modules
+# symlink farm in a runtime dir (pointing at the global qmd install + its bundled
+# SDK/zod) and run a copy of the gateway from there — ESM then resolves the
+# sibling node_modules. No duplicate install, no repo pollution.
+#
+# Usage (one process per agent):
+#   QMD_ALLOWED_COLLECTIONS=notes,research qmd-gateway
+#
+# For container access, front it with socat on its own port, e.g.:
+#   socat TCP-LISTEN:18182,fork,reuseaddr,bind=127.0.0.1 \
+#     EXEC:'env QMD_ALLOWED_COLLECTIONS=notes,research /abs/path/to/qmd-gateway'
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+GM="$(npm root -g 2>/dev/null || echo /opt/homebrew/lib/node_modules)"
+QM="$GM/@tobilu/qmd/node_modules"
+if [[ ! -d "$GM/@tobilu/qmd" ]]; then
+  echo "FATAL: @tobilu/qmd not found under $GM — is qmd installed globally?" >&2; exit 1
+fi
+
+RT="${ENCLAVE_QMD_GW_DIR:-$HOME/.cache/enclave/qmd-gw}"
+mkdir -p "$RT/node_modules/@modelcontextprotocol" "$RT/node_modules/@tobilu"
+ln -sfn "$GM/@tobilu/qmd"                        "$RT/node_modules/@tobilu/qmd"
+ln -sfn "$QM/@modelcontextprotocol/sdk"          "$RT/node_modules/@modelcontextprotocol/sdk"
+ln -sfn "$QM/zod"                                "$RT/node_modules/zod"
+# Copy (not symlink) the gateway so ESM realpath resolves the sibling node_modules.
+cp -f "$HERE/qmd_gateway.mjs" "$RT/qmd_gateway.mjs"
+
+# Use qmd's node (the unversioned brew formula = node 26). qmd's better-sqlite3 is
+# built for ABI 147 (node 26); brew /opt/homebrew/bin/node may be node@22 (ABI 127)
+# -> ERR_DLOPEN_FAILED. See tools/qmd/reembed.sh + [[qmd-node-abi-crash]].
+NODE_BIN="${ENCLAVE_NODE_BIN:-/opt/homebrew/opt/node/bin/node}"
+[[ -x "$NODE_BIN" ]] || NODE_BIN="node"
+exec "$NODE_BIN" "$RT/qmd_gateway.mjs"
