@@ -15,6 +15,18 @@ RUN pip3 install --no-cache-dir --break-system-packages pyyaml requests
 RUN npm i -g @anthropic-ai/claude-code@2.1.170
 ENV PATH=/usr/local/bin:$PATH
 
+# Security-first default: opt OUT of CLI telemetry for any tool that honors it (codegraph et al.).
+ENV DO_NOT_TRACK=1
+
+# Optional CODE-MEMORY accelerator (opt-in — OFF by default to keep the base image lean):
+#   docker compose build --build-arg INSTALL_CODEGRAPH=1 agent   (or set INSTALL_CODEGRAPH=1 in .env)
+# Pulls the linux bundle (its own node + tree-sitter grammars). Vetted: docs/VETTING.md
+# (@colbymchenry/codegraph@1.0.1 — no install scripts; telemetry is counts-only AND baked OFF above).
+# It's a STDIO MCP server (`codegraph serve --mcp`) the agent spawns, so it must live in THIS image
+# (not a network sidecar like qmd). See docs/CODE-MEMORY.md.
+ARG INSTALL_CODEGRAPH=0
+RUN if [ "$INSTALL_CODEGRAPH" = "1" ]; then npm i -g @colbymchenry/codegraph@1.0.1; fi
+
 # Bake ONLY the Enclave runtime (the layout the scripts assume: W=/workspace). No venture content.
 COPY platform/agentd/  /workspace/platform/agentd/
 COPY tools/            /workspace/tools/

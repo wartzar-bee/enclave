@@ -20,6 +20,21 @@ Baked into `Dockerfile.qmd` (PINNED to 2.5.3).
 Method: pulled the registry tarball, inspected the shipped `dist/*.js` + `package.json` directly
 (not just the README). Pin stays at 2.5.3; re-vet on bump.
 
+## `@colbymchenry/codegraph` — 1.0.1 — VERDICT: ACCEPTABLE w/ telemetry-OFF (2026-06-16)
+Opt-in code-memory accelerator (`Dockerfile.agent` `--build-arg INSTALL_CODEGRAPH=1`; see
+`docs/CODE-MEMORY.md`). The agent image bakes `DO_NOT_TRACK=1`.
+
+| Check | Result |
+|---|---|
+| Provenance / license | `colbymchenry/codegraph`, 33.6k★; npm single-maintainer; ships per-platform bundles (own node + tree-sitter wasm grammars) |
+| Install hooks | **None** (no pre/postinstall); shim pulls the platform bundle from npm optionalDeps / GitHub Releases |
+| **Telemetry** | **ON by default** upstream → `telemetry.getcodegraph.com/v1/events`, but **counts only** (machine UUID + per-day tool-call counts + *bucketed* file counts + install-target names) — **no source, no paths, no secrets**. Baked **OFF** here via `DO_NOT_TRACK=1` (also `codegraph telemetry off`). |
+| Egress (other) | GitHub Releases (bundle) + npm + an upgrade check. No analytics SaaS. |
+| Local artifact | `.codegraph/codegraph.db` stores symbol metadata (paths/signatures/docstrings, **not** full source). Keep gitignored over secret-bearing corpora. |
+
+Tested in-container: install → `codegraph init` indexes → `query`/`callers` resolve; telemetry
+reports disabled via `DO_NOT_TRACK`. Pin 1.0.1; re-vet on bump (esp. the downloaded bundle).
+
 ## `cognee` (#6 graph engine) — 1.1.2 — VERDICT: DO NOT BAKE IN (2026-06-16)
 Security pass ran; the adapter stub (`providers/cognee_provider.py`) stays, the engine stays out.
 

@@ -1,5 +1,6 @@
 {
   "mcpServers": {
-    "qmd": { "type": "http", "url": "http://host.docker.internal:18182/mcp" }
+    "qmd": { "type": "http", "url": "http://host.docker.internal:18182/mcp" },
+    "codegraph": { "type": "stdio", "command": "codegraph", "args": ["serve", "--mcp"] }
   }
 }

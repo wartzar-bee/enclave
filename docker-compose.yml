@@ -13,6 +13,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.agent
+      args:
+        INSTALL_CODEGRAPH: ${INSTALL_CODEGRAPH:-0}   # set 1 to bake the codegraph code-memory MCP (docs/CODE-MEMORY.md)
     image: ${ENCLAVE_AGENT_IMAGE:-enclave-agent:latest}   # set to a registry path to pull a prebuilt image
     container_name: ${AGENT_ID:-enclave-agent}
     cap_drop: [ALL]
