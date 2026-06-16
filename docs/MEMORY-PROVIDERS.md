@@ -46,5 +46,17 @@ Rules:
 2. Security-review it (provenance, code read, exfil surface — especially any cloud embedding/LLM egress).
 3. Register it in the agent's `.mcp.json` + the `memory:` config. The wiki stays the source of truth.
 
+## Shipped adapters
+- **qmd** — `platform/agentd/qmd_gateway.mjs` (host or `Dockerfile.qmd` container, `--profile qmd`).
+  Hybrid BM25 + vector + rerank, local. The reference contract implementation.
+- **cognee** (graph) — `platform/agentd/providers/cognee_provider.py`, an **adapter STUB, off by
+  default**. Implements the full contract (query/get/multi_get/ingest/lint/status) with the same
+  per-agent allowlist; `get`/`multi_get` already return the wiki markdown. The graph *engine* is
+  NOT installed — Cognee is a heavy tree with license/telemetry questions, so it is **gated on a
+  security pass** (pin + isolate + confirm telemetry) before wiring. `query` returns wiki keyword
+  hits as a floor plus a "graph not provisioned" notice until `COGNEE_ENABLED=1`. The interface
+  does not change when the engine is enabled — only the `query` backend does (that is the point of
+  the contract). Plug-point: `python3 cognee_provider.py --http <port>` → `.mcp.json`.
+
 See `MEMORY-MODES.md` for embedded-vs-shared deployment (where each provider physically runs) and
 `WIKI-LAYER.md` for the default store.

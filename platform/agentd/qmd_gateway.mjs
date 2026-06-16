@@ -309,8 +309,12 @@ if (httpPort) {
       nodeRes.end(JSON.stringify({ error: String(e?.message || e) }));
     }
   });
-  httpServer.listen(httpPort, "127.0.0.1", () => {
-    console.error(`qmd-scoped gateway (HTTP) on 127.0.0.1:${httpPort} — allowlist: [${ALLOWED.join(", ")}], db: ${dbPath}`);
+  // Bind host: 127.0.0.1 by default (safe for host/launchd use). In the qmd container
+  // set QMD_GW_HTTP_HOST=0.0.0.0 so the agent container can reach it over the compose
+  // network (the port is NOT published to the host there — only the in-network agent sees it).
+  const httpHost = process.env.QMD_GW_HTTP_HOST || "127.0.0.1";
+  httpServer.listen(httpPort, httpHost, () => {
+    console.error(`qmd-scoped gateway (HTTP) on ${httpHost}:${httpPort} — allowlist: [${ALLOWED.join(", ")}], db: ${dbPath}`);
   });
 } else {
   const transport = new StdioServerTransport();

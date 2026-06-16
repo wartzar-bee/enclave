@@ -1,0 +1,52 @@
+# Enclave qmd memory accelerator — the scoped hybrid-search gateway, containerized.
+#
+#   docker build -f Dockerfile.qmd -t enclave-qmd:latest .
+#   docker compose --profile qmd up -d         # opt-in; the wiki is the default memory
+#
+# Why a container (vs the host launchd qmd): teammates on Linux get qmd with NO host setup
+# and NO node-ABI dance. `@tobilu/qmd`'s native `better-sqlite3` is built HERE, against THIS
+# image's node, so the host node-26 ABI gotcha ([[qmd-node-abi-crash]]) cannot bite — it never
+# touches the host node. PINNED + vetted (see knowledge/security-external-tools.md; @tobilu/qmd
+# is MIT, 26k★, Tobias Lütke, no install hooks, only egress is HuggingFace model pulls).
+#
+# Memory model: qmd holds a DISPOSABLE, rebuildable index that points INTO the wiki (the wiki
+# stays the source of truth — see docs/MEMORY-PROVIDERS.md). Mount a corpus (ro) + an index
+# volume (rw); `qmd index && qmd embed` (re)builds it.
+FROM node:22-bookworm-slim
+
+# build-essential + python3 are needed to compile better-sqlite3 / sqlite-vec / node-llama-cpp
+# native addons against this image's node. git/ca-certificates for npm + HF model fetches.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 make g++ git ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the PINNED, vetted qmd into a self-contained dir so the gateway (an ESM file that
+# imports the bare specifiers @tobilu/qmd / @modelcontextprotocol/sdk / zod) resolves them as
+# siblings — no global-install ESM-resolution dance, no symlink farm.
+WORKDIR /opt/qmd-gw
+RUN npm init -y >/dev/null \
+    && npm install --no-audit --no-fund @tobilu/qmd@2.5.3 \
+    && npm cache clean --force
+
+# The gateway is the SAME file the host runs — one source of truth for the allowlist logic.
+COPY platform/agentd/qmd_gateway.mjs /opt/qmd-gw/qmd_gateway.mjs
+COPY tools/qmd/qmd-container-entrypoint.sh /usr/local/bin/qmd-entrypoint
+RUN chmod +x /usr/local/bin/qmd-entrypoint
+
+# Non-root. The index + model cache live on mounted volumes owned by this uid.
+RUN useradd -m -u 1001 -s /bin/bash qmd \
+    && mkdir -p /index /corpus /home/qmd/.cache \
+    && chown -R qmd:qmd /opt/qmd-gw /index /corpus /home/qmd
+USER qmd
+ENV HOME=/home/qmd \
+    XDG_CACHE_HOME=/home/qmd/.cache \
+    QMD_DB=/index/index.sqlite \
+    QMD_GW_HTTP_PORT=18182 \
+    QMD_GW_HTTP_HOST=0.0.0.0 \
+    QMD_FORCE_CPU=1
+
+EXPOSE 18182
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${QMD_GW_HTTP_PORT}/health" || exit 1
+
+ENTRYPOINT ["qmd-entrypoint"]

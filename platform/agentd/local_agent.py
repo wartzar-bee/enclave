@@ -382,8 +382,34 @@ def _queue_judgment(agent_dir, question, context, why):
             f"verifiable work you CAN do now; the judgment item waits for an online/operator pass.")
 
 
+def exec_rlm(agent_dir, inp):
+    """Reason over a HUGE input (giant log/file/blob) without context rot: chunk → map a
+    sub-query over each chunk on the cheap brain → recursively reduce. Own impl (rlm.py),
+    no external dep. Input: {"query": "...", "file": "...path..."} or {"query","text"}."""
+    query = (inp.get("query") or inp.get("question") or "").strip()
+    if not query:
+        return "rlm error: provide a 'query'."
+    text = inp.get("text")
+    if text is None:
+        fp = inp.get("file") or inp.get("file_path")
+        if not fp:
+            return "rlm error: provide 'file' (a path) or 'text'."
+        p = pathlib.Path(fp)
+        if not p.is_absolute():
+            p = pathlib.Path(agent_dir) / fp
+        try:
+            text = p.read_text(errors="replace")
+        except OSError as e:
+            return f"rlm error: cannot read {fp}: {e}"
+    try:
+        from rlm import run_rlm
+        return _truncate(run_rlm(query, text))
+    except Exception as e:
+        return f"rlm unavailable: {e}"
+
+
 EXECUTORS = {"bash": exec_bash, "read": exec_read, "write": exec_write, "edit": exec_edit,
-             "glob": exec_glob, "grep": exec_grep, "qmd": exec_qmd}
+             "glob": exec_glob, "grep": exec_grep, "qmd": exec_qmd, "rlm": exec_rlm}
 
 
 # ── the harness preamble that teaches the model the tool protocol ───────────────────────────
@@ -411,6 +437,8 @@ The remaining tools use a JSON ```tool block (their args are short — no quote-
 - glob      {"tool":"glob","input":{"pattern":"*.py","path"?:"."}}
 - grep      {"tool":"grep","input":{"pattern":"regex","path"?:".","glob"?:"*.py"}}
 - qmd       {"tool":"qmd","input":{"query":"..."}}        semantic recall over workspace + your memory
+- rlm       {"tool":"rlm","input":{"query":"...","file":"big.log"}}  reason over a HUGE file/blob
+            (chunks + map-reduces it on the cheap brain — use when one file is too big to read in full)
 - escalate  {"tool":"escalate","input":{"question":"...","context":"..."}}  HARD judgment → external model
 - finish    {"tool":"finish","input":{"summary":"what you did + evidence"}}
 

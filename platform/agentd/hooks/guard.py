@@ -132,15 +132,37 @@ def decide(tool_name, tool_input, publish_deny=None):
     return True, ""
 
 
+def _wasm_sandbox_observe(tool_name, tool_input):
+    """Roadmap #7 (flagged, OFF by default, NON-blocking): when ENCLAVE_WASM_SANDBOX=1, record what
+    WOULD route to a WASM sandbox so a deployment can measure it before any runtime is wired. The
+    WASM runtime itself is gated on a security pass — this never blocks/changes a call. See
+    docs/WASM-SANDBOX.md."""
+    if os.environ.get("ENCLAVE_WASM_SANDBOX", "0") != "1":
+        return
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from sandbox_policy import route
+        d = route(tool_name, tool_input)
+        if d["would_sandbox"]:
+            logp = os.path.join(os.environ.get("AGENT_DIR", "/agent"), "state", "sandbox-routing.log")
+            os.makedirs(os.path.dirname(logp), exist_ok=True)
+            with open(logp, "a") as f:
+                f.write(json.dumps({"tool": tool_name, **d}) + "\n")
+    except Exception:
+        pass   # observability must never wedge or block a call
+
+
 def main():
     try:
         data = json.load(sys.stdin)
     except Exception:
         sys.exit(0)   # fail-open: unparseable input must not wedge the agent
-    allow, reason = decide(data.get("tool_name", ""), data.get("tool_input", {}) or {})
+    tool_name, tool_input = data.get("tool_name", ""), data.get("tool_input", {}) or {}
+    allow, reason = decide(tool_name, tool_input)
     if not allow:
         sys.stderr.write(f"[agent-guard] BLOCKED: {reason}\n")
         sys.exit(2)
+    _wasm_sandbox_observe(tool_name, tool_input)
     sys.exit(0)
 
 

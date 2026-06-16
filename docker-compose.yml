@@ -58,6 +58,35 @@ services:
     depends_on:
       - agent
 
+  # Optional qmd memory accelerator (opt-in — the wiki is the default memory):
+  #   docker compose --profile qmd up -d --build qmd
+  # Build the index first (one-shot, rebuildable — it points INTO the wiki):
+  #   docker compose run --rm -e QMD_MODE=reembed qmd
+  # Then point the agent's home/.mcp.json at the in-network gateway:
+  #   { "mcpServers": { "qmd": { "type": "http", "url": "http://qmd:18182/mcp" } } }
+  # The gateway is fail-closed: QMD_ALLOWED_COLLECTIONS must be set (per-agent allowlist).
+  qmd:
+    build:
+      context: .
+      dockerfile: Dockerfile.qmd
+    image: ${ENCLAVE_QMD_IMAGE:-enclave-qmd:latest}
+    container_name: ${AGENT_ID:-enclave-agent}-qmd
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      - QMD_MODE=${QMD_MODE:-serve}
+      - QMD_ALLOWED_COLLECTIONS=${QMD_ALLOWED_COLLECTIONS:-knowledge}
+      - QMD_GW_HTTP_PORT=18182
+      - QMD_GW_HTTP_HOST=0.0.0.0
+      - QMD_DB=/index/index.sqlite
+      - QMD_CORPUS=/corpus
+      - QMD_FORCE_CPU=${QMD_FORCE_CPU:-1}     # GPU profile (Linux+NVIDIA) can set this to 0
+    volumes:
+      - ./home/knowledge:/corpus:ro           # the wiki = source of truth (read-only)
+      - qmd-index:/index                      # disposable, rebuildable vector index
+    profiles: [qmd]
+    restart: unless-stopped
+
   # Optional Telegram interface: docker compose --profile telegram up -d
   telegram-relay:
     build:
@@ -74,3 +103,6 @@ services:
     profiles: [telegram]
     depends_on:
       - agent
+
+volumes:
+  qmd-index:        # disposable qmd vector index (rebuildable from the wiki via QMD_MODE=reembed)
