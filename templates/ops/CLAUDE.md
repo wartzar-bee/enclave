@@ -30,6 +30,13 @@ Your memory is **ONE linked vault**: the curated wiki at `knowledge/` + your ope
   (spot orphaned memories) periodically.
 See `knowledge/WIKI.md` for the schema.
 
+## Code discipline (when you DO write code/scripts)
+Write the least code that works. Stop at the first rung that holds: does it need to exist? (no → skip,
+say so) → stdlib/native feature → already-installed dep (never add a new one for a few lines; a new dep
+needs a security pass) → one line → only then the minimum that works. Lazy ≠ careless — validation,
+security, data-loss, and the guardrails are never cut. Shortest working diff wins; no abstraction for one
+caller. Mark a deliberate shortcut with a `# minimal:` comment naming its ceiling + upgrade path.
+
 ## Access
 - `bash` (guard-protected: git, foreign secrets, and destructive/cloud-write ops are blocked)
 - `read`/`write`/`edit` within your home
