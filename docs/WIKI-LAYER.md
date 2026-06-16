@@ -54,6 +54,19 @@ neighborhood across both, `stats` surfaces orphaned memories to link. This makes
 as a graph (not just qmd-searchable), and keeps the "index points, the markdown stores, the accelerator
 is disposable" discipline across the *whole* memory, not just the wiki half.
 
+## Durability — secret-safe by design
+Memory survives a machine wipe because the vault is **its own git repo** (created by `enclave init`,
+independent of the product repo). But free-form agent memory CAN contain a token someone pasted into a
+lesson or that landed in `inbox.md`, and **git history is forever** — so durability is **scan-gated**:
+- `home/.gitignore` never tracks `secrets/` (the structured cred store), `state/`, `logs/`, `uploads/`.
+- **`enclave snapshot`** stages → **scans for credential patterns** → commits only if clean; a hit
+  **blocks the commit** (fail-closed) and names the file to redact. The agent can't `git` at all
+  (guard-blocked) — the runtime/operator snapshots.
+- A **pre-commit hook** in the vault repo blocks even a *manual* `git commit` containing a credential.
+
+So memory is saved by default *and* a leaked secret can never reach history. (For defense beyond
+pattern-matching, encrypt the vault at rest — git-crypt/age — so a scanner miss is still ciphertext.)
+
 ## How an agent uses it
 The agent's `CLAUDE.md` points it at `knowledge/` and the workflow. On a new source: `wiki.py new …`,
 write the page, link related pages, `wiki.py index`, `wiki.py log`. On a question: read `index.md`,
