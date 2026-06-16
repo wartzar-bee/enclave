@@ -190,6 +190,97 @@ def cmd_log(base, args):
     print("logged.")
 
 
+# ── graph over the wiki's [[wikilinks]] — the knowledge graph is ALREADY there ───────────────
+# The wiki's links ARE a graph (nodes=pages, edges=[[links]]); lint already parses them. This
+# exposes TRAVERSAL (backlinks / neighbors / k-hop / shortest-path / hubs) so the GRAPH axis of
+# the memory contract is served by our own stdlib code — no Cognee, no graph DB, no dep to vet.
+def build_graph(base):
+    """Return (out, inb, titles): adjacency of page-stem -> set(neighbor-stems), over EXISTING
+    pages only (broken links are ignored for traversal — `lint` reports them). Importable."""
+    pages = list(wiki_pages(base))
+    by_stem = {p.stem: p for p, _ in pages}
+    out = {s: set() for s in by_stem}
+    inb = {s: set() for s in by_stem}
+    titles = {}
+    for p, _ in pages:
+        text = p.read_text(errors="ignore")
+        fm, _b = split_frontmatter(text)
+        titles[p.stem] = (fm or {}).get("title") or p.stem
+        for tgt in WIKILINK.findall(text):
+            key = tgt if tgt in by_stem else slug(tgt)
+            if key in by_stem and key != p.stem:
+                out[p.stem].add(key)
+                inb[key].add(p.stem)
+    return out, inb, titles
+
+
+def _khop(out, inb, start, k):
+    """k-hop reachable set from start with hop distances (BFS, UNDIRECTED relatedness)."""
+    seen, frontier, d = {start: 0}, [start], 0
+    while frontier and d < k:
+        d += 1
+        nxt = []
+        for n in frontier:
+            for m in (out.get(n, set()) | inb.get(n, set())):
+                if m not in seen:
+                    seen[m] = d; nxt.append(m)
+        frontier = nxt
+    return seen
+
+
+def _shortest_path(out, inb, a, b):
+    """Shortest UNDIRECTED path a->b (links = knowledge relatedness). [] if disconnected."""
+    if a == b:
+        return [a]
+    prev, q = {a: None}, [a]
+    while q:
+        cur = q.pop(0)
+        for m in (out.get(cur, set()) | inb.get(cur, set())):
+            if m not in prev:
+                prev[m] = cur
+                if m == b:
+                    path = [b]
+                    while prev[path[-1]] is not None:
+                        path.append(prev[path[-1]])
+                    return list(reversed(path))
+                q.append(m)
+    return []
+
+
+def cmd_graph(base, args):
+    import json as _json
+    out, inb, titles = build_graph(base)
+    op, page = args.op, args.page
+    if op in ("backlinks", "neighbors", "khop", "path") and (not page or page not in out):
+        sys.exit(f"unknown page '{page}' — pass a page STEM (filename without .md); see `wiki.py index`")
+    if op == "backlinks":
+        res = {"page": page, "backlinks": sorted(inb[page])}
+    elif op == "neighbors":
+        ns = set()
+        if args.direction in ("out", "both"): ns |= out[page]
+        if args.direction in ("in", "both"): ns |= inb[page]
+        res = {"page": page, "direction": args.direction, "neighbors": sorted(ns)}
+    elif op == "khop":
+        seen = _khop(out, inb, page, args.k or 2)
+        res = {"page": page, "k": args.k or 2,
+               "subgraph": [{"page": s, "dist": d, "title": titles.get(s, s)}
+                            for s, d in sorted(seen.items(), key=lambda x: (x[1], x[0])) if s != page]}
+    elif op == "path":
+        if not args.to or args.to not in out:
+            sys.exit(f"unknown target page '{args.to}'")
+        res = {"from": page, "to": args.to, "path": _shortest_path(out, inb, page, args.to)}
+    elif op == "hubs":
+        ranked = sorted(out, key=lambda s: (len(inb[s]) + len(out[s]), s), reverse=True)
+        res = {"hubs": [{"page": s, "in": len(inb[s]), "out": len(out[s]), "title": titles.get(s, s)}
+                        for s in ranked[:(args.k or 15)]]}
+    else:  # stats
+        edges = sum(len(v) for v in out.values())
+        orphans = sorted(s for s in out if not out[s] and not inb[s])
+        res = {"pages": len(out), "edges": edges, "orphans": orphans,
+               "top_hubs": [s for s in sorted(out, key=lambda s: len(inb[s]) + len(out[s]), reverse=True)[:5]]}
+    print(_json.dumps(res, indent=2))
+
+
 SCHEMA_DOC = """# Knowledge Wiki — schema & workflow
 
 This is an LLM-maintained knowledge base (Karpathy-style). You write and curate it; `wiki.py`
@@ -235,11 +326,18 @@ def main():
     s = sub.add_parser("lint"); s.add_argument("dir", nargs="?", default="knowledge"); s.add_argument("--stale-days", type=int, default=90)
     s = sub.add_parser("new"); s.add_argument("dir", nargs="?", default="knowledge"); s.add_argument("--type", required=True); s.add_argument("--title", required=True); s.add_argument("--sources", nargs="*")
     s = sub.add_parser("log"); s.add_argument("dir", nargs="?", default="knowledge"); s.add_argument("message")
+    s = sub.add_parser("graph")
+    s.add_argument("op", choices=["backlinks", "neighbors", "khop", "path", "hubs", "stats"])
+    s.add_argument("page", nargs="?"); s.add_argument("to", nargs="?")
+    s.add_argument("--wiki", default="knowledge", help="wiki dir (default: knowledge)")
+    s.add_argument("--direction", choices=["out", "in", "both"], default="both")
+    s.add_argument("--k", type=int, default=None, help="khop depth (default 2) / hubs top-N (default 15)")
     args = ap.parse_args()
-    base = pathlib.Path(args.dir).resolve()
+    base = pathlib.Path(getattr(args, "dir", None) or getattr(args, "wiki", "knowledge")).resolve()
     if args.cmd != "init" and not base.exists():
         sys.exit(f"no wiki at {base} — run `wiki.py init {args.dir}` first")
-    {"init": cmd_init, "index": cmd_index, "lint": cmd_lint, "new": cmd_new, "log": cmd_log}[args.cmd](base, args)
+    {"init": cmd_init, "index": cmd_index, "lint": cmd_lint, "new": cmd_new,
+     "log": cmd_log, "graph": cmd_graph}[args.cmd](base, args)
 
 
 if __name__ == "__main__":
