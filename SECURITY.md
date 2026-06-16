@@ -23,6 +23,9 @@ It is **defense-in-depth**, not the only control: the scoped read-only mount is 
 ## Credential model
 Credentials never live in the image and (for cloud) never live in the container — the gcloud bridge keeps them host-side, isolated per agent by token. Prefer **view-only identities** (e.g. an impersonated read-only service account) so writes fail at IAM too, not just at the guard.
 
+### Cloud credentials are provisioned by DevOps, not self-service
+A teammate setting up Enclave does **not** mint their own cloud access. To use the cloud bridge they **request credentials from the DevOps team**, who provision a **scoped, read-only identity** (a least-privilege / impersonated service account) for that agent and hand back the bridge config. The local app credential (the model token via `enclave init`) is the teammate's to set; **cloud authority stays gated through DevOps.** This keeps a least-privilege boundary at the source — even a fully compromised agent only ever holds the read-only identity DevOps granted, and access can be revoked centrally.
+
 ## Known limitations (be honest)
 - A teammate who can edit the compose/guard config can widen access — this protects against a *compromised/injected agent*, not against a malicious operator with repo write access.
 - Semantic-search portability still depends on a host engine in shared mode (see README "Known gaps").

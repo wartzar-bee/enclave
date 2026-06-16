@@ -27,15 +27,19 @@ wiki), `secrets/` (your read-only credential), and `.env`. For `BRAIN=claude` th
 `ENCLAVE_AGENT_IMAGE`/`ENCLAVE_CHAT_IMAGE` in `.env` and run `./bin/enclave run --pull` (no 5-min build).
 
 ## The chat (claude.ai-style, `platform/agentd/web_chat.py`, pure stdlib)
+- **Real-time replies** — the chat runs on its own plane (`state/chat-inbox.jsonl` →
+  `chat_responder.py`, a tool-capable cheap-model turn) **concurrent with** the autonomous work tick,
+  so a long task never blocks a reply. The work plane (`inbox.md` + `enclave send` / Telegram) drives
+  scheduled/directive work separately. Tune with `CHAT_RESPONDER=off` / `CHAT_MODEL=...`.
 - **Image attachments** — paperclip / paste / drag-drop. Uploaded to `home/uploads/` (gitignored);
   the agent reads them by path with its Read tool (vision-capable brains see them).
 - **Voice input** — mic button dictates via the browser's Web Speech API into the composer.
 - **Speak replies** — per-message 🔊 and a header toggle for auto-read, via browser `speechSynthesis`.
 - **Live model switch** — the composer model picker writes `home/state/model.override`; `runtime.sh`
   honors it on the next tick (allowlisted ids only — never executed as shell). Models follow `BRAIN`.
-- _Privacy note:_ voice runs **in the browser** for zero-infra portability — in Chrome, dictation
-  audio is transcribed by the browser's cloud service. A fully-offline STT/TTS backend (the host
-  transcribe bridge / VibeVoice) is a planned opt-in for security-sensitive deployments.
+- _Voice privacy:_ voice runs **in the browser** by default (zero infra) — in Chrome, dictation audio
+  goes to the browser's cloud STT. For a fully-controlled path, set `TRANSCRIBE_URL`/`TTS_URL` to a
+  server-side STT/TTS service you run and the chat uses that instead (see `docs/VOICE-BACKEND.md`).
 
 ## Why it's safe (verifiable by reading code, not trusting us)
 - **Container isolation** — `--cap-drop=ALL --security-opt=no-new-privileges`; no inbound ports on the agent.

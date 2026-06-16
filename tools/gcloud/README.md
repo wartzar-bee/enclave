@@ -1,8 +1,14 @@
 # gcloud bridge — Google Cloud SDK from the container
 
-Gives the disposable Docker container access to the Mac host's authenticated
-Google Cloud SDK (`gcloud` / `gsutil` / `bq`) over a token-gated HTTP bridge —
-same pattern as the qmd / transcribe / voice / browser bridges.
+Gives the disposable Docker container access to a host-authenticated Google Cloud
+SDK (`gcloud` / `gsutil` / `bq`) over a token-gated HTTP bridge — same pattern as
+the qmd / transcribe / voice / browser bridges.
+
+> **Getting cloud access (teammates):** cloud credentials are **not self-service**.
+> Request access from the **DevOps team**, who provision a **scoped, read-only identity**
+> (least-privilege / impersonated service account) for your agent and hand back the bridge
+> config. Don't reuse a personal full-access login — the whole point is a read-only boundary
+> at the source. See `SECURITY.md` → "Cloud credentials are provisioned by DevOps".
 
 - **Account:** `<your-google-account>` (the host's gcloud login)
 - **Port:** `host.docker.internal:18187` (sibling to qmd 18181, slot3d 18183,

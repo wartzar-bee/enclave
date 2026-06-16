@@ -23,7 +23,7 @@ Env:
   WEB_CHAT_TOKEN   if set, require ?token=... (or X-Chat-Token header)
   AGENT_NAME       display name in the UI (default "Agent")
 """
-import os, sys, json, time, re, base64, pathlib, threading, mimetypes
+import os, sys, json, time, re, base64, pathlib, threading, mimetypes, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -32,7 +32,15 @@ PORT = int(os.environ.get("WEB_CHAT_PORT", "8888"))
 TOKEN = os.environ.get("WEB_CHAT_TOKEN", "")
 AGENT_NAME = os.environ.get("AGENT_NAME", "Agent")
 
-INBOX = AGENT_DIR / "inbox.md"
+# Optional server-side voice (privacy opt-in): point these at a compatible service and the UI uses it
+# instead of the browser's Web Speech API. Contracts (see docs):
+#   TRANSCRIBE_URL: POST {"audio_base64","mime"} -> {"text"}
+#   TTS_URL:        POST {"text","voice"}        -> audio bytes (Content-Type audio/*)
+TRANSCRIBE_URL = os.environ.get("TRANSCRIBE_URL", "").strip()
+TTS_URL = os.environ.get("TTS_URL", "").strip()
+TTS_VOICE = os.environ.get("TTS_VOICE", "").strip()
+
+CHAT_INBOX = AGENT_DIR / "state" / "chat-inbox.jsonl"   # the real-time chat plane (chat_responder reads it)
 REPLY_FILE = AGENT_DIR / "state" / "chat-reply.md"
 HISTORY = AGENT_DIR / "state" / "chat-history.jsonl"
 UPLOADS = AGENT_DIR / "uploads"
@@ -87,16 +95,11 @@ def _read_history():
 
 
 def deliver_to_agent(text, images=None):
-    ts = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime())
-    entry = [f"\n\n---\n**[Web chat at {ts}]**\n\n{text}\n"]
-    if images:
-        entry.append("\nAttached image(s) the user shared — read them with the Read tool:\n")
-        for p in images:
-            entry.append(f"- `{p}`\n")
-    entry.append("\n*Reply by writing your response to `state/chat-reply.md`.*\n")
-    INBOX.parent.mkdir(parents=True, exist_ok=True)
-    with INBOX.open("a") as f:
-        f.write("".join(entry))
+    # Write to the real-time chat plane (chat_responder answers it concurrently with the work tick).
+    rec = {"ts": time.time(), "text": text, "images": images or []}
+    CHAT_INBOX.parent.mkdir(parents=True, exist_ok=True)
+    with CHAT_INBOX.open("a") as f:
+        f.write(json.dumps(rec) + "\n")
     _append_history("user", text, images)
 
 
@@ -148,7 +151,8 @@ def agent_config():
         models.insert(0, {"id": model, "label": model})
     if not model and models:
         model = models[0]["id"]
-    return {"agent": AGENT_NAME, "brain": brain, "model": model, "models": models}
+    return {"agent": AGENT_NAME, "brain": brain, "model": model, "models": models,
+            "stt_backend": bool(TRANSCRIBE_URL), "tts_backend": bool(TTS_URL)}
 
 
 def set_model(model):
@@ -185,6 +189,20 @@ def save_upload(name, data_url):
     UPLOADS.mkdir(parents=True, exist_ok=True)
     (UPLOADS / fname).write_bytes(raw)
     return f"uploads/{fname}", None
+
+
+# ── optional server-side voice (proxy to a configured service) ────────────────
+def proxy_transcribe(audio_b64, mime):
+    body = json.dumps({"audio_base64": audio_b64, "mime": mime}).encode()
+    req = urllib.request.Request(TRANSCRIBE_URL, data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.load(r)
+
+def proxy_tts(text, voice):
+    body = json.dumps({"text": text, "voice": voice or TTS_VOICE}).encode()
+    req = urllib.request.Request(TTS_URL, data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return r.read(), (r.headers.get("Content-Type") or "audio/mpeg")
 
 
 SPARK = ('<svg class="spark" viewBox="0 0 100 100" aria-hidden="true">'
@@ -505,30 +523,64 @@ async function chooseModel(id){
 modelpill.onclick=e=>{ e.stopPropagation(); menu.classList.toggle("open"); };
 document.addEventListener("click",()=>menu.classList.remove("open"));
 
-/* ---- voice: speak (TTS) ---- */
-function speak(text){
+/* ---- voice: speak (TTS) — server backend if configured, else browser ---- */
+let ttsAudio=null;
+async function speak(text){
+  if(cfg.tts_backend){
+    try{
+      if(ttsAudio){ ttsAudio.pause(); ttsAudio=null; }
+      const r=await api("/api/tts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
+      if(!r.ok) throw 0;
+      ttsAudio=new Audio(URL.createObjectURL(await r.blob())); ttsAudio.play(); return;
+    }catch(e){}
+  }
   if(!("speechSynthesis" in window)) return;
   speechSynthesis.cancel();
   const u=new SpeechSynthesisUtterance(text.replace(/```[\\s\\S]*?```/g," code block ").replace(/[*`#>]/g,""));
   u.rate=1.02; speechSynthesis.speak(u);
 }
-speakBtn.onclick=()=>{ autoSpeak=!autoSpeak; speakBtn.classList.toggle("on",autoSpeak);
-  if(!autoSpeak&&"speechSynthesis" in window) speechSynthesis.cancel(); };
-if(!("speechSynthesis" in window)) speakBtn.style.display="none";
+function stopSpeak(){ if(ttsAudio){ ttsAudio.pause(); ttsAudio=null; } if("speechSynthesis" in window) speechSynthesis.cancel(); }
+speakBtn.onclick=()=>{ autoSpeak=!autoSpeak; speakBtn.classList.toggle("on",autoSpeak); if(!autoSpeak) stopSpeak(); };
 
-/* ---- voice: dictate (STT) ---- */
+/* ---- voice: dictate (STT) — server MediaRecorder backend if configured, else browser SpeechRecognition ---- */
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-let rec=null, recOn=false;
+let rec=null, recOn=false, mediaRec=null, chunks=[], srBase="";
 if(SR){
   rec=new SR(); rec.continuous=true; rec.interimResults=true; rec.lang=navigator.language||"en-US";
-  let base="";
   rec.onresult=e=>{ let s=""; for(let i=e.resultIndex;i<e.results.length;i++) s+=e.results[i][0].transcript;
-    inp.value=(base+s).trimStart(); inp.dispatchEvent(new Event("input")); };
-  rec.onend=()=>{ recOn=false; micBtn.classList.remove("rec"); base=inp.value?inp.value+" ":""; };
-  micBtn.onclick=()=>{ if(recOn){ rec.stop(); } else { base=inp.value?inp.value+" ":""; try{rec.start(); recOn=true; micBtn.classList.add("rec");}catch(e){} } };
-} else { micBtn.style.display="none"; }
+    inp.value=(srBase+s).trimStart(); inp.dispatchEvent(new Event("input")); };
+  rec.onend=()=>{ recOn=false; micBtn.classList.remove("rec"); srBase=inp.value?inp.value+" ":""; };
+}
+async function startBackendRec(){
+  const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+  mediaRec=new MediaRecorder(stream); chunks=[];
+  mediaRec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+  mediaRec.onstop=async ()=>{
+    stream.getTracks().forEach(t=>t.stop()); recOn=false; micBtn.classList.remove("rec");
+    const blob=new Blob(chunks,{type:(mediaRec.mimeType||"audio/webm")});
+    const dataURL=await new Promise(res=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.readAsDataURL(blob); });
+    try{
+      const r=await api("/api/transcribe",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({audio_base64:dataURL.split(",")[1], mime:blob.type})});
+      const j=await r.json();
+      if(j.text){ inp.value=(inp.value?inp.value+" ":"")+j.text; inp.dispatchEvent(new Event("input")); }
+    }catch(e){}
+  };
+  mediaRec.start(); recOn=true; micBtn.classList.add("rec");
+}
+micBtn.onclick=async ()=>{
+  if(cfg.stt_backend){
+    if(recOn && mediaRec){ mediaRec.stop(); } else { try{ await startBackendRec(); }catch(e){} }
+  } else if(SR){
+    if(recOn){ rec.stop(); } else { srBase=inp.value?inp.value+" ":""; try{ rec.start(); recOn=true; micBtn.classList.add("rec"); }catch(e){} }
+  }
+};
+function syncVoiceUI(){
+  micBtn.style.display=(cfg.stt_backend||SR)?"":"none";
+  speakBtn.style.display=(cfg.tts_backend||("speechSynthesis" in window))?"":"none";
+}
 
-loadConfig(); loadHistory(); inp.focus();
+loadConfig().then(syncVoiceUI); loadHistory(); inp.focus();
 </script>
 </body>
 </html>""").replace("__SPARK__", SPARK)
@@ -642,6 +694,41 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": err}, 400)
             else:
                 self._json({"ok": True, "path": path_rel})
+            return
+        if path == "/api/transcribe":
+            if not TRANSCRIBE_URL:
+                self._json({"error": "no stt backend"}, 503); return
+            try:
+                data = json.loads(self._read_body() or b"{}")
+            except Exception:
+                self._json({"error": "bad json"}, 400); return
+            audio = data.get("audio_base64") or ""
+            if not audio:
+                self._json({"error": "empty"}, 400); return
+            try:
+                self._json(proxy_transcribe(audio, data.get("mime") or "audio/webm"))
+            except Exception as e:
+                self._json({"error": f"stt failed: {e}"}, 502)
+            return
+        if path == "/api/tts":
+            if not TTS_URL:
+                self._json({"error": "no tts backend"}, 503); return
+            try:
+                data = json.loads(self._read_body(2_000_000) or b"{}")
+            except Exception:
+                self._json({"error": "bad json"}, 400); return
+            text = (data.get("text") or "").strip()
+            if not text:
+                self._json({"error": "empty"}, 400); return
+            try:
+                audio, ctype = proxy_tts(text[:4000], data.get("voice"))
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(audio)))
+                self.end_headers()
+                self.wfile.write(audio)
+            except Exception as e:
+                self._json({"error": f"tts failed: {e}"}, 502)
             return
         self._json({"error": "not found"}, 404)
 

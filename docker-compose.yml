@@ -48,6 +48,10 @@ services:
       - AGENT_NAME=${AGENT_ID:-Agent}
       - WEB_CHAT_PORT=8888
       - WEB_CHAT_TOKEN=${WEB_CHAT_TOKEN:-}
+      - TRANSCRIBE_URL=${TRANSCRIBE_URL:-}     # optional server-side STT (else browser Web Speech)
+      - TTS_URL=${TTS_URL:-}                   # optional server-side TTS (else browser speechSynthesis)
+      - TTS_VOICE=${TTS_VOICE:-}
+    extra_hosts: ["host.docker.internal:host-gateway"]   # reach host voice services on Linux too
     ports:
       - "${WEB_CHAT_BIND:-127.0.0.1:8888}:8888"
     restart: unless-stopped
