@@ -23,6 +23,8 @@ makes ./home its own scan-gated git vault so memory survives a machine wipe.
 Flags for non-interactive init (CI / scripted):
   --name N --brain claude|api|local --model M --template T
   --cred TOKEN     the model credential (Claude OAuth / API key) — what the wizard prompts for
+  --codegraph PATH code memory over a repo folder (an HTTP bridge `run` starts; twin of qmd)
+  --qmd URL        a knowledge-search qmd MCP gateway URL (blank = none)
   --bind 127.0.0.1:8888  --port 8888  --token TOK (optional web-UI ?token= gate)  --yes  --force
 Flags for run:
   --no-open   don't auto-open the browser
@@ -33,6 +35,7 @@ import sys, os, re, json, time, pathlib, subprocess, shutil, getpass, urllib.req
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent  # bin/ -> repo root
+CODEGRAPH_PORT = "18183"  # host port for the codegraph HTTP bridge (twin of qmd's :18182)
 
 # Brain presets: default model + the secret file/key the runtime reads from ./secrets/.
 BRAINS = {
@@ -164,6 +167,18 @@ def cmd_init(args):
     port = _flag(args, "--port") or (bind.split(":")[-1] if ":" in bind else "8888")
     token = _flag(args, "--token", "")  # web UI ?token= gate (optional)
 
+    # memory accelerators (opt-in) — ASK at install so .mcp.json reflects reality (no dead entries).
+    #   codegraph = code memory over a repo folder, served as an HTTP bridge (twin of qmd).
+    #   qmd       = a knowledge-search MCP gateway URL you already run (blank = none).
+    cg_corpus = _flag(args, "--codegraph")
+    if cg_corpus is None:
+        cg_corpus = _ask("Code memory — absolute path to a repo folder for codegraph (blank = none)", default="", yes=yes)
+    qmd_url = _flag(args, "--qmd")
+    if qmd_url is None:
+        qmd_url = _ask("Knowledge search — qmd MCP gateway URL (blank = none)", default="", yes=yes)
+    cg_corpus = (cg_corpus or "").strip()
+    qmd_url = (qmd_url or "").strip()
+
     # credential (paste now or later)
     cred = ""
     if bspec["secret_key"]:
@@ -188,13 +203,20 @@ def cmd_init(args):
         # preserve runtime state if any; only replace the definition files
         pass
     home.mkdir(parents=True, exist_ok=True)
-    for rel in ["CLAUDE.md", "tick.txt", ".mcp.json"]:
+    for rel in ["CLAUDE.md", "tick.txt"]:    # .mcp.json is GENERATED below from the memory answers
         src = tdir / rel
         if src.exists():
             _write(home / rel, src.read_text().replace("{AGENT_NAME}", name))
     csrc = tdir / ".claude"
     if csrc.exists():
         shutil.copytree(csrc, home / ".claude", dirs_exist_ok=True)
+    # 1b) GENERATE .mcp.json from the memory choices — only enabled servers, never a dead entry.
+    mcp_servers = {}
+    if qmd_url:
+        mcp_servers["qmd"] = {"type": "http", "url": qmd_url}
+    if cg_corpus:
+        mcp_servers["codegraph"] = {"type": "http", "url": f"http://host.docker.internal:{CODEGRAPH_PORT}/mcp"}
+    _write(home / ".mcp.json", json.dumps({"mcpServers": mcp_servers}, indent=2) + "\n")
 
     # 2) agent.env (runtime defaults; NO inline comments after values — loader keeps everything after '=')
     lines = [
@@ -261,6 +283,8 @@ def cmd_init(args):
         f"WEB_CHAT_BIND={bind}",
         f"WEB_CHAT_TOKEN={token}",
     ]
+    if cg_corpus:
+        env_lines.append(f"CODE_CORPUS={cg_corpus}")   # `enclave run` brings up the codegraph bridge over this
     _write(envf, "\n".join(env_lines) + "\n")
 
     # 7) make the vault durable BY DEFAULT — its own scan-gated git repo (secrets/ excluded, a
@@ -271,6 +295,8 @@ def cmd_init(args):
     if vault == "created":
         print(f"  vault    → home/ is a git repo (memory saved on `enclave snapshot`; secrets/ excluded + scan-gated)")
     print(f"  home/    → mounts to /agent (CLAUDE.md, agent.env, work.json, knowledge/ wiki)")
+    mem = ["wiki (always-on)"] + (["qmd"] if qmd_url else []) + (["codegraph→" + cg_corpus] if cg_corpus else [])
+    print(f"  memory   → {', '.join(mem)}" + ("  ·  codegraph bridge starts on `enclave run`" if cg_corpus else ""))
     needs_cred = bool(bspec["secret_key"])
     cred_present = bool(cred)
     if needs_cred and not cred_present:  # maybe it's already in the file from a prior setup
@@ -327,6 +353,29 @@ def _wait_reachable(url, timeout=40):
             time.sleep(1)
     return False
 
+def _ensure_codegraph_bridge():
+    """If CODE_CORPUS is set in .env, bring up the codegraph HTTP bridge over it (idempotent) so the
+    agent's .mcp.json codegraph entry resolves — the twin of the qmd gateway, started with the stack."""
+    corpus = os.path.expanduser(_read_env("CODE_CORPUS", "") or "")
+    if not corpus:
+        return
+    if not os.path.isdir(corpus):
+        print(f"  ⚠ CODE_CORPUS={corpus} not found — codegraph bridge not started."); return
+    name = (_read_env("AGENT_ID", "enclave-agent") or "enclave-agent") + "-codegraph"
+    img = "enclave-codegraph:latest"
+    if subprocess.run(["docker", "image", "inspect", img], capture_output=True).returncode != 0:
+        print("  building codegraph image…")
+        subprocess.run(["docker", "build", "-f", "Dockerfile.codegraph", "-t", img, "."], cwd=REPO)
+    if not os.path.isdir(os.path.join(corpus, ".codegraph")):
+        print(f"  indexing {corpus} for codegraph (first run — a few minutes)…")
+        subprocess.run(["docker", "run", "--rm", "-e", "CODEGRAPH_MODE=reembed", "-v", f"{corpus}:/corpus", img])
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+    r = subprocess.run(["docker", "run", "-d", "--name", name, "--restart", "unless-stopped",
+                        "-v", f"{corpus}:/corpus", "-p", f"127.0.0.1:{CODEGRAPH_PORT}:18184", img],
+                       capture_output=True, text=True)
+    print(f"  codegraph bridge up → host.docker.internal:{CODEGRAPH_PORT} (corpus: {corpus})" if r.returncode == 0
+          else f"  ⚠ codegraph bridge failed: {r.stderr.strip()[:160]}")
+
 def cmd_run(args):
     if not (REPO / "docker-compose.yml").exists():
         sys.exit("No docker-compose.yml in the repo — is this an Enclave checkout?")
@@ -347,6 +396,8 @@ def cmd_run(args):
     r = subprocess.run(cmd, cwd=REPO)
     if r.returncode != 0:
         sys.exit(r.returncode)
+
+    _ensure_codegraph_bridge()   # opt-in code memory (CODE_CORPUS in .env) — twin of the qmd gateway
 
     bind = _read_env("WEB_CHAT_BIND", "127.0.0.1:8888")
     host, _, port = bind.partition(":")
