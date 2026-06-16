@@ -13,3 +13,10 @@ An agent home contains:
 
 Templates here:
 - `ops/` — a generic operations agent: answers questions from its knowledge + read-only live queries.
+- `support/` — a customer/user support agent: answers from a knowledge base and drafts replies for
+  human approval; never sends, refunds, or mutates anything.
+- `analyst/` — a research/data analyst: investigates a question, synthesizes an evidence-based brief
+  with citations, and may run read-only cloud/data queries (ships `GUARD_CLOUD_READONLY=1`).
+
+A template's `agent.env` may declare extra runtime knobs (e.g. the read-only cloud profile);
+`enclave init` merges those on top of the core config it generates.

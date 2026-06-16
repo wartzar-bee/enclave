@@ -10,6 +10,7 @@ Commands:
   enclave status                   Show agent health and recent activity
   enclave stop                     Stop the agent containers
   enclave chat                     Interactive terminal chat (reads the reply file)
+  enclave publish --registry R     Maintainer: build + push images to a registry (teammates `run --pull`)
 
 The wizard + run/stop/etc. all operate on the Enclave repo this script lives in
 (the clone IS the deployment, like a configured ps-ops checkout). `init` populates
@@ -19,7 +20,9 @@ Flags for non-interactive init (CI / scripted):
   --name N --brain claude|api|local --model M --template T
   --port 8888 --token TOK --bind 127.0.0.1:8888 --yes --force
 Flags for run:
-  --no-open   don't auto-open the browser     --no-build  skip the image build
+  --no-open   don't auto-open the browser
+  --no-build  skip the image build (use existing local images)
+  --pull      pull prebuilt images from the registry instead of building (see ENCLAVE_*_IMAGE in .env)
 """
 import sys, os, json, time, pathlib, subprocess, shutil, getpass, urllib.request
 
@@ -121,6 +124,16 @@ def cmd_init(args):
     cred = ""
     if bspec["secret_key"]:
         cred = _flag(args, "--cred") or _ask_secret(bspec["cred_prompt"], yes=yes)
+        # Guided token for the Claude brain: a teammate may not have a token yet — offer to mint one.
+        if not cred and not yes and _interactive() and brain == "claude":
+            if shutil.which("claude"):
+                if _ask("No token entered. Run `claude setup-token` now to generate one?",
+                        default="y", choices=["y", "n"], yes=yes) == "y":
+                    print("  Launching `claude setup-token` — complete the browser login; it prints a token.\n")
+                    subprocess.run(["claude", "setup-token"])
+                    cred = _ask_secret("Paste the token it just printed")
+            else:
+                print("  (the `claude` CLI isn't on PATH — install it, run `claude setup-token`, then paste the token)")
 
     tdir = REPO / "templates" / tpl
     if not tdir.exists():
@@ -152,6 +165,15 @@ def cmd_init(args):
         if brain == "local":
             lines.append("BRAIN_API_BASE=http://host.docker.internal:11434/v1")
     lines += ["RUNTIME_MODE=daemon", "INTERVAL_SECONDS=86400", "PERMISSION=dangerous", "TOOLS_ROOT=/workspace"]
+    # Carry any extra knobs the template ships in its agent.env (e.g. GUARD_CLOUD_READONLY=1 for analyst)
+    # that the wizard didn't already set — so a template can declare its own profile.
+    already = {ln.split("=", 1)[0] for ln in lines if "=" in ln}
+    tenv = tdir / "agent.env"
+    if tenv.exists():
+        for ln in tenv.read_text().splitlines():
+            ln = ln.strip()
+            if ln and not ln.startswith("#") and "=" in ln and ln.split("=", 1)[0] not in already:
+                lines.append(ln)
     _write(home / "agent.env", "\n".join(lines) + "\n")
 
     # 3) runtime I/O files
@@ -258,12 +280,19 @@ def _wait_reachable(url, timeout=40):
 def cmd_run(args):
     if not (REPO / "docker-compose.yml").exists():
         sys.exit("No docker-compose.yml in the repo — is this an Enclave checkout?")
-    if not (REPO / "home").exists() or not any((REPO / "home").iterdir()):
-        sys.exit("./home is empty — run 'enclave init' first.")
+    home = REPO / "home"
+    if not home.exists() or not any(p.name != ".gitkeep" for p in home.iterdir()):
+        sys.exit("./home is not configured — run 'enclave init' first.")
 
-    cmd = ["docker", "compose", "up", "-d"]
-    if not _has(args, "--no-build"):
-        cmd.append("--build")
+    # --pull: fetch prebuilt images from the registry (set ENCLAVE_AGENT_IMAGE/ENCLAVE_CHAT_IMAGE in .env)
+    # instead of a local build. Otherwise build locally unless --no-build.
+    if _has(args, "--pull"):
+        print("Pulling prebuilt images…")
+        subprocess.run(["docker", "compose", "pull"], cwd=REPO)
+        build = False
+    else:
+        build = not _has(args, "--no-build")
+    cmd = ["docker", "compose", "up", "-d"] + (["--build"] if build else [])
     print("Starting Enclave (docker compose up)…")
     r = subprocess.run(cmd, cwd=REPO)
     if r.returncode != 0:
@@ -292,6 +321,28 @@ def cmd_run(args):
 
 def cmd_stop(args):
     subprocess.run(["docker", "compose", "down"], cwd=REPO)
+
+def cmd_publish(args):
+    """Maintainer: build + push the agent/chat images to a registry so teammates can `run --pull`."""
+    reg = _flag(args, "--registry") or _read_env("ENCLAVE_REGISTRY") or os.environ.get("ENCLAVE_REGISTRY")
+    if not reg:
+        sys.exit("Set a registry: enclave publish --registry ghcr.io/<owner>   "
+                 "(login first: docker login ghcr.io)")
+    tag = _flag(args, "--tag", "latest")
+    targets = [("Dockerfile.agent", f"{reg}/enclave-agent:{tag}"),
+               ("Dockerfile.chat", f"{reg}/enclave-chat:{tag}")]
+    for dockerfile, ref in targets:
+        print(f"\n=== build + push {ref} ===")
+        if subprocess.run(["docker", "build", "-f", dockerfile, "-t", ref, "."], cwd=REPO).returncode != 0:
+            sys.exit(f"build failed for {ref}")
+        if subprocess.run(["docker", "push", ref], cwd=REPO).returncode != 0:
+            sys.exit(f"push failed for {ref} — is `docker login {reg.split('/')[0]}` done?")
+    print("\nPublished:")
+    for _, ref in targets:
+        print(f"  {ref}")
+    print("\nTeammates: set these in .env, then `enclave run --pull`:")
+    print(f"  ENCLAVE_AGENT_IMAGE={targets[0][1]}")
+    print(f"  ENCLAVE_CHAT_IMAGE={targets[1][1]}")
 
 def cmd_logs(args):
     log = REPO / "home" / "logs" / "runner.log"
@@ -374,7 +425,7 @@ def cmd_chat(args):
 
 COMMANDS = {
     "init": cmd_init, "run": cmd_run, "stop": cmd_stop, "logs": cmd_logs,
-    "send": cmd_send, "status": cmd_status, "chat": cmd_chat,
+    "send": cmd_send, "status": cmd_status, "chat": cmd_chat, "publish": cmd_publish,
 }
 
 def main():

@@ -14,12 +14,17 @@ git clone <repo-url> enclave && cd enclave
 ./bin/enclave run                    # build + start, then opens the chat in your browser
 ```
 `init` populates `home/` (the agent's mounted `/agent`: mission, runtime config, work queue, knowledge
-wiki), `secrets/` (your read-only credential), and `.env`. `run` brings up the stack and auto-opens
+wiki), `secrets/` (your read-only credential), and `.env`. For `BRAIN=claude` the wizard can run
+`claude setup-token` for you to mint a token. `run` brings up the stack and auto-opens
 `http://127.0.0.1:8888/`. Non-interactive (CI):
 ```bash
 ./bin/enclave init --yes --name my-agent --brain claude --model claude-sonnet-4-6 --cred "$TOKEN"
 ./bin/enclave run --no-open
 ```
+
+**No local build (prebuilt images):** a maintainer publishes once —
+`./bin/enclave publish --registry ghcr.io/<owner>` (after `docker login ghcr.io`) — then teammates set
+`ENCLAVE_AGENT_IMAGE`/`ENCLAVE_CHAT_IMAGE` in `.env` and run `./bin/enclave run --pull` (no 5-min build).
 
 ## The chat (claude.ai-style, `platform/agentd/web_chat.py`, pure stdlib)
 - **Image attachments** — paperclip / paste / drag-drop. Uploaded to `home/uploads/` (gitignored);

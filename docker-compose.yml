@@ -13,7 +13,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.agent
-    image: enclave-agent:latest
+    image: ${ENCLAVE_AGENT_IMAGE:-enclave-agent:latest}   # set to a registry path to pull a prebuilt image
     container_name: ${AGENT_ID:-enclave-agent}
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -39,7 +39,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.chat
-    image: enclave-chat:latest
+    image: ${ENCLAVE_CHAT_IMAGE:-enclave-chat:latest}    # set to a registry path to pull a prebuilt image
     container_name: ${AGENT_ID:-enclave-agent}-chat
     volumes:
       - ./home:/agent                        # shares inbox.md + state/chat-reply.md with the agent

@@ -35,6 +35,17 @@ SECRET_DENY = (".ssh/", "id_rsa", "id_ed25519", ".aws/credentials", "/.netrc",
                ".secrets/anthropic", ".secrets/google.env")
 GIT_RE = re.compile(r"(?:^|[;&|]\s*|\s)git(?:\s|$)")
 
+# Loader / interpreter hijack via env injection — block a Bash command that SETS a dynamic-loader
+# or interpreter preload/startup var. These smuggle attacker code into the NEXT process (a shared
+# lib via LD_PRELOAD/DYLD_*, a JS flag via NODE_OPTIONS, a startup file via BASH_ENV/PYTHONSTARTUP),
+# so they would defeat the guard's intent even under --dangerously-skip-permissions. Always on.
+LOADER_HIJACK_RE = re.compile(
+    r"(?:^|[;&|`(]|\$\(|\bexport\s+|\benv\s+)\s*"
+    r"(LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|"
+    r"DYLD_FRAMEWORK_PATH|DYLD_FORCE_FLAT_NAMESPACE|NODE_OPTIONS|BASH_ENV|"
+    r"GIT_SSH_COMMAND|PERL5LIB|PYTHONSTARTUP)\s*=",
+    re.I)
+
 # --- Read-only cloud policy (opt-in per agent via env GUARD_CLOUD_READONLY=1) -----------------
 # For ops/analyst agents doing read-heavy cloud work: the dangerous surface (deploy / IAM / prod
 # mutations) is blocked STRUCTURALLY here, atop scoped READ-ONLY creds (the primary control).
@@ -94,6 +105,12 @@ def decide(tool_name, tool_input, publish_deny=None):
     # 1) git is disabled for agents — their writes persist on their own; the master owns commits
     if tool_name == "Bash" and GIT_RE.search(cmd):
         return False, "git is disabled for agents (your writes persist on their own; the master owns the repo/commits)"
+
+    # 1b) loader / interpreter hijack via env injection (always on — defeats the guard otherwise)
+    if tool_name == "Bash" and LOADER_HIJACK_RE.search(cmd):
+        return False, ("setting a dynamic-loader / interpreter env var (LD_PRELOAD / DYLD_* / "
+                       "NODE_OPTIONS / BASH_ENV / GIT_SSH_COMMAND / …) is blocked — it smuggles code "
+                       "into the next process and would bypass this guard")
 
     # 2) foreign credential / key-store access (defense-in-depth atop the scoped mount)
     for pat in SECRET_DENY:

@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash|Read|Edit|Write|NotebookEdit",
+        "hooks": [ { "type": "command", "command": "python3 /workspace/platform/agentd/hooks/guard.py" } ] }
+    ]
+  }
+}
