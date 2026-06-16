@@ -52,9 +52,12 @@ Rules:
 - **cognee** (graph) — `platform/agentd/providers/cognee_provider.py`, an **adapter STUB, off by
   default**. Implements the full contract (query/get/multi_get/ingest/lint/status) with the same
   per-agent allowlist; `get`/`multi_get` already return the wiki markdown. The graph *engine* is
-  NOT installed — Cognee is a heavy tree with license/telemetry questions, so it is **gated on a
-  security pass** (pin + isolate + confirm telemetry) before wiring. `query` returns wiki keyword
-  hits as a floor plus a "graph not provisioned" notice until `COGNEE_ENABLED=1`. The interface
+  NOT installed. **Security pass ran (2026-06-16, see `docs/VETTING.md`) → verdict: DO NOT bake in
+  Cognee** — Apache-2.0 (fine) but 42 core / 127 total deps (a web server + its own vector DB),
+  default cloud LLM egress, and **telemetry ON BY DEFAULT** (machine-level persistent ID + API-key
+  tracking hash, opt-out via `TELEMETRY_DISABLED`). Per the hard rule, if graph memory is genuinely
+  needed, author our OWN minimal graph layer (stdlib + networkx + sqlite) behind this same contract.
+  `query` returns wiki keyword hits as a floor plus a "graph not provisioned" notice until enabled. The interface
   does not change when the engine is enabled — only the `query` backend does (that is the point of
   the contract). Plug-point: `python3 cognee_provider.py --http <port>` → `.mcp.json`.
 

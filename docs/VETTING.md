@@ -20,9 +20,34 @@ Baked into `Dockerfile.qmd` (PINNED to 2.5.3).
 Method: pulled the registry tarball, inspected the shipped `dist/*.js` + `package.json` directly
 (not just the README). Pin stays at 2.5.3; re-vet on bump.
 
-## Gated (NOT installed — security pass required before wiring)
-- **Cognee** (#6 graph engine) — heavy dep tree + license/telemetry questions. The adapter stub
-  (`providers/cognee_provider.py`) is wired; the engine is not. Confirm license + telemetry, pin,
-  isolate before `COGNEE_ENABLED=1`.
-- **WASM runtime** (#7, e.g. wasmtime/wasmer + WASI shim) — the policy/hook are wired; the runtime
-  dep is not. Vet provenance + the runtime before a `run_sandboxed()` executor.
+## `cognee` (#6 graph engine) — 1.1.2 — VERDICT: DO NOT BAKE IN (2026-06-16)
+Security pass ran; the adapter stub (`providers/cognee_provider.py`) stays, the engine stays out.
+
+| Check | Result |
+|---|---|
+| Provenance / license | `topoteretes/cognee`, 17.8k★, **Apache-2.0** (the earlier "AGPL" worry was wrong — license is fine) |
+| CVEs (OSV, 1.1.2) | 0 known |
+| **Dependency sprawl** | **42 core deps, 127 with extras** — pulls a web server (fastapi/gunicorn/starlette), its own vector DB (lancedb/pylance), `instructor`, `rdflib`, `alembic`, `sqlalchemy`, … Far past the "fully reviewable" bar. |
+| **Default cloud egress** | Core deps `openai` + `litellm` → defaults to cloud LLM/embedding calls unless explicitly pinned to a local endpoint. |
+| **Telemetry — ON BY DEFAULT** | `cognee/shared/utils.py:send_telemetry()` fires on every event **unless `TELEMETRY_DISABLED` is set** (opt-OUT). Sends a **machine-level `persistent_id`** (`~/.cognee/.persistent_id`, explicitly "survives data deletion, reinstalls") + an **API-key-derived tracking hash** + anonymous_id. This is exactly the phone-home a security-first runtime must not ship by default. |
+
+**Decision (per the hard rule — "too sprawling to fully review → author our own from the distilled
+idea"):** do NOT install Cognee as an accelerator. The wiki already covers memory; the cognee stub
+holds the contract slot. If graph traversal is genuinely needed, **author our own minimal graph
+layer** (stdlib + `networkx` + sqlite — each individually reviewable) behind the same contract,
+matching the comic-creator precedent. If someone still insists on Cognee, it must run **isolated in
+its own container** with `TELEMETRY_DISABLED=1`, `ENV=dev`, a pinned local LLM endpoint, and egress
+firewalled — a heavy lift for an opt-in the wiki already replaces.
+
+## `wasmtime` (wasmtime-py, #7 WASM runtime) — 45.0.0 — VERDICT: SAFE to pin (cleared to wire)
+| Check | Result |
+|---|---|
+| Provenance / license | `bytecodealliance/wasmtime-py` — **Bytecode Alliance** (the WASI reference org; Mozilla/Fastly/Intel). **Apache-2.0 WITH LLVM-exception** |
+| **Runtime dependencies** | **ZERO** (the only 4 `requires_dist` are `testing` extras). Minimal attack surface. |
+| Install footprint | Ships **prebuilt platform wheels** (manylinux/musl x86_64+aarch64, macOS, Windows, + pure `py3-none-any`) — **no source compile at install**; native runtime bundled by the org. |
+| CVEs (OSV, 45.0.0) | 0 known |
+
+**Decision:** the *dependency* is cleared — pin `wasmtime==45.0.0`. The `run_sandboxed()` executor
+itself is the next BUILD step (still gated only by engineering, not security): note the open design
+question from `docs/WASM-SANDBOX.md` — WASI can't run arbitrary `bash`, so the executor needs a
+restricted exec surface (or an interpreter compiled to WASM), not a drop-in shell wrapper.
