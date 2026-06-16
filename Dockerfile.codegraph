@@ -1,0 +1,42 @@
+# Enclave codegraph code-memory — the SHARED mode (HTTP bridge + index builder).
+#
+#   docker build -f Dockerfile.codegraph -t enclave-codegraph:latest .
+#   docker compose --profile codegraph up -d --build codegraph     # serve the bridge
+#   docker compose run --rm -e CODEGRAPH_MODE=reembed codegraph     # (re)build the shared index
+#
+# codegraph's own MCP is stdio-only, so this image fronts it with an HTTP MCP bridge
+# (codegraph_gateway.mjs) → ONE process serves many agents over the network, the qmd-style shared
+# mode. PINNED + vetted (docs/VETTING.md: @colbymchenry/codegraph@1.0.1 — no install scripts;
+# telemetry counts-only AND baked OFF below). The corpus mount IS the scope.
+FROM node:22-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Security-first: telemetry off for codegraph (and any tool honoring DO_NOT_TRACK).
+ENV DO_NOT_TRACK=1
+
+# codegraph CLI (global → on PATH for the bridge to exec) + the MCP SDK/zod the gateway imports,
+# installed as siblings in /opt/codegraph-gw so the ESM gateway resolves its bare specifiers.
+RUN npm i -g @colbymchenry/codegraph@1.0.1
+WORKDIR /opt/codegraph-gw
+RUN npm init -y >/dev/null \
+    && npm install --no-audit --no-fund @modelcontextprotocol/sdk@1.29.0 zod@4.2.1 \
+    && npm cache clean --force
+COPY platform/agentd/codegraph_gateway.mjs /opt/codegraph-gw/codegraph_gateway.mjs
+COPY tools/codegraph/codegraph-container-entrypoint.sh /usr/local/bin/codegraph-entrypoint
+RUN chmod +x /usr/local/bin/codegraph-entrypoint
+
+RUN useradd -m -u 1001 -s /bin/bash cg && mkdir -p /corpus && chown -R cg:cg /opt/codegraph-gw /corpus
+USER cg
+ENV HOME=/home/cg \
+    CODEGRAPH_CORPUS=/corpus \
+    CODEGRAPH_GW_HTTP_PORT=18184 \
+    CODEGRAPH_GW_HTTP_HOST=0.0.0.0
+
+EXPOSE 18184
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${CODEGRAPH_GW_HTTP_PORT}/health" || exit 1
+
+ENTRYPOINT ["codegraph-entrypoint"]

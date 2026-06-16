@@ -89,6 +89,31 @@ services:
     profiles: [qmd]
     restart: unless-stopped
 
+  # Optional codegraph code-memory in SHARED mode (one HTTP MCP bridge, many agents):
+  #   docker compose run --rm -e CODEGRAPH_MODE=reembed codegraph   # build the shared index first
+  #   docker compose --profile codegraph up -d --build codegraph    # serve the bridge
+  # Then point agents at it:  home/.mcp.json →
+  #   { "mcpServers": { "codegraph": { "type": "http", "url": "http://codegraph:18184/mcp" } } }
+  # (Agents need NOTHING baked — they just hit the network bridge. Set CODE_CORPUS to your repos dir.)
+  codegraph:
+    build:
+      context: .
+      dockerfile: Dockerfile.codegraph
+    image: ${ENCLAVE_CODEGRAPH_IMAGE:-enclave-codegraph:latest}
+    container_name: ${AGENT_ID:-enclave-agent}-codegraph
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      - CODEGRAPH_MODE=${CODEGRAPH_MODE:-serve}
+      - CODEGRAPH_CORPUS=/corpus
+      - CODEGRAPH_GW_HTTP_PORT=18184
+      - CODEGRAPH_GW_HTTP_HOST=0.0.0.0
+      - DO_NOT_TRACK=1
+    volumes:
+      - ${CODE_CORPUS:-./code}:/corpus      # the repo corpus — WRITABLE (SQLite manages .codegraph/)
+    profiles: [codegraph]
+    restart: unless-stopped
+
   # Optional Telegram interface: docker compose --profile telegram up -d
   telegram-relay:
     build:
