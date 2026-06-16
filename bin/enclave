@@ -10,15 +10,20 @@ Commands:
   enclave status                   Show agent health and recent activity
   enclave stop                     Stop the agent containers
   enclave chat                     Interactive terminal chat (reads the reply file)
+  enclave snapshot ["msg"]         Commit the memory vault (scan-gated, fail-closed). Auto-runs each tick.
+  enclave vault-encrypt            Encrypt the brain to an at-rest archive (key in secrets/, never committed)
+  enclave vault-decrypt <blob>     Restore the brain from an encrypted archive
   enclave publish --registry R     Maintainer: build + push images to a registry (teammates `run --pull`)
 
 The wizard + run/stop/etc. all operate on the Enclave repo this script lives in
 (the clone IS the deployment, like a configured ps-ops checkout). `init` populates
-./home (the agent's mounted /agent), ./secrets (read-only creds), and ./.env.
+./home (the agent's mounted /agent), ./secrets (read-only creds), and ./.env, and
+makes ./home its own scan-gated git vault so memory survives a machine wipe.
 
 Flags for non-interactive init (CI / scripted):
   --name N --brain claude|api|local --model M --template T
-  --port 8888 --token TOK --bind 127.0.0.1:8888 --yes --force
+  --cred TOKEN     the model credential (Claude OAuth / API key) — what the wizard prompts for
+  --bind 127.0.0.1:8888  --port 8888  --token TOK (optional web-UI ?token= gate)  --yes  --force
 Flags for run:
   --no-open   don't auto-open the browser
   --no-build  skip the image build (use existing local images)
