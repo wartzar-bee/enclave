@@ -8,8 +8,9 @@ even if prompt-injected.
 > Status: **team-private alpha.** Internal team use while we harden it. See "Known gaps" below.
 
 ## Quick start
+The repo is **private** — clone with your GitHub access to the org:
 ```bash
-git clone <repo-url> enclave && cd enclave
+git clone https://github.com/wartzar-bee/enclave.git enclave && cd enclave
 ./bin/enclave init                   # wizard: name, brain, model, port, paste your credential
 ./bin/enclave run                    # build + start, then opens the chat in your browser
 ```
@@ -51,28 +52,45 @@ wiki), `secrets/` (your read-only credential), and `.env`. For `BRAIN=claude` th
 
 ## Layout
 ```
-Dockerfile.agent          lean agent image (python + node + claude CLI; no bloat)
+Dockerfile.agent          lean agent image (python + node + claude CLI; opt-in codegraph)
 Dockerfile.chat/.relay    web-chat + telegram sidecars (stdlib, tiny)
-docker-compose.yml        the stack
-bin/enclave               CLI: init / run / send / chat / logs / status / stop
-platform/agentd/          the runtime: agentloop, runtime.sh, guard hooks, memory, web_chat, qmd gateway
+Dockerfile.qmd/.codegraph optional memory-accelerator images (off by default — compose profiles)
+docker-compose.yml        the stack (+ opt-in `qmd` / `codegraph` / `telegram` profiles)
+bin/enclave               CLI: init / run / publish / snapshot / vault-encrypt|decrypt / send / chat / status / stop / logs
+platform/agentd/          the runtime: agentloop, runtime.sh, guard hooks, memory (memory.py + wiki.py),
+                          vault_snapshot.py, web_chat, chat_responder, qmd + codegraph gateways, rlm.py
 tools/gcloud/             optional multi-tenant, read-only gcloud bridge (per-agent credential isolation)
-templates/                starter agent homes (ops, support, …)
-docs/MEMORY-MODES.md      embedded vs shared memory design
+templates/                starter agent homes (ops, support, analyst)
+docs/                     design notes — WIKI-LAYER, MEMORY-PROVIDERS, MEMORY-MODES, CODE-MEMORY,
+                          WASM-SANDBOX, VETTING (dependency security passes), ROADMAP
 ```
 
-## Memory (pluggable, portable by default)
-- **Default = the wiki layer** — an LLM-maintained markdown knowledge base (`home/knowledge/`), zero
-  infra, cross-platform, traceable. No DB/GPU/service. See `docs/WIKI-LAYER.md`.
-- **Opt-in accelerators** behind one MCP interface — `qmd` (hybrid semantic search; CPU-in-container
-  or a GPU host), LanceDB, Cognee (graph). See `docs/MEMORY-PROVIDERS.md` and `docs/MEMORY-MODES.md`.
+## Memory — one linked, durable, secret-safe brain
+The agent's memory is **one linked vault**, all markdown, all git-trackable, navigable as a graph:
+- **Store (default, zero-infra)** — an LLM-maintained markdown **wiki** (`home/knowledge/`) *plus*
+  operational memory (`home/memory/` facts/decisions/lessons + `home/skills/`). They're one graph:
+  `wiki.py graph --brain` traverses backlinks/neighbors/k-hop/paths across all of it. No DB/GPU/service.
+  See `docs/WIKI-LAYER.md`.
+- **Retrieve (opt-in)** — `qmd` hybrid semantic search, host *or* containerized (`--profile qmd`,
+  CPU default). See `docs/MEMORY-PROVIDERS.md` / `docs/MEMORY-MODES.md`.
+- **Code memory (opt-in)** — **codegraph** symbol/call/dependency graph over a repo corpus, three ways:
+  in-agent (stdio), shared index, or a network HTTP bridge (`--profile codegraph`). See `docs/CODE-MEMORY.md`.
+- **Reason over huge context** — `rlm` chunk → map → tree-reduce, for blobs too big to read in full.
+- _A generic graph engine (Cognee) was evaluated and **rejected** (telemetry + 127 deps); the wiki
+  graph + codegraph cover the real needs. See `docs/VETTING.md`._
 
-## Known gaps (the road to "any teammate, any machine")
-- **qmd in-container** — the wiki works everywhere now; the optional qmd accelerator still runs as a
-  host engine. Containerizing it (CPU default, `--gpus` where available) is the next build.
-- **Prebuilt image** — today `enclave run` builds locally; a team registry image is planned.
-- **In-app chat replies** — the web chat delivers messages and shows the agent's `chat-reply.md`;
-  a tighter responder loop (`chat_responder`) isn't in the lean image yet, so replies arrive on the
-  agent's normal tick cadence.
+**Durable + secret-safe:** `enclave init` makes `home/` its own git vault; the runtime **auto-snapshots
+after every tick** so memory survives a machine wipe. Every snapshot is **scan-gated, fail-closed** — a
+credential pasted into memory **blocks the commit** (git history is forever) and a pre-commit hook blocks
+manual commits too. `enclave vault-encrypt` writes an AES-256 archive (key in `secrets/`, never committed)
+so an off-machine copy is ciphertext. The agent can't `git` (guard-blocked) — the runtime owns commits.
+
+## Known gaps (honest)
+- **Prebuilt images** — `enclave-agent`/`enclave-chat` are published multi-arch to ghcr (`run --pull`);
+  the optional `qmd`/`codegraph` accelerator images still build locally on first `--profile … up`.
+- **WASM tool sandbox** — the policy + a flagged routing hook ship; the `wasmtime` runtime (vetted-safe)
+  isn't wired into an executor yet. Defense-in-depth, not a blocker. See `docs/WASM-SANDBOX.md`.
+- **Transparent at-rest encryption** — the openssl archive ships; `age`/`git-crypt` (per-file,
+  transparent) are drop-in upgrades when installed.
 
 See `SECURITY.md` for the threat model and `docs/` for design notes.

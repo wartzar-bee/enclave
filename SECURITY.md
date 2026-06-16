@@ -13,6 +13,8 @@ Every claim below is verifiable by reading a file or running a command.
 | No inbound attack surface on the agent | the agent listens on nothing; the web chat is a separate, loopback-bound sidecar | `netstat` in the agent container |
 | Knowledge access is scoped | per-agent MCP gateway enforces a collection allowlist server-side (not a model-trusted param) | `platform/agentd/qmd_gateway.mjs` |
 | Cloud access is read-only + per-agent isolated | the gcloud bridge maps each agent token → its own credential config + a read-only allowlist | `tools/gcloud/host-bridge.py` |
+| A secret can't leak into the memory vault's git history | every vault snapshot is **scan-gated, fail-closed** (a credential pattern blocks the commit) + a vault pre-commit hook; `secrets/` is gitignored | `platform/agentd/vault_snapshot.py` |
+| Baked tools don't phone home | `DO_NOT_TRACK=1` in the images (e.g. codegraph telemetry is off); external deps are pinned + security-passed | `Dockerfile.agent`, `docs/VETTING.md` |
 
 ## What the guard blocks (default + opt-in)
 - Always: `git`, reads of foreign secret stores (`~/.ssh`, `.aws/credentials`, other agents' secrets), publish/sales/bio go-live, and **dynamic-loader / interpreter env injection** (`LD_PRELOAD`, `DYLD_*`, `NODE_OPTIONS`, `BASH_ENV`, `GIT_SSH_COMMAND`, `PERL5LIB`, `PYTHONSTARTUP`) — these smuggle code into the next process and would otherwise bypass the guard.
@@ -28,5 +30,6 @@ A teammate setting up Enclave does **not** mint their own cloud access. To use t
 
 ## Known limitations (be honest)
 - A teammate who can edit the compose/guard config can widen access — this protects against a *compromised/injected agent*, not against a malicious operator with repo write access.
-- Semantic-search portability still depends on a host engine in shared mode (see README "Known gaps").
+- The vault secret-scan is **pattern-based** (high-confidence credential formats); a novel secret format could slip it. `enclave vault-encrypt` (ciphertext at rest) is the defense for that case.
+- The memory vault stores plaintext markdown locally; treat the off-machine copy accordingly (push to a private remote, or encrypt it).
 - Report issues internally before any external disclosure.

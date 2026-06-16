@@ -4,7 +4,11 @@ Shipped: hardened runtime + guard (incl. loader-hijack denylist), `enclave init`
 `run`/`publish`, lean images, **prebuilt images on ghcr**, wiki memory layer, claude.ai-style chat
 (image attach, voice in/out, live model switch), real-time chat plane (`chat_responder`), server-side
 voice proxy, support/analyst templates, **containerized qmd accelerator**, **RLM big-context tool**,
-**Cognee graph-provider adapter stub**, **WASM-sandbox scope + flagged routing hook**.
+**Cognee graph-provider adapter stub** (engine rejected — see VETTING), **WASM-sandbox scope + flagged
+routing hook**, **unified memory graph** (`wiki.py graph --brain` — knowledge + memory + skills one
+linked vault), **codegraph code-memory** (in-agent / shared-index / HTTP bridge), **durable secret-safe
+vault** (scan-gated git + per-tick auto-snapshot + `vault-encrypt` at-rest), **YAGNI code discipline**
+distilled into the build harness.
 
 > **Hard rule:** never bake an external dependency (npm/pip/repo) into the image or a setup script
 > without a security pass first — provenance + pinned version + CVE scan + read the actual code for

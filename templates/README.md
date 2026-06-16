@@ -7,9 +7,12 @@ An agent home contains:
 - `CLAUDE.md`   — the agent's mission + operating rules (loaded as its system prompt)
 - `tick.txt`    — what it does each wake (read inbox → act → reply)
 - `agent.env`   — runtime config (BRAIN, MODEL, PERMISSION, guard flags). No inline comments after values.
-- `.mcp.json`   — MCP servers it may use (e.g. a scoped qmd knowledge gateway)
+- `.mcp.json`   — MCP servers it may use (scoped `qmd` gateway; `ops` also wires the `codegraph` stdio server)
 - `.claude/settings.json` — wires the PreToolUse guard hook
+- `knowledge/`  — the markdown wiki; with `memory/` + `skills/` it forms ONE linked brain (`wiki.py graph --brain`)
 - `inbox.md`, `work.json`, `state/`, `logs/` — runtime I/O (created/used at run time)
+
+`enclave init` makes the home its own **scan-gated git vault** (durable memory; secrets excluded). See `docs/WIKI-LAYER.md`.
 
 Templates here:
 - `ops/` — a generic operations agent: answers questions from its knowledge + read-only live queries.

@@ -1,7 +1,9 @@
 # Enclave — Memory Modes (design note)
 ## 2026-06-15 · `MEMORY=embedded | shared` + the scoped MCP gateway
 
-Status: **decided + first component built** (the shared-mode gateway). Embedded-mode packaging is a follow-up build.
+Status: **decided + built (both modes).** Shared-mode gateway + the **containerized embedded mode**
+(`Dockerfile.qmd` + the `qmd` compose profile, CPU default) both ship. The same scoped-gateway pattern
+now also fronts **codegraph** as a network HTTP bridge (`Dockerfile.codegraph`). See `docs/CODE-MEMORY.md`.
 
 ---
 
@@ -62,9 +64,11 @@ The agent's container reaches only its own gateway socket → **process isolatio
 In `embedded` mode the same gateway runs with the allowlist = all local collections (a no-op filter), so it's **one component, two modes**.
 
 ### Generalizes
-The same scoped-MCP-gateway pattern fronts **codegraph** and any future shared MCP service, enforcing per-agent tool+collection+path ACLs and query audit. This is the control plane the hosted/multi-tenant Enclave tier needs.
+The same scoped-MCP-gateway pattern fronts **codegraph** (`platform/agentd/codegraph_gateway.mjs` — an
+HTTP MCP bridge over codegraph's stdio server, `Dockerfile.codegraph`) and any future shared MCP service,
+enforcing per-agent ACLs. This is the control plane the hosted/multi-tenant Enclave tier needs.
 
 ### Follow-ups
-- Containerize qmd for true `embedded` mode (CPU models baked into the image) — closes the long-standing "qmd is Mac-host-only" product gap.
+- ~~Containerize qmd for true `embedded` mode~~ → **done** (`Dockerfile.qmd`, `--profile qmd`, CPU default).
 - Optionally upstream a `--collections` / `QMD_ALLOWED_COLLECTIONS` scoping flag to qmd so the wrapper becomes unnecessary.
 - Add query audit logging + per-agent rate limits to the gateway (multi-tenant tier).
