@@ -35,8 +35,24 @@ Pages link with `[[page-stem]]`.
   - `wiki.py new [dir] --type concept --title "…" [--sources raw/x]` — scaffold a page with frontmatter
   - `wiki.py lint [dir]` — report broken `[[links]]`, orphans, stale pages, bad/missing frontmatter (exit 1 only on broken frontmatter)
   - `wiki.py log [dir] "…"` — append to the log
+  - `wiki.py graph <op> [page] [--brain]` — traverse the link graph: `backlinks`/`neighbors`/`khop`/`path`/`hubs`/`stats`
 
 `wiki.py` is baked into the image at `/workspace/platform/agentd/wiki.py` (stdlib + pyyaml, cross-platform).
+
+## One linked vault — knowledge + operational memory are ONE graph
+The wiki is not a separate silo from the agent's operational memory. Durable knowledge lives in two
+complementary substrates under the home, **both** markdown, **both** linked by `[[wikilinks]]`:
+- **`knowledge/`** — the curated wiki (concepts/entities/sources/syntheses): the "encyclopedia."
+- **`memory/`** + **`skills/`** (via `memory.py`) — operational/episodic memory (facts, decisions,
+  lessons) and learned procedures: the "working memory + playbook."
+
+They are **one graph**, not two piles. `memory.py remember … --related <page-stem>` (and `memory.py
+link <mem> <page-stem>`) write `related: [[…]]` so a lesson/decision is a **first-class graph node**
+that links into `knowledge/`. `wiki.py graph --brain` then traverses **wiki + memory + skills** as a
+single vault — `backlinks` finds every memory that cites a concept, `khop` pulls a topic's whole
+neighborhood across both, `stats` surfaces orphaned memories to link. This makes the brain navigable
+as a graph (not just qmd-searchable), and keeps the "index points, the markdown stores, the accelerator
+is disposable" discipline across the *whole* memory, not just the wiki half.
 
 ## How an agent uses it
 The agent's `CLAUDE.md` points it at `knowledge/` and the workflow. On a new source: `wiki.py new …`,

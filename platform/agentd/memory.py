@@ -32,6 +32,13 @@ def _slug(s, n=48):
     s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
     return (s[:n] or "x").strip("-")
 
+def _norm_stem(t):
+    """Normalize a link target to a bare page stem: strip [[ ]], a .md suffix, and any dir."""
+    t = t.strip().strip("[]").strip()
+    if t.endswith(".md"):
+        t = t[:-3]
+    return t.split("/")[-1]
+
 class Memory:
     TYPES = ("fact", "decision", "lesson", "user")
     REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -46,16 +53,42 @@ class Memory:
 
     def _now(self): return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def remember(self, text, mtype="lesson", tags=None, slug=None):
+    def remember(self, text, mtype="lesson", tags=None, slug=None, related=None):
         if mtype not in self.TYPES: mtype = "fact"
         slug = slug or _slug(text)
         d = self.mem / mtype; d.mkdir(exist_ok=True)
         f = d / f"{slug}.md"
-        f.write_text(f"---\ntype: {mtype}\ntags: {','.join(tags or [])}\nts: {self._now()}\n---\n\n{text.strip()}\n")
+        # `related: [[..]]` makes this fact a first-class GRAPH node — one linked brain, not a flat pile.
+        # Cross-link to the knowledge/ wiki pages (or other memories) it relates to; `wiki.py graph
+        # --brain` then traverses memory + knowledge + skills as one vault.
+        rel = " ".join(f"[[{_norm_stem(r)}]]" for r in (related or []) if r and r.strip())
+        f.write_text(f"---\ntype: {mtype}\ntags: {','.join(tags or [])}\nts: {self._now()}\n"
+                     f"related: {rel}\n---\n\n{text.strip()}\n")
         line = f"- [{mtype}] {text.strip().splitlines()[0][:120]} → `{mtype}/{slug}.md`"
         idx = self.mem / "INDEX.md"; lines = idx.read_text().splitlines()
         lines = [l for l in lines if f"`{mtype}/{slug}.md`" not in l]  # de-dup
         idx.write_text("\n".join(lines + [line]) + "\n")
+        return f
+
+    def link(self, rel, targets):
+        """Cross-link an existing memory into the graph: merge `[[targets]]` into its `related:`
+        frontmatter (the cross-linker pattern). Targets are page stems (knowledge pages or memories)."""
+        f = self.mem / rel
+        if not f.suffix: f = f.with_suffix(".md")
+        if not f.exists(): return None
+        text = f.read_text()
+        existing = set(re.findall(r"\[\[([^\]]+)\]\]", text))
+        add = [s for s in (_norm_stem(t) for t in targets if t and t.strip()) if s and s not in existing]
+        if not add: return f
+        add_str = " ".join(f"[[{s}]]" for s in add)
+        if re.search(r"(?m)^related:", text):
+            text = re.sub(r"(?m)^(related:.*)$", lambda m: m.group(1).rstrip() + " " + add_str, text, count=1)
+        elif text.startswith("---") and "\n---" in text:
+            end = text.find("\n---", 3)
+            text = text[:end] + f"\nrelated: {add_str}" + text[end:]
+        else:
+            text = f"related: {add_str}\n\n" + text
+        f.write_text(text)
         return f
 
     def learn(self, slug, title, body):
@@ -397,7 +430,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=".")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("remember"); r.add_argument("text"); r.add_argument("--type", default="lesson"); r.add_argument("--tags", default=""); r.add_argument("--slug")
+    r = sub.add_parser("remember"); r.add_argument("text"); r.add_argument("--type", default="lesson"); r.add_argument("--tags", default=""); r.add_argument("--slug"); r.add_argument("--related", default="", help="comma-separated page stems to [[link]] (knowledge pages or memories)")
+    lk = sub.add_parser("link"); lk.add_argument("rel", help="memory file, e.g. lesson/foo"); lk.add_argument("targets", nargs="+", help="page stems to [[link]] into its related:")
     c = sub.add_parser("recall"); c.add_argument("query"); c.add_argument("-k", type=int, default=5); c.add_argument("--semantic", action="store_true")
     l = sub.add_parser("learn"); l.add_argument("slug"); l.add_argument("title"); l.add_argument("--body", default=""); l.add_argument("--body-file")
     i = sub.add_parser("index"); i.add_argument("which", nargs="?", default="memory")
@@ -410,7 +444,10 @@ def main():
     a = ap.parse_args()
     m = Memory(a.base)
     if a.cmd == "remember":
-        f = m.remember(a.text, a.type, [t for t in a.tags.split(",") if t], a.slug); print(f"remembered → {f}")
+        f = m.remember(a.text, a.type, [t for t in a.tags.split(",") if t], a.slug,
+                       [r for r in a.related.split(",") if r.strip()]); print(f"remembered → {f}")
+    elif a.cmd == "link":
+        f = m.link(a.rel, a.targets); print(f"linked → {f}" if f else f"not found: {a.rel}")
     elif a.cmd == "recall":
         hits = m.recall(a.query, a.k, a.semantic); print("\n".join(hits) if hits else "(no memory matches)")
     elif a.cmd == "user-note":

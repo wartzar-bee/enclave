@@ -194,18 +194,41 @@ def cmd_log(base, args):
 # The wiki's links ARE a graph (nodes=pages, edges=[[links]]); lint already parses them. This
 # exposes TRAVERSAL (backlinks / neighbors / k-hop / shortest-path / hubs) so the GRAPH axis of
 # the memory contract is served by our own stdlib code — no Cognee, no graph DB, no dep to vet.
-def build_graph(base):
+def brain_pages(base, include_brain=False):
+    """Yield every GRAPH node. Wiki pages always; with include_brain, ALSO the operational memory
+    (`<home>/memory/**`) + learned skills (`<home>/skills/**`) — so the whole brain is ONE linked
+    vault, not an encyclopedia next to a flat diary. `<home>` is the wiki base's parent (the standard
+    layout: <home>/knowledge is the wiki, <home>/memory + <home>/skills are siblings). INDEX.md files
+    are pointers, not nodes, so they're skipped."""
+    for p, _ in wiki_pages(base):
+        yield p
+    if include_brain:
+        home = base.parent
+        for sub in ("memory", "skills"):
+            d = home / sub
+            if d.is_dir():
+                for p in sorted(d.rglob("*.md")):
+                    if p.name == "INDEX.md":
+                        continue
+                    yield p
+
+
+def build_graph(base, include_brain=False):
     """Return (out, inb, titles): adjacency of page-stem -> set(neighbor-stems), over EXISTING
-    pages only (broken links are ignored for traversal — `lint` reports them). Importable."""
-    pages = list(wiki_pages(base))
-    by_stem = {p.stem: p for p, _ in pages}
+    nodes only (broken links are ignored for traversal — `lint` reports them). With include_brain,
+    spans memory + skills too (see brain_pages). Importable."""
+    pages = list(brain_pages(base, include_brain))
+    by_stem = {p.stem: p for p in pages}     # stems are the link namespace (wiki convention: unique)
     out = {s: set() for s in by_stem}
     inb = {s: set() for s in by_stem}
     titles = {}
-    for p, _ in pages:
+    for p in pages:
         text = p.read_text(errors="ignore")
-        fm, _b = split_frontmatter(text)
-        titles[p.stem] = (fm or {}).get("title") or p.stem
+        fm, body = split_frontmatter(text)
+        title = (fm or {}).get("title")
+        if not title:   # memory facts have no title — use the first non-empty body line
+            title = next((ln.strip() for ln in (body or "").splitlines() if ln.strip()), p.stem)[:80]
+        titles[p.stem] = title
         for tgt in WIKILINK.findall(text):
             key = tgt if tgt in by_stem else slug(tgt)
             if key in by_stem and key != p.stem:
@@ -249,7 +272,7 @@ def _shortest_path(out, inb, a, b):
 
 def cmd_graph(base, args):
     import json as _json
-    out, inb, titles = build_graph(base)
+    out, inb, titles = build_graph(base, getattr(args, "brain", False))
     op, page = args.op, args.page
     if op in ("backlinks", "neighbors", "khop", "path") and (not page or page not in out):
         sys.exit(f"unknown page '{page}' — pass a page STEM (filename without .md); see `wiki.py index`")
@@ -330,6 +353,7 @@ def main():
     s.add_argument("op", choices=["backlinks", "neighbors", "khop", "path", "hubs", "stats"])
     s.add_argument("page", nargs="?"); s.add_argument("to", nargs="?")
     s.add_argument("--wiki", default="knowledge", help="wiki dir (default: knowledge)")
+    s.add_argument("--brain", action="store_true", help="span the WHOLE brain (wiki + memory + skills), one linked vault")
     s.add_argument("--direction", choices=["out", "in", "both"], default="both")
     s.add_argument("--k", type=int, default=None, help="khop depth (default 2) / hubs top-N (default 15)")
     args = ap.parse_args()
