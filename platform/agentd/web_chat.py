@@ -9,12 +9,17 @@ via the same file convention the Telegram relay uses:
   Outbound: agent writes state/chat-reply.md → browser polls GET /api/poll
 
 Features (all backend = pure stdlib, no deps; voice runs in the browser):
+  • Multi-conversation — claude.ai-style left sidebar (New chat · Search chats · chat list); each chat
+    has a "…" menu (Star / Delete), starred pinned to top. New chat = a fresh session; the agent's
+    durable memory persists across all of them. Threads live in state/chat/<id>.jsonl + index.json.
   • Image attachments — POST /api/upload saves to uploads/, the agent reads them by path.
   • Voice input  — browser Web Speech API (SpeechRecognition) dictates into the box.
   • Speak replies — browser speechSynthesis reads the agent's answer aloud.
   • Model switch — POST /api/model writes state/model.override; runtime.sh honors it next tick.
 
-Conversation history persists to state/chat-history.jsonl so a reload keeps the thread.
+The agent bridge is unchanged: a message goes to the chat plane (chat-inbox.jsonl) and the reply comes
+back via chat-reply.md; a FIFO routes each reply to the conversation it was sent from. A legacy
+state/chat-history.jsonl (single thread) is migrated into one conversation on first start.
 
 Usage:  python3 web_chat.py
 Env:
@@ -42,7 +47,9 @@ TTS_VOICE = os.environ.get("TTS_VOICE", "").strip()
 
 CHAT_INBOX = AGENT_DIR / "state" / "chat-inbox.jsonl"   # the real-time chat plane (chat_responder reads it)
 REPLY_FILE = AGENT_DIR / "state" / "chat-reply.md"
-HISTORY = AGENT_DIR / "state" / "chat-history.jsonl"
+CHAT_DIR = AGENT_DIR / "state" / "chat"                 # per-conversation threads: <id>.jsonl + index.json
+INDEX = CHAT_DIR / "index.json"
+OLD_HISTORY = AGENT_DIR / "state" / "chat-history.jsonl"  # legacy single thread → migrated into one conversation
 UPLOADS = AGENT_DIR / "uploads"
 OVERRIDE = AGENT_DIR / "state" / "model.override"
 
@@ -69,61 +76,176 @@ MODELS = {
     ],
 }
 
-_lock = threading.Lock()
+_lock = threading.RLock()        # reentrant: conversation helpers are called inside locked sections
 _last_reply_mtime = [None]
 _upload_n = [0]
+_conv_seq = [0]
+_pending = []                    # FIFO of conversation ids awaiting an agent reply (routes chat-reply.md back)
 
 
-# ── history / agent bridge ───────────────────────────────────────────────────
-def _append_history(role, text, images=None):
+# ── conversations (multi-thread, claude.ai-style) + agent bridge ──────────────
+# Each conversation is state/chat/<id>.jsonl (one message per line); state/chat/index.json holds
+# the sidebar list {id,title,created,updated,count}. Agent stays unchanged: messages go to the chat
+# plane (chat-inbox.jsonl) and replies come back via chat-reply.md; a FIFO routes each reply to the
+# conversation it was sent from.
+_SAFE_ID = re.compile(r"^c[0-9]+$")
+
+def _now():
+    return time.time()
+
+def _gen_id():
+    _conv_seq[0] += 1
+    return f"c{int(time.time() * 1000)}{_conv_seq[0]}"
+
+def _conv_path(cid):
+    if not _SAFE_ID.match(cid or ""):
+        return None
+    return CHAT_DIR / (cid + ".jsonl")
+
+def _title_from_text(text):
+    t = " ".join((text or "").split())
+    return (t[:48] + "…") if len(t) > 48 else (t or "New chat")
+
+def _load_index():
     try:
-        HISTORY.parent.mkdir(parents=True, exist_ok=True)
-        rec = {"ts": time.time(), "role": role, "text": text}
-        if images:
-            rec["images"] = images
-        with HISTORY.open("a") as f:
-            f.write(json.dumps(rec) + "\n")
-    except Exception:
-        pass
-
-
-def _read_history():
-    try:
-        return [json.loads(l) for l in HISTORY.read_text().splitlines() if l.strip()]
+        return json.loads(INDEX.read_text())
     except Exception:
         return []
 
+def _save_index(idx):
+    CHAT_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = INDEX.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(idx))
+    tmp.replace(INDEX)
 
-def deliver_to_agent(text, images=None):
-    # Write to the real-time chat plane (chat_responder answers it concurrently with the work tick).
-    rec = {"ts": time.time(), "text": text, "images": images or []}
+def _migrate_legacy():
+    """Fold a pre-existing single chat-history.jsonl into one conversation, once."""
+    with _lock:
+        if INDEX.exists():
+            return
+        CHAT_DIR.mkdir(parents=True, exist_ok=True)
+        idx = []
+        if OLD_HISTORY.exists():
+            lines = [l for l in OLD_HISTORY.read_text().splitlines() if l.strip()]
+            if lines:
+                cid = _gen_id()
+                _conv_path(cid).write_text("\n".join(lines) + "\n")
+                first = next((json.loads(l).get("text") for l in lines if '"user"' in l), "")
+                idx = [{"id": cid, "title": _title_from_text(first), "created": _now(),
+                        "updated": _now(), "count": len(lines)}]
+        _save_index(idx)
+
+def _append_msg(cid, role, text, images=None):
+    with _lock:
+        p = _conv_path(cid)
+        if not p:
+            return
+        CHAT_DIR.mkdir(parents=True, exist_ok=True)
+        rec = {"ts": _now(), "role": role, "text": text}
+        if images:
+            rec["images"] = images
+        with p.open("a") as f:
+            f.write(json.dumps(rec) + "\n")
+        idx = _load_index()
+        e = next((c for c in idx if c["id"] == cid), None)
+        if e is None:
+            e = {"id": cid, "title": "New chat", "created": _now(), "updated": _now(), "count": 0}
+            idx.append(e)
+        if role == "user" and e.get("title", "New chat") == "New chat":
+            e["title"] = _title_from_text(text)
+        e["updated"] = _now()
+        e["count"] = e.get("count", 0) + 1
+        _save_index(idx)
+
+def list_conversations():
+    # starred pinned to top, then most-recently-updated (ChatGPT/Claude order)
+    return sorted(_load_index(), key=lambda c: (bool(c.get("starred")), c.get("updated", 0)), reverse=True)
+
+def conversation_messages(cid):
+    p = _conv_path(cid)
+    if not p or not p.exists():
+        return []
+    try:
+        return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+    except Exception:
+        return []
+
+def delete_conversation(cid):
+    with _lock:
+        p = _conv_path(cid)
+        if p and p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        _save_index([c for c in _load_index() if c["id"] != cid])
+        return True
+
+def star_conversation(cid, starred):
+    with _lock:
+        idx = _load_index()
+        e = next((c for c in idx if c["id"] == cid), None)
+        if not e:
+            return False
+        e["starred"] = bool(starred)
+        _save_index(idx)
+        return True
+
+def search_conversations(q):
+    q = (q or "").strip().lower()
+    if not q:
+        return []
+    out = []
+    for c in list_conversations():
+        snippet = None
+        for m in conversation_messages(c["id"]):
+            if q in (m.get("text") or "").lower():
+                t = " ".join((m["text"]).split())
+                i = t.lower().find(q)
+                snippet = ("…" if i > 24 else "") + t[max(0, i - 24):i + 80] + "…"
+                break
+        if snippet or q in c.get("title", "").lower():
+            out.append({"id": c["id"], "title": c["title"], "snippet": snippet or ""})
+    return out
+
+def deliver_to_agent(cid, text, images=None):
+    """Persist the user msg to its conversation, queue the conversation for the reply, hand to the agent."""
+    _append_msg(cid, "user", text, images)
+    with _lock:
+        _pending.append(cid)
+    rec = {"ts": _now(), "text": text, "images": images or [], "conversation": cid}
     CHAT_INBOX.parent.mkdir(parents=True, exist_ok=True)
     with CHAT_INBOX.open("a") as f:
         f.write(json.dumps(rec) + "\n")
-    _append_history("user", text, images)
-
 
 def check_new_reply():
-    """Return new agent reply text if chat-reply.md changed, else None."""
+    """Return (reply_text, conversation_id) if chat-reply.md changed, else (None, None)."""
     try:
         mtime = REPLY_FILE.stat().st_mtime
     except OSError:
-        return None
+        return None, None
     if mtime == _last_reply_mtime[0]:
-        return None
+        return None, None
     _last_reply_mtime[0] = mtime
     try:
         content = REPLY_FILE.read_text().strip()
     except OSError:
-        return None
+        return None, None
     if not content:
-        return None
-    _append_history("agent", content)
+        return None, None
+    with _lock:
+        if _pending:
+            cid = _pending.pop(0)
+        else:                                  # proactive reply (no pending send) → newest conversation
+            idx = list_conversations()
+            cid = idx[0]["id"] if idx else None
+    if cid:
+        _append_msg(cid, "agent", content)
     try:
         REPLY_FILE.write_text("")
     except OSError:
         pass
-    return content
+    return content, cid
 
 
 # ── model config ─────────────────────────────────────────────────────────────
@@ -330,17 +452,73 @@ PAGE = ("""<!DOCTYPE html>
   .menu .item .check { color:var(--accent); opacity:0; }
   .menu .item.sel .check { opacity:1; }
   .hint { text-align:center; color:var(--muted); font-size:11.5px; margin-top:9px; }
+
+  /* ── sidebar (collapsible, ChatGPT/Claude-style) ── */
+  #shell { flex:1; display:flex; min-height:0; }
+  #sidebar { width:268px; flex:0 0 268px; background:var(--card); border-right:1px solid var(--border);
+             display:flex; flex-direction:column; gap:6px; padding:10px; overflow:hidden;
+             transition:flex-basis .18s ease, width .18s ease, padding .18s ease; }
+  body.collapsed #sidebar { flex-basis:0; width:0; padding:10px 0; border-right:none; }
+  body.collapsed #sidebar > * { opacity:0; pointer-events:none; }
+  .sb-btn { display:flex; align-items:center; gap:9px; width:100%; text-align:left; border:1px solid var(--border);
+            background:transparent; color:var(--text); border-radius:10px; padding:9px 11px; cursor:pointer;
+            font:inherit; font-size:13.5px; white-space:nowrap; }
+  .sb-btn:hover { background:var(--hover); }
+  .sb-btn svg { width:16px; height:16px; flex:0 0 16px; color:var(--muted); }
+  .sb-search { display:flex; align-items:center; gap:8px; background:var(--bg); border:1px solid var(--border);
+               border-radius:10px; padding:7px 10px; }
+  .sb-search svg { width:15px; height:15px; color:var(--muted); flex:0 0 15px; }
+  .sb-search input { border:none; outline:none; background:transparent; color:var(--text); font:inherit;
+                     font-size:13px; width:100%; }
+  #convlist { flex:1; overflow-y:auto; margin-top:4px; display:flex; flex-direction:column; gap:1px; }
+  .sb-sec { color:var(--muted); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.4px;
+            padding:10px 11px 4px; white-space:nowrap; }
+  .conv { position:relative; display:flex; align-items:center; gap:6px; border-radius:9px; padding:8px 6px 8px 11px;
+          cursor:pointer; white-space:nowrap; }
+  .conv:hover { background:var(--hover); }
+  .conv.active { background:var(--hover); }
+  .conv .ti { flex:1; overflow:hidden; text-overflow:ellipsis; font-size:13.5px; }
+  .conv .star { color:var(--accent); width:13px; height:13px; flex:0 0 13px; }
+  .conv .kebab { width:26px; height:26px; border:none; background:transparent; color:var(--muted); border-radius:7px;
+                 cursor:pointer; display:none; align-items:center; justify-content:center; flex:0 0 26px; }
+  .conv:hover .kebab, .conv .kebab.open { display:flex; }
+  .conv .kebab:hover { background:var(--border); color:var(--text); }
+  .convmenu { position:absolute; right:6px; top:34px; z-index:30; min-width:150px; background:var(--menu);
+              border:1px solid var(--border); border-radius:10px; padding:5px; display:none;
+              box-shadow:0 8px 28px rgba(40,30,15,.18); }
+  .convmenu.open { display:block; }
+  .convmenu .mi { display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:7px; font-size:13px; cursor:pointer; }
+  .convmenu .mi:hover { background:var(--hover); }
+  .convmenu .mi svg { width:15px; height:15px; color:var(--muted); }
+  .convmenu .mi.del { color:#c2603f; } .convmenu .mi.del svg { color:#c2603f; }
 </style>
 </head>
 <body class="empty">
 <header>
-  <div class="brand">__SPARK__ <span>__NAME__</span></div>
+  <div style="display:flex;align-items:center;gap:4px">
+    <button id="toggle" class="iconbtn" title="Toggle sidebar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+    <div class="brand">__SPARK__ <span>__NAME__</span></div>
+  </div>
   <button id="speak" class="iconbtn" title="Read replies aloud">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/></svg>
   </button>
 </header>
-<div id="app">
+<div id="shell">
+  <aside id="sidebar">
+    <button id="newchat" class="sb-btn" title="New chat">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+      New chat
+    </button>
+    <div class="sb-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="search" placeholder="Search chats" autocomplete="off">
+    </div>
+    <div id="convlist"></div>
+  </aside>
+  <div id="app">
   <div id="main">
     <div id="hero">__SPARK__<h1 id="greeting">__NAME__</h1></div>
     <div id="log"></div>
@@ -374,6 +552,7 @@ PAGE = ("""<!DOCTYPE html>
     <div class="hint">__NAME__ runs in a hardened Enclave container.</div>
   </div>
 </div>
+</div>
 <script>
 const TOKEN = new URLSearchParams(location.search).get("token") || "";
 const $ = id => document.getElementById(id);
@@ -381,6 +560,8 @@ const log=$("log"), inp=$("inp"), btn=$("send"), greeting=$("greeting");
 const thumbs=$("thumbs"), fileIn=$("file"), micBtn=$("mic"), speakBtn=$("speak");
 const wrap=$("inputwrap"), menu=$("menu"), modelpill=$("modelpill"), modelname=$("modelname");
 let polling=false, pending=[], cfg={models:[],model:""}, autoSpeak=false;
+let activeConv=null;
+const convlist=$("convlist"), searchIn=$("search");
 
 const hr=new Date().getHours();
 greeting.textContent = hr<5?"Good evening":hr<12?"Good morning":hr<18?"Good afternoon":"Good evening";
@@ -434,14 +615,66 @@ function agentMsg(){
   }};
 }
 
-async function loadHistory(){
-  try{ const j=await (await api("/api/history")).json();
+/* ---- conversations (sidebar) ---- */
+const STAR_FILL='<svg class="star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>';
+async function loadConversations(filter){
+  let items=[];
+  try{
+    const url=filter?("/api/search?q="+encodeURIComponent(filter)):"/api/conversations";
+    const j=await (await api(url)).json(); items=filter?j.results:j.conversations;
+  }catch(e){}
+  renderConvList(items||[], !!filter);
+}
+function addSec(t){ const d=document.createElement("div"); d.className="sb-sec"; d.textContent=t; convlist.appendChild(d); }
+function addConv(c){
+  const row=document.createElement("div"); row.className="conv"+(c.id===activeConv?" active":""); row.dataset.id=c.id;
+  if(c.starred) row.insertAdjacentHTML("beforeend",STAR_FILL);
+  const ti=document.createElement("div"); ti.className="ti"; ti.textContent=c.title||"New chat"; row.appendChild(ti);
+  const kb=document.createElement("button"); kb.className="kebab"; kb.title="Options";
+  kb.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
+  kb.onclick=e=>{ e.stopPropagation(); openConvMenu(row,c,kb); };
+  row.appendChild(kb);
+  row.onclick=()=>selectConv(c.id);
+  convlist.appendChild(row);
+}
+function renderConvList(items, isSearch){
+  convlist.innerHTML="";
+  if(!items.length){ addSec(isSearch?"No matches":"No chats yet"); return; }
+  if(isSearch){ items.forEach(addConv); return; }
+  const star=items.filter(c=>c.starred), rest=items.filter(c=>!c.starred);
+  if(star.length){ addSec("Starred"); star.forEach(addConv); if(rest.length) addSec("Chats"); }
+  rest.forEach(addConv);
+}
+function closeConvMenus(){ document.querySelectorAll(".convmenu").forEach(m=>m.remove()); document.querySelectorAll(".kebab.open").forEach(k=>k.classList.remove("open")); }
+function openConvMenu(row,c,kb){
+  closeConvMenus(); kb.classList.add("open");
+  const menu=document.createElement("div"); menu.className="convmenu open";
+  const star=document.createElement("div"); star.className="mi";
+  star.innerHTML=(c.starred?STAR_FILL:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>')+"<span>"+(c.starred?"Unstar":"Star")+"</span>";
+  star.onclick=async e=>{ e.stopPropagation(); closeConvMenus();
+    try{ await api("/api/conversation/star",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:c.id,starred:!c.starred})}); }catch(e){}
+    loadConversations(searchIn.value.trim()); };
+  const del=document.createElement("div"); del.className="mi del";
+  del.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg><span>Delete chat</span>';
+  del.onclick=async e=>{ e.stopPropagation(); closeConvMenus(); if(!confirm("Delete this chat? This cannot be undone.")) return;
+    try{ await api("/api/conversation/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:c.id})}); }catch(e){}
+    if(c.id===activeConv) newChat();
+    loadConversations(searchIn.value.trim()); };
+  menu.append(star,del); row.appendChild(menu);
+}
+async function selectConv(id){
+  if(polling) return;
+  activeConv=id; closeConvMenus(); log.innerHTML="";
+  try{ const j=await (await api("/api/conversation?id="+encodeURIComponent(id))).json();
     for(const m of j.messages) m.role==="user"? userMsg(m.text,m.images) : agentMsg().finalize(m.text);
   }catch(e){}
   setEmpty();
+  document.querySelectorAll(".conv").forEach(r=>r.classList.toggle("active", r.dataset.id===id));
 }
+function newChat(){ activeConv=null; closeConvMenus(); log.innerHTML=""; setEmpty(); inp.focus();
+  document.querySelectorAll(".conv.active").forEach(r=>r.classList.remove("active")); }
 
-async function pollReply(){
+async function pollReply(convAtSend){
   if(polling) return; polling=true;
   const {b,finalize}=agentMsg();
   b.innerHTML='<span class="dots"><span></span><span></span><span></span></span>';
@@ -449,7 +682,12 @@ async function pollReply(){
   while(Date.now()<deadline){
     await new Promise(r=>setTimeout(r,2000));
     try{ const j=await (await api("/api/poll")).json();
-      if(j.reply){ finalize(j.reply); polling=false; return; } }catch(e){}
+      if(j.reply){
+        if(activeConv===convAtSend){ finalize(j.reply); }   // still viewing that thread → show it
+        else { const mm=b.closest(".msg"); if(mm) mm.remove(); }  // navigated away; it's saved in its thread
+        loadConversations(searchIn.value.trim());            // bump title/order in the sidebar
+        polling=false; return;
+      } }catch(e){}
   }
   b.textContent="(no reply yet — the agent may still be working; it will appear here when ready)";
   polling=false;
@@ -463,9 +701,13 @@ async function send(){
   inp.value=""; inp.style.height="auto"; btn.disabled=true;
   pending=[]; renderThumbs();
   userMsg(text, images);
-  try{ await api("/api/send",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({text,images})}); }catch(e){}
-  pollReply();
+  const wasNew = !activeConv;
+  try{ const j=await (await api("/api/send",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({text,images,conversation:activeConv})})).json();
+    if(j.conversation) activeConv=j.conversation;
+  }catch(e){}
+  if(wasNew){ if(searchIn.value){ searchIn.value=""; } loadConversations(); }
+  pollReply(activeConv);
 }
 btn.onclick=send;
 inp.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); }});
@@ -580,7 +822,17 @@ function syncVoiceUI(){
   speakBtn.style.display=(cfg.tts_backend||("speechSynthesis" in window))?"":"none";
 }
 
-loadConfig().then(syncVoiceUI); loadHistory(); inp.focus();
+/* ---- sidebar: toggle, new chat, search ---- */
+$("toggle").onclick=()=>{ const c=document.body.classList.toggle("collapsed"); try{ localStorage.setItem("sb_collapsed", c?"1":""); }catch(e){} };
+try{ if(localStorage.getItem("sb_collapsed")) document.body.classList.add("collapsed"); }catch(e){}
+$("newchat").onclick=newChat;
+let searchT=null;
+searchIn.addEventListener("input",()=>{ clearTimeout(searchT); searchT=setTimeout(()=>loadConversations(searchIn.value.trim()),200); });
+document.addEventListener("click",closeConvMenus);
+
+loadConfig().then(syncVoiceUI);
+loadConversations().then(()=>{ const first=convlist.querySelector(".conv"); first? selectConv(first.dataset.id) : newChat(); });
+inp.focus();
 </script>
 </body>
 </html>""").replace("__SPARK__", SPARK)
@@ -622,12 +874,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._auth_ok():
             self._json({"error": "unauthorized"}, 401); return
-        if path == "/api/history":
-            self._json({"messages": _read_history()[-100:]}); return
+        if path == "/api/conversations":
+            self._json({"conversations": list_conversations()}); return
+        if path == "/api/conversation":
+            cid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            self._json({"messages": conversation_messages(cid)}); return
+        if path == "/api/search":
+            q = parse_qs(urlparse(self.path).query).get("q", [""])[0]
+            self._json({"results": search_conversations(q)}); return
         if path == "/api/poll":
             with _lock:
-                reply = check_new_reply()
-            self._json({"reply": reply}); return
+                reply, cid = check_new_reply()
+            self._json({"reply": reply, "conversation": cid}); return
         if path == "/api/config":
             self._json(agent_config()); return
         if path.startswith("/uploads/"):
@@ -667,9 +925,26 @@ class Handler(BaseHTTPRequestHandler):
             images = [i for i in images if isinstance(i, str) and i.startswith("uploads/")][:8]
             if not text and not images:
                 self._json({"error": "empty"}, 400); return
+            cid = (data.get("conversation") or "").strip()
             with _lock:
-                deliver_to_agent(text, images)
+                if not _SAFE_ID.match(cid):     # null/invalid → start a new conversation (claude-style)
+                    cid = _gen_id()
+                deliver_to_agent(cid, text, images)
+            self._json({"ok": True, "conversation": cid}); return
+        if path == "/api/conversation/delete":
+            try:
+                data = json.loads(self._read_body(100_000) or b"{}")
+            except Exception:
+                self._json({"error": "bad json"}, 400); return
+            delete_conversation((data.get("id") or "").strip())
             self._json({"ok": True}); return
+        if path == "/api/conversation/star":
+            try:
+                data = json.loads(self._read_body(100_000) or b"{}")
+            except Exception:
+                self._json({"error": "bad json"}, 400); return
+            ok = star_conversation((data.get("id") or "").strip(), bool(data.get("starred")))
+            self._json({"ok": ok}); return
         if path == "/api/model":
             try:
                 data = json.loads(self._read_body(100_000) or b"{}")
@@ -734,6 +1009,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    _migrate_legacy()
     try:
         _last_reply_mtime[0] = REPLY_FILE.stat().st_mtime
     except OSError:
