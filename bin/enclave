@@ -3,6 +3,7 @@
 enclave — CLI for the Enclave agent runtime.
 
 Commands:
+  enclave new <name> [--dir P]     Scaffold a NEW deployment in its own folder (names the folder + agent + free port)
   enclave init                     Interactive wizard: configure this deployment (home/, secrets/, .env)
   enclave run                      Build + start the agent, then open the chat in your browser
   enclave send <msg>               Send a message to the agent's inbox
@@ -91,6 +92,18 @@ def _flag(args, name, default=None):
 def _has(args, name):
     return name in args
 
+def _free_port(start=8888, host="127.0.0.1"):
+    """First free TCP port at/after `start` — so multiple deployments don't collide on 8888."""
+    import socket
+    for p in range(start, start + 200):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((host, p)); return p
+            except OSError:
+                continue
+    return start
+
 
 # ── init wizard ──────────────────────────────────────────────────────────────
 def _templates():
@@ -164,7 +177,7 @@ def cmd_init(args):
         sys.exit(f"Unknown brain '{brain}'. Choose: {', '.join(BRAINS)}")
     bspec = BRAINS[brain]
     model = _flag(args, "--model") or _ask("Model", default=bspec["model"], yes=yes)
-    bind = _flag(args, "--bind") or _ask("Web chat bind (host:port)", default="127.0.0.1:8888", yes=yes)
+    bind = _flag(args, "--bind") or _ask("Web chat bind (host:port)", default=f"127.0.0.1:{_free_port()}", yes=yes)
     port = _flag(args, "--port") or (bind.split(":")[-1] if ":" in bind else "8888")
     token = _flag(args, "--token", "")  # web UI ?token= gate (optional)
     # Working folder: the host project tree the agent operates on + saves into (mounted rw at /work).
@@ -537,8 +550,34 @@ def cmd_chat(args):
             print("(no reply yet — the agent may still be working)")
 
 
+def cmd_new(args):
+    """Scaffold a NEW deployment in its OWN folder — you name the folder AND the agent/container.
+    Usage: enclave new <agent-name> [--dir <path>] [init flags…]
+      <agent-name>  becomes AGENT_ID (container names + compose project + a free port chosen for you)
+      --dir <path>  where to place it (default: a sibling folder named <agent-name>)
+    Copies this product (minus home/secrets/.env) → the new folder, then runs `init` there."""
+    name = next((a for a in args if not a.startswith("-")), None)
+    if not name:
+        sys.exit("Usage: enclave new <agent-name> [--dir <path>]")
+    rest = [a for a in args if a != name]
+    target = pathlib.Path(_flag(args, "--dir") or (REPO.parent / name)).expanduser()
+    if "--dir" in rest:
+        i = rest.index("--dir"); del rest[i:i+2]
+    if target.exists() and any(target.iterdir()):
+        sys.exit(f"{target} already exists and is non-empty — pick another --dir or name.")
+    print(f"Scaffolding Enclave deployment '{name}' → {target} …")
+    ignore = shutil.ignore_patterns("home", "secrets", ".env", ".git", "__pycache__", "*.pyc",
+                                    "outputs", "RESUME.md", "RESUME.md.bak", "deploy", "marketing")
+    shutil.copytree(REPO, target, ignore=ignore)
+    # configure it in place (free port + this name); pass through any extra init flags (--brain, --yes, …)
+    rc = subprocess.run([sys.executable, str(target / "bin" / "enclave"), "init", "--name", name, *rest],
+                        cwd=str(target)).returncode
+    if rc == 0:
+        print(f"\n✓ '{name}' ready at {target}.  Next:  cd {target} && ./bin/enclave run")
+    sys.exit(rc)
+
 COMMANDS = {
-    "init": cmd_init, "run": cmd_run, "stop": cmd_stop, "logs": cmd_logs,
+    "new": cmd_new, "init": cmd_init, "run": cmd_run, "stop": cmd_stop, "logs": cmd_logs,
     "send": cmd_send, "status": cmd_status, "chat": cmd_chat, "publish": cmd_publish,
     "snapshot": cmd_snapshot, "vault-encrypt": cmd_vault_encrypt, "vault-decrypt": cmd_vault_decrypt,
 }

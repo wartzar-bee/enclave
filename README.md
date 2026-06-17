@@ -23,6 +23,19 @@ wiki), `secrets/` (your read-only credential), and `.env`. For `BRAIN=claude` th
 ./bin/enclave run --no-open
 ```
 
+## Running several agents at once
+Each deployment is keyed to its **agent name** (`AGENT_ID`), not its folder — the compose project,
+container names, and named volumes all derive from it, so deployments never collide no matter where
+you put them. Spin up another agent in its own folder with one command:
+```bash
+./bin/enclave new support-bot                 # → ../support-bot/ , AGENT_ID=support-bot, a free port picked for you
+./bin/enclave new analyst --dir ~/agents/analyst   # choose the folder explicitly
+cd ../support-bot && ./bin/enclave run
+```
+`new` copies the product (minus your `home/`·`secrets/`·`.env`) into the new folder and runs `init`
+there with that name + an auto-selected free port (8888, 8889, …). You name **both** the container and
+the folder; isolation (home, secrets, work, chat sessions, ports) is automatic.
+
 **No local build (prebuilt images):** a maintainer publishes once —
 `./bin/enclave publish --registry ghcr.io/<owner>` (after `docker login ghcr.io`) — then teammates set
 `ENCLAVE_AGENT_IMAGE`/`ENCLAVE_CHAT_IMAGE` in `.env` and run `./bin/enclave run --pull` (no 5-min build).
