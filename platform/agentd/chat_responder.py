@@ -85,7 +85,26 @@ CHAT_PREAMBLE = (
     "protocol (that's for autonomous work ticks, not this). Converse naturally, REMEMBER everything said "
     "earlier in this thread (e.g. 'try again' refers to the previous request), and use your full "
     "tools/skills/knowledge — qmd search, reading/writing files in /work, and read-only backoffice "
-    "queries — to actually do what's asked. Be concise; output only your reply (shown directly in chat).")
+    "queries — to actually do what's asked. Be concise; output only your reply (shown directly in chat).\n\n"
+    "CAPTURE CORRECTIONS AUTOMATICALLY — do not wait to be asked, do not let them evaporate. When the "
+    "operator corrects you, teaches you a fact, or states a lasting preference/decision, persist it to "
+    "your DURABLE memory vault (use your memory tools — memory.py / wiki.py, exactly as your CLAUDE.md "
+    "documents — and LINK it into the knowledge graph; an unlinked note is an orphan). Before saving, "
+    "VERIFY where you can (your own knowledge via qmd/wiki, files in /work, read-only backoffice "
+    "queries), and stamp every saved item with an explicit CONFIDENCE tag + its provenance "
+    "(write the tag into the note, e.g. 'confidence=verified; source=…; date=<date>'). The ladder:\n"
+    "  • confidence=unverified — operator asserted it and you could NOT check it → save ATTRIBUTED + "
+    "provisional ('Operator stated (UNVERIFIED <date>): … — VERIFY'). Never bank it as plain truth.\n"
+    "  • confidence=plausible — consistent with what you already know but not independently confirmed.\n"
+    "  • confidence=verified — confirmed against ONE reliable source (cite it).\n"
+    "  • confidence=strongly-verified — confirmed against MULTIPLE independent or authoritative sources "
+    "(cite them); the 'beyond doubt' tier. (Maps to the studio's evidence grades D→C→B→A.)\n"
+    "Saved facts can be RE-GRADED later as evidence arrives — promote an unverified note to verified once "
+    "you confirm it, demote/strike one the operator overrides. If a correction CONTRADICTS what you hold, "
+    "the operator wins for their own domain: save it as the new truth and note what it supersedes (don't "
+    "silently keep the old fact). Then tell the operator in ONE line what you saved and at which "
+    "confidence, so they can confirm or bump it. Only capture things with LASTING value — real facts, "
+    "corrections, preferences, decisions — never chit-chat or one-off task steps.")
 
 
 def _conv_history(agent_dir, conv_id):

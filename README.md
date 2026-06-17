@@ -114,6 +114,11 @@ It's a real Claude-Code conversation in the browser — only the UI differs:
   `[name](/download?path=name)`; the chat renders a ⬇ download button (CSV, reports, exports).
 - **Rich rendering** — markdown → HTML (tables, lists, headings, links); fenced code stays literal.
 - **Auto topic titles** — each conversation is named by topic, not the verbatim first message.
+- **Learns from corrections** — when you correct it or teach it a lasting fact, it verifies what it can
+  and saves it to durable memory automatically, stamped with a **confidence grade** (`unverified` →
+  `plausible` → `verified` → `strongly-verified`) + provenance, linked into the knowledge graph. It
+  tells you in one line what it saved and at which grade; grades get promoted/demoted as evidence
+  arrives. Carries across all future chats and work ticks (not just the current thread).
 - **Image attach** (paperclip/paste/drag-drop → `home/uploads/`), **voice in/out** (browser Web Speech,
   or server-side via `TRANSCRIBE_URL`/`TTS_URL` — see `docs/VOICE-BACKEND.md`), and a **live model picker**.
 - Tunables: `CHAT_MODEL` (override the chat model), `CHAT_RESPONDER=off` (disable the chat plane). The
