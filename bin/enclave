@@ -255,6 +255,8 @@ def cmd_init(args):
     # default working folder (mounted at /work) lives inside the vault unless WORK_DIR points elsewhere
     (home / "work").mkdir(parents=True, exist_ok=True)
     _write(home / "work" / ".gitkeep", "")
+    (home / "outputs").mkdir(parents=True, exist_ok=True)   # agent deliverables the operator downloads via the chat
+    _write(home / "outputs" / ".gitkeep", "")
 
     # 4) knowledge wiki = the portable default memory (no DB/GPU/service)
     wiki = REPO / "platform" / "agentd" / "wiki.py"

@@ -51,6 +51,9 @@ CHAT_DIR = AGENT_DIR / "state" / "chat"                 # per-conversation threa
 INDEX = CHAT_DIR / "index.json"
 OLD_HISTORY = AGENT_DIR / "state" / "chat-history.jsonl"  # legacy single thread → migrated into one conversation
 UPLOADS = AGENT_DIR / "uploads"
+OUTPUTS = AGENT_DIR / "outputs"          # agent-generated deliverables the operator can download (CSV, reports, …)
+DOWNLOAD_EXT = {".csv", ".tsv", ".txt", ".md", ".json", ".xlsx", ".xls", ".pdf", ".zip",
+                ".xml", ".log", ".html", ".docx", ".yaml", ".yml"}
 OVERRIDE = AGENT_DIR / "state" / "model.override"
 
 MAX_UPLOAD = 16 * 1024 * 1024          # 16 MB per image (pre-base64)
@@ -404,6 +407,10 @@ PAGE = ("""<!DOCTYPE html>
   .bubble h1, .bubble h2, .bubble h3 { font-size:1.05em; font-weight:650; margin:14px 0 6px; }
   .bubble blockquote { border-left:3px solid var(--border); margin:8px 0; padding:2px 0 2px 12px; color:var(--muted); }
   .bubble a { color:var(--accent); text-decoration:underline; }
+  .bubble a.dl { display:inline-flex; align-items:center; gap:6px; text-decoration:none; background:var(--user);
+                 border:1px solid var(--border); border-radius:9px; padding:6px 12px; margin:4px 0; font-size:13.5px;
+                 color:var(--text); font-weight:550; }
+  .bubble a.dl:hover { border-color:var(--accent); color:var(--accent); }
   .bubble hr { border:none; border-top:1px solid var(--border); margin:13px 0; }
   .imgs { display:flex; flex-wrap:wrap; gap:8px; }
   .imgs img { max-width:220px; max-height:220px; border-radius:12px; border:1px solid var(--border); }
@@ -616,6 +623,11 @@ function md(s){
   t=t.replace(/\\*\\*([^*\\n]+)\\*\\*/g,"<strong>$1</strong>");
   t=t.replace(/(^|[^*\\w])\\*([^*\\n]+)\\*(?!\\w)/g,"$1<em>$2</em>");
   t=t.replace(/\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^)\\s]+)\\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  // relative download/uploads links the agent emits → clickable, token appended, forced download
+  t=t.replace(/\\[([^\\]\\n]+)\\]\\((\\/(?:download|uploads)[^)\\s]*)\\)/g,(m,label,href)=>{
+    const u=href+(TOKEN?(href.includes("?")?"&":"?")+"token="+encodeURIComponent(TOKEN):"");
+    return '<a class="dl" href="'+u+'" download>⬇ '+label+'</a>';
+  });
   // 5) restore fenced code blocks (escaped, literal)
   t=t.replace(/\\u0000(\\d+)\\u0000/g,(m,n)=>"<pre><code>"+esc(blocks[n])+"</code></pre>");
   return t;
@@ -936,7 +948,36 @@ class Handler(BaseHTTPRequestHandler):
             self._json(agent_config()); return
         if path.startswith("/uploads/"):
             return self._serve_upload(unquote(path[len("/uploads/"):]))
+        if path == "/download":
+            return self._serve_download(parse_qs(urlparse(self.path).query).get("path", [""])[0])
+        if path == "/api/outputs":          # list downloadable deliverables (for a future panel; cheap)
+            try:
+                items = sorted((p.name for p in OUTPUTS.iterdir() if p.is_file() and p.suffix.lower() in DOWNLOAD_EXT))
+            except OSError:
+                items = []
+            self._json({"files": items}); return
         self._json({"error": "not found"}, 404)
+
+    def _serve_download(self, rel):
+        """Serve an agent-generated deliverable from OUTPUTS as a download. Token-gated (checked in
+        do_GET), path-traversal-safe (basename + containment), extension-allowlisted."""
+        name = os.path.basename(unquote(rel or ""))
+        if not name or os.path.splitext(name)[1].lower() not in DOWNLOAD_EXT:
+            self._json({"error": "not found"}, 404); return
+        target = (OUTPUTS / name).resolve()
+        try:
+            if OUTPUTS.resolve() not in target.parents or not target.is_file():
+                self._json({"error": "not found"}, 404); return
+        except OSError:
+            self._json({"error": "not found"}, 404); return
+        data = target.read_bytes()
+        ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')   # force download
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _serve_upload(self, name):
         name = os.path.basename(name)

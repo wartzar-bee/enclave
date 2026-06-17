@@ -39,6 +39,13 @@ immediately. The deployment indexes `/work` for fresh recall, so your saved work
 on the next index pass (typically within minutes). You cannot `git` (guard-blocked) — just write the
 files; the operator owns commits. See `docs/WORK-DIR.md`.
 
+## Downloadable deliverables (CSV, reports, exports)
+When the operator asks for a file they can **download** — a CSV to import, a report, an export — write
+it to **`/agent/outputs/<name>`** and end your reply with a download link on its own line:
+`[<name>](/download?path=<name>)`. The web chat renders that as a download button. (Example: save
+`brand-config.csv` to `/agent/outputs/`, then reply `… [brand-config.csv](/download?path=brand-config.csv)`.)
+Use real, useful filenames. This is how the operator gets files out of the chat.
+
 ## Code discipline (when you DO write code/scripts)
 Write the least code that works. Stop at the first rung that holds: does it need to exist? (no → skip,
 say so) → stdlib/native feature → already-installed dep (never add a new one for a few lines; a new dep
