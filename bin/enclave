@@ -192,10 +192,12 @@ def cmd_init(args):
     #   qmd       = a knowledge-search MCP gateway URL you already run (blank = none).
     cg_corpus = _flag(args, "--codegraph")
     if cg_corpus is None:
-        cg_corpus = _ask("Code memory — absolute path to a repo folder for codegraph (blank = none)", default="", yes=yes)
+        cg_corpus = _ask("Code memory — absolute PATH to a repo folder to index with codegraph, "
+                         "e.g. /Users/you/Dev/repos (blank = none)", default="", yes=yes)
     qmd_url = _flag(args, "--qmd")
     if qmd_url is None:
-        qmd_url = _ask("Knowledge search — qmd MCP gateway URL (blank = none)", default="", yes=yes)
+        qmd_url = _ask("Knowledge search — qmd MCP gateway URL, e.g. http://host.docker.internal:18182/mcp "
+                       "(blank = none)", default="", yes=yes)
     cg_corpus = (cg_corpus or "").strip()
     qmd_url = (qmd_url or "").strip()
 
