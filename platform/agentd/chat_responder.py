@@ -37,6 +37,29 @@ def _read_jsonl(p):
         return []
 
 
+def _run_interruptible(cmd, cwd, timeout, stop_file, log):
+    """Run a subprocess, but KILL it if `stop_file` appears (operator hit Stop) or timeout elapses.
+    Returns (returncode, stdout, stderr) on completion, "STOPPED" if cancelled, None on timeout/spawn-fail."""
+    try:
+        p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except Exception as e:
+        log(f"chat spawn failed: {e}"); return None
+    deadline = time.time() + timeout
+    while True:
+        try:
+            out, err = p.communicate(timeout=0.5)
+            return (p.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            if stop_file.exists() or time.time() > deadline:
+                stopped = stop_file.exists()
+                p.kill()
+                try: p.communicate(timeout=5)
+                except Exception: pass
+                if stopped:
+                    log("chat turn stopped by operator"); return "STOPPED"
+                log("chat turn timed out"); return None
+
+
 def _chat_model(agent_dir, brain):
     """Run the chat at the SAME capability as the agent — honor an explicit CHAT_MODEL, else the UI model
     picker (state/model.override), else the agent's own MODEL. No downgraded side-model."""
@@ -109,30 +132,33 @@ def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
     if images:
         turn = "User attached image(s); read them with the Read tool:\n" + "\n".join(f"- {p}" for p in images) + "\n\n" + msg
     base = ["claude", "--model", model, "--dangerously-skip-permissions", "--output-format", "json"]
+    stop_file = agent_dir / "state" / "chat-stop"
 
     def run(sid):
         cmd = base + (["--resume", sid, "-p", turn] if sid else ["-p", _seed_prompt(agent_dir, conv_id, turn)])
-        try:
-            return subprocess.run(cmd, cwd=str(agent_dir), capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            log("chat turn timed out"); return None
+        return _run_interruptible(cmd, str(agent_dir), timeout, stop_file, log)
 
     sid = (sf.read_text().strip() or None) if (sf and sf.exists()) else None
     r = run(sid)
-    if r is not None and r.returncode != 0 and sid:
-        err = (r.stderr or r.stdout or "")
-        log(f"chat resume failed (rc={r.returncode}): {err[:160]} — starting a fresh session")
+    if r == "STOPPED":
+        return "STOPPED"
+    if isinstance(r, tuple) and r[0] != 0 and sid:              # resume failed → drop pointer, retry fresh
+        err = (r[2] or r[1] or "")
+        log(f"chat resume failed (rc={r[0]}): {err[:160]} — starting a fresh session")
         try:
-            if sf: sf.unlink()                                  # stale/lost session → drop the dangling pointer
+            if sf: sf.unlink()
         except OSError:
             pass
         r = run(None)                                           # retry fresh in the SAME turn (seeded w/ history)
-    if r is None:
+        if r == "STOPPED":
+            return "STOPPED"
+    if not isinstance(r, tuple):                                # timeout / spawn-fail
         return None
-    if r.returncode != 0:
-        log(f"chat turn failed (rc={r.returncode}): {((r.stderr or r.stdout) or '')[:200]}")
+    rc, out, err = r
+    if rc != 0:
+        log(f"chat turn failed (rc={rc}): {((err or out) or '')[:200]}")
         return None
-    out = (r.stdout or "").strip()
+    out = (out or "").strip()
     try:
         d = json.loads(out)
         if sf and d.get("session_id"):
@@ -229,12 +255,18 @@ def chat_loop(agent_dir, log=print):
                 conv_id = (m.get("conversation") or "").strip()
                 first = _is_first_turn(agent_dir, conv_id)   # check BEFORE answering (reply gets appended later)
                 model = _chat_model(agent_dir, brain)     # re-resolve so a live UI model switch is honored
+                try:
+                    (agent_dir / "state" / "chat-stop").unlink()   # clear any prior Stop before this turn
+                except OSError:
+                    pass
                 with lock:
                     if brain == "claude":
                         reply = _answer_claude(agent_dir, conv_id, text, images, model, timeout, log)
                     else:
                         reply = _answer_api(_api_prompt(agent_dir, conv_id, text, images), model, timeout, log)
-                if reply:
+                if reply == "STOPPED":
+                    reply_file.write_text("_(stopped)_")
+                elif reply:
                     reply_file.write_text(reply)
                     log(f"chat reply sent ({len(reply)} chars)")
                     if first:                              # name the conversation by topic (not the verbatim 1st msg)

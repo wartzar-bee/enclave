@@ -54,6 +54,8 @@ UPLOADS = AGENT_DIR / "uploads"
 OUTPUTS = AGENT_DIR / "outputs"          # agent-generated deliverables the operator can download (CSV, reports, …)
 DOWNLOAD_EXT = {".csv", ".tsv", ".txt", ".md", ".json", ".xlsx", ".xls", ".pdf", ".zip",
                 ".xml", ".log", ".html", ".docx", ".yaml", ".yml"}
+WORK_DIR = pathlib.Path(os.environ.get("WORK_DIR", "/work"))   # ro in the chat container — for skill discovery
+STOP_FILE = AGENT_DIR / "state" / "chat-stop"   # web_chat touches it → chat_responder kills the in-flight turn
 OVERRIDE = AGENT_DIR / "state" / "model.override"
 
 MAX_UPLOAD = 16 * 1024 * 1024          # 16 MB per image (pre-base64)
@@ -249,6 +251,48 @@ def check_new_reply():
     except OSError:
         pass
     return content, cid
+
+
+# ── slash commands (UI controls + discoverable skills) ───────────────────────
+def _skill_desc(md):
+    try:
+        lines = md.read_text(errors="ignore").splitlines()
+    except OSError:
+        return ""
+    for i, ln in enumerate(lines):
+        m = re.match(r"^description:\s*(.*)$", ln)
+        if m:
+            v = m.group(1).strip().strip('"').strip("'")
+            if v and v not in ("|", ">", "|-", ">-"):
+                return v
+            for nxt in lines[i + 1:i + 4]:        # block scalar → first indented line
+                if nxt.strip():
+                    return nxt.strip()
+            return ""
+    return ""
+
+def list_commands():
+    """UI commands + skills discovered in /agent and /work .claude/skills — powers the slash menu."""
+    cmds = [
+        {"cmd": "/clear", "desc": "Start a new chat", "kind": "ui"},
+        {"cmd": "/help", "desc": "Show available commands", "kind": "ui"},
+    ]
+    seen = set()
+    for root in (AGENT_DIR / ".claude" / "skills", WORK_DIR / ".claude" / "skills"):
+        try:
+            entries = sorted(root.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            name = desc = None
+            if p.is_dir() and (p / "SKILL.md").exists():
+                name, desc = p.name, _skill_desc(p / "SKILL.md")
+            elif p.suffix == ".md" and p.name not in ("INDEX.md", "README.md", "ROADMAP.md"):
+                name, desc = p.stem, _skill_desc(p)
+            if name and name not in seen:
+                seen.add(name)
+                cmds.append({"cmd": "/" + name, "desc": (desc or "")[:120], "kind": "skill"})
+    return cmds
 
 
 # ── model config ─────────────────────────────────────────────────────────────
@@ -469,6 +513,19 @@ PAGE = ("""<!DOCTYPE html>
   .menu .item.sel .check { opacity:1; }
   .hint { text-align:center; color:var(--muted); font-size:11.5px; margin-top:9px; }
 
+  /* slash-command menu */
+  #composer { position:relative; }
+  .slashmenu { display:none; position:absolute; bottom:74px; left:0; right:0; max-height:280px; overflow-y:auto;
+               background:var(--menu); border:1px solid var(--border); border-radius:12px; padding:6px;
+               box-shadow:0 8px 28px rgba(40,30,15,.16); z-index:25; }
+  .slashmenu.open { display:block; }
+  .slashmenu .si { display:flex; align-items:baseline; gap:10px; padding:8px 11px; border-radius:8px; cursor:pointer; }
+  .slashmenu .si.sel, .slashmenu .si:hover { background:var(--hover); }
+  .slashmenu .si .c { font-family:ui-monospace,Menlo,monospace; font-size:13px; color:var(--accent); font-weight:600; white-space:nowrap; }
+  .slashmenu .si .d { font-size:12.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sendbtn.stopmode { background:var(--text); }
+  .sendbtn.stopmode:hover { background:var(--accent-hover); }
+
   /* ── sidebar (collapsible, ChatGPT/Claude-style) ── */
   #shell { flex:1; display:flex; min-height:0; }
   #sidebar { width:268px; flex:0 0 268px; background:var(--card); border-right:1px solid var(--border);
@@ -540,6 +597,7 @@ PAGE = ("""<!DOCTYPE html>
     <div id="log"></div>
   </div>
   <div id="composer">
+    <div id="slash" class="slashmenu"></div>
     <div class="inputwrap" id="inputwrap">
       <div id="thumbs"></div>
       <textarea id="inp" placeholder="Message __NAME__…" rows="1" autofocus></textarea>
@@ -576,8 +634,8 @@ const log=$("log"), inp=$("inp"), btn=$("send"), greeting=$("greeting");
 const thumbs=$("thumbs"), fileIn=$("file"), micBtn=$("mic"), speakBtn=$("speak");
 const wrap=$("inputwrap"), menu=$("menu"), modelpill=$("modelpill"), modelname=$("modelname");
 let polling=false, pending=[], cfg={models:[],model:""}, autoSpeak=false;
-let activeConv=null;
-const convlist=$("convlist"), searchIn=$("search");
+let activeConv=null, commands=[], slashSel=0, stopReq=false;
+const convlist=$("convlist"), searchIn=$("search"), slash=$("slash");
 
 const hr=new Date().getHours();
 greeting.textContent = hr<5?"Good evening":hr<12?"Good morning":hr<18?"Good afternoon":"Good evening";
@@ -732,28 +790,78 @@ async function selectConv(id){
 function newChat(){ activeConv=null; closeConvMenus(); log.innerHTML=""; setEmpty(); inp.focus();
   document.querySelectorAll(".conv.active").forEach(r=>r.classList.remove("active")); }
 
+/* ---- slash commands (UI controls + skills) ---- */
+async function loadCommands(){ try{ commands=(await (await api("/api/commands")).json()).commands||[]; }catch(e){} }
+function slashMatches(){
+  const v=inp.value;
+  if(!v.startsWith("/")||v.includes(" ")||v.includes("\\n")) return null;
+  const q=v.slice(1).toLowerCase();
+  return commands.filter(c=>c.cmd.slice(1).toLowerCase().startsWith(q)).slice(0,8);
+}
+function renderSlash(){
+  const ms=slashMatches();
+  if(!ms||!ms.length){ slash.classList.remove("open"); return; }
+  slashSel=Math.min(slashSel,ms.length-1); if(slashSel<0) slashSel=0;
+  slash.innerHTML=ms.map((c,i)=>`<div class="si${i===slashSel?' sel':''}" data-cmd="${esc(c.cmd)}"><span class="c">${esc(c.cmd)}</span><span class="d">${esc(c.desc||'')}</span></div>`).join("");
+  [...slash.children].forEach((el,i)=>{ el.onmousedown=e=>{e.preventDefault();pickSlash(el.dataset.cmd);}; });
+  slash.classList.add("open");
+}
+function pickSlash(cmd){
+  slash.classList.remove("open");
+  const c=commands.find(x=>x.cmd===cmd);
+  if(c&&c.kind==="ui"){ inp.value=""; syncSend(); runUI(cmd); return; }
+  inp.value=cmd+" "; inp.focus(); inp.dispatchEvent(new Event("input"));   // skill → insert, user adds args
+}
+function runUI(cmd){
+  if(cmd==="/clear"||cmd==="/new") newChat();
+  else if(cmd==="/help") showHelp();
+}
+function showHelp(){
+  const ui=commands.filter(c=>c.kind==="ui").map(c=>`${c.cmd} — ${c.desc}`).join("\\n");
+  const sk=commands.filter(c=>c.kind==="skill").map(c=>`${c.cmd} — ${c.desc||""}`).join("\\n");
+  agentMsg().finalize("**Commands**\\n\\nType `/` to search. UI commands run here; skills run the agent.\\n\\n"+
+    ui+(sk?("\\n\\n**Skills**\\n"+sk):""));
+}
+/* ---- stop button (send button toggles to Stop while a turn runs) ---- */
+function setStopMode(on){
+  if(on){ btn.classList.add("stopmode"); btn.disabled=false; btn.title="Stop";
+    btn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>'; }
+  else { btn.classList.remove("stopmode"); btn.title="Send";
+    btn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+    syncSend(); }
+}
+async function stopTurn(){ stopReq=true; try{ await api("/api/stop",{method:"POST"}); }catch(e){} }
+
 async function pollReply(convAtSend){
-  if(polling) return; polling=true;
+  if(polling) return; polling=true; stopReq=false; setStopMode(true);
   const {b,finalize}=agentMsg();
   b.innerHTML='<span class="dots"><span></span><span></span><span></span></span>';
-  const deadline=Date.now()+600000;
-  while(Date.now()<deadline){
+  const deadline=Date.now()+600000; let done=false;
+  while(Date.now()<deadline && !done){
     await new Promise(r=>setTimeout(r,2000));
+    if(stopReq){
+      if(activeConv===convAtSend) finalize("_(stopped)_");
+      else { const mm=b.closest(".msg"); if(mm) mm.remove(); }
+      done=true; break;
+    }
     try{ const j=await (await api("/api/poll")).json();
       if(j.reply){
-        if(activeConv===convAtSend){ finalize(j.reply); }   // still viewing that thread → show it
-        else { const mm=b.closest(".msg"); if(mm) mm.remove(); }  // navigated away; it's saved in its thread
-        loadConversations(searchIn.value.trim());            // bump title/order in the sidebar
-        polling=false; return;
+        if(activeConv===convAtSend) finalize(j.reply);       // still viewing that thread → show it
+        else { const mm=b.closest(".msg"); if(mm) mm.remove(); }  // navigated away; saved in its thread
+        done=true;
       } }catch(e){}
   }
-  b.textContent="(no reply yet — the agent may still be working; it will appear here when ready)";
-  polling=false;
+  if(done) loadConversations(searchIn.value.trim());          // bump title/order in the sidebar
+  else if(!stopReq) b.textContent="(no reply yet — the agent may still be working; it will appear here when ready)";
+  polling=false; setStopMode(false);
 }
 
 /* ---- send ---- */
 async function send(){
   const text=inp.value.trim();
+  slash.classList.remove("open");
+  if(text==="/clear"||text==="/new"){ inp.value=""; inp.style.height="auto"; syncSend(); newChat(); return; }
+  if(text==="/help"){ inp.value=""; inp.style.height="auto"; syncSend(); showHelp(); return; }
   if((!text&&!pending.length)||polling) return;
   const images=pending.map(p=>p.path);
   inp.value=""; inp.style.height="auto"; btn.disabled=true;
@@ -767,9 +875,19 @@ async function send(){
   if(wasNew){ if(searchIn.value){ searchIn.value=""; } loadConversations(); }
   pollReply(activeConv);
 }
-btn.onclick=send;
-inp.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); }});
-inp.addEventListener("input",()=>{ inp.style.height="auto"; inp.style.height=Math.min(inp.scrollHeight,200)+"px"; syncSend(); });
+btn.onclick=()=>{ btn.classList.contains("stopmode") ? stopTurn() : send(); };
+inp.addEventListener("keydown",e=>{
+  if(slash.classList.contains("open")){
+    const items=[...slash.children];
+    if(e.key==="ArrowDown"){ e.preventDefault(); slashSel=(slashSel+1)%items.length; renderSlash(); return; }
+    if(e.key==="ArrowUp"){ e.preventDefault(); slashSel=(slashSel-1+items.length)%items.length; renderSlash(); return; }
+    if(e.key==="Enter"||e.key==="Tab"){ e.preventDefault(); if(items[slashSel]) pickSlash(items[slashSel].dataset.cmd); return; }
+    if(e.key==="Escape"){ slash.classList.remove("open"); return; }
+  }
+  if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); }
+});
+inp.addEventListener("input",()=>{ inp.style.height="auto"; inp.style.height=Math.min(inp.scrollHeight,200)+"px"; syncSend(); slashSel=0; renderSlash(); });
+inp.addEventListener("blur",()=>setTimeout(()=>slash.classList.remove("open"),150));
 function syncSend(){ btn.disabled=(inp.value.trim().length===0 && pending.length===0); }
 
 /* ---- attachments ---- */
@@ -889,6 +1007,7 @@ searchIn.addEventListener("input",()=>{ clearTimeout(searchT); searchT=setTimeou
 document.addEventListener("click",closeConvMenus);
 
 loadConfig().then(syncVoiceUI);
+loadCommands();
 loadConversations().then(()=>{ const first=convlist.querySelector(".conv"); first? selectConv(first.dataset.id) : newChat(); });
 inp.focus();
 </script>
@@ -946,6 +1065,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"reply": reply, "conversation": cid}); return
         if path == "/api/config":
             self._json(agent_config()); return
+        if path == "/api/commands":
+            self._json({"commands": list_commands()}); return
         if path.startswith("/uploads/"):
             return self._serve_upload(unquote(path[len("/uploads/"):]))
         if path == "/download":
@@ -1032,6 +1153,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "bad json"}, 400); return
             ok = star_conversation((data.get("id") or "").strip(), bool(data.get("starred")))
             self._json({"ok": ok}); return
+        if path == "/api/stop":
+            try:
+                STOP_FILE.parent.mkdir(parents=True, exist_ok=True)
+                STOP_FILE.write_text(str(time.time()))   # chat_responder sees it → kills the in-flight turn
+            except OSError:
+                pass
+            self._json({"ok": True}); return
         if path == "/api/model":
             try:
                 data = json.loads(self._read_body(100_000) or b"{}")

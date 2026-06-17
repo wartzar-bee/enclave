@@ -47,10 +47,12 @@ services:
     image: ${ENCLAVE_CHAT_IMAGE:-enclave-chat:latest}    # set to a registry path to pull a prebuilt image
     container_name: ${AGENT_ID:-enclave-agent}-chat
     volumes:
-      - ./home:/agent                        # shares inbox.md + state/chat-reply.md with the agent
+      - ./home:/agent                        # shares inbox.md + state/chat-reply.md + outputs/ with the agent
+      - ${WORK_DIR:-./home/work}:/work:ro    # read-only: enumerate the working folder's .claude/skills for the slash menu
     environment:
       - AGENT_DIR=/agent
       - AGENT_NAME=${AGENT_ID:-Agent}
+      - WORK_DIR=/work
       - WEB_CHAT_PORT=8888
       - WEB_CHAT_TOKEN=${WEB_CHAT_TOKEN:-}
       - TRANSCRIBE_URL=${TRANSCRIBE_URL:-}     # optional server-side STT (else browser Web Speech)
