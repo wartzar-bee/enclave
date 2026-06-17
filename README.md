@@ -57,19 +57,23 @@ within minutes. The agent writes files freely; it can't `git` (guard-blocked) �
 > reference mount plus a separate writable output folder. Full guide: **`docs/WORK-DIR.md`**.
 
 ## The chat (claude.ai-style, `platform/agentd/web_chat.py`, pure stdlib)
-- **Real-time replies** — the chat runs on its own plane (`state/chat-inbox.jsonl` →
-  `chat_responder.py`, a tool-capable cheap-model turn) **concurrent with** the autonomous work tick,
-  so a long task never blocks a reply. The work plane (`inbox.md` + `enclave send` / Telegram) drives
-  scheduled/directive work separately. Tune with `CHAT_RESPONDER=off` / `CHAT_MODEL=...`.
-- **Image attachments** — paperclip / paste / drag-drop. Uploaded to `home/uploads/` (gitignored);
-  the agent reads them by path with its Read tool (vision-capable brains see them).
-- **Voice input** — mic button dictates via the browser's Web Speech API into the composer.
-- **Speak replies** — per-message 🔊 and a header toggle for auto-read, via browser `speechSynthesis`.
-- **Live model switch** — the composer model picker writes `home/state/model.override`; `runtime.sh`
-  honors it on the next tick (allowlisted ids only — never executed as shell). Models follow `BRAIN`.
-- _Voice privacy:_ voice runs **in the browser** by default (zero infra) — in Chrome, dictation audio
-  goes to the browser's cloud STT. For a fully-controlled path, set `TRANSCRIBE_URL`/`TTS_URL` to a
-  server-side STT/TTS service you run and the chat uses that instead (see `docs/VOICE-BACKEND.md`).
+It's a real Claude-Code conversation in the browser — only the UI differs:
+- **Continuous, multi-conversation** — a collapsible left sidebar (**New chat · Search chats · chat list**,
+  each with a "…" menu to **star/delete**). Every thread is a **resumable Claude Code session at the
+  agent's own model** (not a downgraded side-model) — it remembers the whole thread incl. tool calls.
+  Threads live in `state/chat/<id>.jsonl`; **sessions persist across image rebuilds** (named volume on
+  `~/.claude`). New chat = a fresh session; the agent's durable memory carries across all of them.
+- **Slash commands** — type `/` for a menu of the agent's **skills** (`/ps-op-support`, `/ps-data`, …,
+  substring search) plus UI commands `/clear` and `/help`. Skills run in-session; UI commands run locally.
+- **Stop** — the send button flips to ⏹ while a turn runs and kills the in-flight turn.
+- **File downloads** — the agent writes deliverables to `/agent/outputs/` and links them
+  `[name](/download?path=name)`; the chat renders a ⬇ download button (CSV, reports, exports).
+- **Rich rendering** — markdown → HTML (tables, lists, headings, links); fenced code stays literal.
+- **Auto topic titles** — each conversation is named by topic, not the verbatim first message.
+- **Image attach** (paperclip/paste/drag-drop → `home/uploads/`), **voice in/out** (browser Web Speech,
+  or server-side via `TRANSCRIBE_URL`/`TTS_URL` — see `docs/VOICE-BACKEND.md`), and a **live model picker**.
+- Tunables: `CHAT_MODEL` (override the chat model), `CHAT_RESPONDER=off` (disable the chat plane). The
+  separate **work plane** (`inbox.md` + `enclave send` / Telegram) drives scheduled/autonomous work.
 
 ## Why it's safe (verifiable by reading code, not trusting us)
 - **Container isolation** — `--cap-drop=ALL --security-opt=no-new-privileges`; no inbound ports on the agent.
@@ -85,7 +89,7 @@ Dockerfile.agent          lean agent image (python + node + claude CLI; opt-in c
 Dockerfile.chat/.relay    web-chat + telegram sidecars (stdlib, tiny)
 Dockerfile.qmd/.codegraph optional memory-accelerator images (off by default — compose profiles)
 docker-compose.yml        the stack (+ opt-in `qmd` / `codegraph` / `telegram` profiles)
-bin/enclave               CLI: init / run / publish / snapshot / vault-encrypt|decrypt / send / chat / status / stop / logs
+bin/enclave               CLI: new / init / run / publish / snapshot / vault-encrypt|decrypt / send / chat / status / stop / logs
 platform/agentd/          the runtime: agentloop, runtime.sh, guard hooks, memory (memory.py + wiki.py),
                           vault_snapshot.py, web_chat, chat_responder, qmd + codegraph gateways, rlm.py
 tools/gcloud/             optional multi-tenant, read-only gcloud bridge (per-agent credential isolation)

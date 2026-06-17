@@ -6,6 +6,7 @@ Commands:
   enclave new <name> [--dir P]     Scaffold a NEW deployment in its own folder (names the folder + agent + free port)
   enclave init                     Interactive wizard: configure this deployment (home/, secrets/, .env)
   enclave run                      Build + start the agent, then open the chat in your browser
+  enclave app                      macOS: install an /Applications launcher (start agent + open chat by icon)
   enclave send <msg>               Send a message to the agent's inbox
   enclave logs                     Tail the agent's runner log
   enclave status                   Show agent health and recent activity
@@ -576,8 +577,44 @@ def cmd_new(args):
         print(f"\n✓ '{name}' ready at {target}.  Next:  cd {target} && ./bin/enclave run")
     sys.exit(rc)
 
+def cmd_app(args):
+    """macOS: install an /Applications launcher (.app) that starts this agent's containers + opens its
+    chat — a double-click icon in Applications/Launchpad. Usage: enclave app [--dir /Applications]"""
+    if sys.platform != "darwin":
+        sys.exit("`enclave app` is macOS-only (it builds an /Applications .app launcher).")
+    if not shutil.which("osacompile"):
+        sys.exit("osacompile not found — install Xcode command line tools (`xcode-select --install`).")
+    name = _read_env("AGENT_ID", "enclave-agent")
+    bind = _read_env("WEB_CHAT_BIND", "127.0.0.1:8888")
+    host, _, port = bind.partition(":"); url = f"http://{host or '127.0.0.1'}:{port or '8888'}/"
+    appname = f"Enclave – {name}"
+    appdir = pathlib.Path(_flag(args, "--dir") or "/Applications")
+    apppath = appdir / f"{appname}.app"
+    # AppleScript: bring the stack up (existing images, no browser) then open the chat URL.
+    script = (
+        'set repo to "%s"\n'
+        'display notification "Starting %s…" with title "Enclave"\n'
+        'do shell script "cd " & quoted form of repo & " && PATH=/usr/local/bin:/opt/homebrew/bin:$PATH '
+        './bin/enclave run --no-open --no-build >/tmp/enclave-%s.log 2>&1"\n'
+        'delay 1\n'
+        'open location "%s"\n'
+    ) % (str(REPO), name, name, url)
+    import tempfile
+    src = tempfile.NamedTemporaryFile("w", suffix=".applescript", delete=False); src.write(script); src.close()
+    try:
+        if apppath.exists():
+            shutil.rmtree(apppath)
+        r = subprocess.run(["osacompile", "-o", str(apppath), src.name])
+    finally:
+        os.unlink(src.name)
+    if r.returncode != 0:
+        sys.exit("osacompile failed.")
+    print(f"✓ Installed launcher: {apppath}")
+    print(f"  Find '{appname}' in Applications / Launchpad (or double-click it) to start the agent + open the chat.")
+    print(f"  (Run `enclave run` once first so the images are built; the launcher uses existing images.)")
+
 COMMANDS = {
-    "new": cmd_new, "init": cmd_init, "run": cmd_run, "stop": cmd_stop, "logs": cmd_logs,
+    "new": cmd_new, "init": cmd_init, "run": cmd_run, "app": cmd_app, "stop": cmd_stop, "logs": cmd_logs,
     "send": cmd_send, "status": cmd_status, "chat": cmd_chat, "publish": cmd_publish,
     "snapshot": cmd_snapshot, "vault-encrypt": cmd_vault_encrypt, "vault-decrypt": cmd_vault_decrypt,
 }

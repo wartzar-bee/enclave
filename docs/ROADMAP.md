@@ -1,9 +1,12 @@
 # Enclave — roadmap / backlog
 
 Shipped: hardened runtime + guard (incl. loader-hijack denylist), `enclave init` wizard +
-`run`/`publish`, lean images, **prebuilt images on ghcr**, wiki memory layer, claude.ai-style chat
-(image attach, voice in/out, live model switch), real-time chat plane (`chat_responder`), server-side
-voice proxy, support/analyst templates, **containerized qmd accelerator**, **RLM big-context tool**,
+`run`/`publish`, lean images, **prebuilt images on ghcr**, wiki memory layer, **claude.ai-style chat —
+multi-conversation sidebar (new/search/star/delete), continuous resumable Claude-Code sessions per
+thread (persist across rebuilds), markdown→HTML, slash-command menu (skills + /clear/help), Stop button,
+file downloads (`/agent/outputs`), auto topic titles, image attach, voice in/out, live model picker**,
+server-side voice proxy, support/analyst templates, **collision-proof multi-deployment** (`enclave new`,
+project keyed to `AGENT_ID`, auto free-port), **containerized qmd accelerator**, **RLM big-context tool**,
 **Cognee graph-provider adapter stub** (engine rejected — see VETTING), **WASM-sandbox scope + flagged
 routing hook**, **unified memory graph** (`wiki.py graph --brain` — knowledge + memory + skills one
 linked vault), **codegraph code-memory** (in-agent / shared-index / HTTP bridge), **durable secret-safe
