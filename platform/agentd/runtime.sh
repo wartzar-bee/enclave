@@ -215,6 +215,9 @@ esac
 # put both in scope.
 ADD_DIRS=(--add-dir "$AGENT_DIR")
 [ -d /workspace ] && [ "$AGENT_DIR" != /workspace ] && ADD_DIRS+=(--add-dir /workspace)
+# The WORK_DIR project tree (mounted at /work) is in scope too — so the agent can work on it AND
+# Claude Code discovers the working folder's .claude/skills (e.g. a project's own skill set). See docs/WORK-DIR.md.
+[ -d /work ] && [ "$AGENT_DIR" != /work ] && ADD_DIRS+=(--add-dir /work)
 
 # Memory recall (P3): pre-load the agent's open work + most-relevant past memory into
 # state/recall.md so a context-wiped tick doesn't re-derive the world (agents forget — lean

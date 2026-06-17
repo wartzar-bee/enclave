@@ -58,3 +58,20 @@ become searchable:
 
 The invariant: **work is saved in `/work`; the index points at `/work`; recall stays fresh
 automatically.** No manual re-index step in the agent's loop.
+
+## Skills in the working folder
+
+The runtime passes `--add-dir /work` to Claude Code, so the working folder is in scope for both file
+access *and* **skill discovery**: any `.claude/skills/<name>/SKILL.md` in the working tree (its root or
+nested dirs up to its repo root) is discovered automatically, on top of the agent's own base skills in
+`/agent/.claude/skills` (personal level). This gives a clean two-tier model:
+
+- **Base skills** → `/agent/.claude/skills` — the agent's built-in capabilities (travel with the image/home).
+- **Project skills** → `/work/.claude/skills` — the working tree's own skills, owned and versioned by
+  that project. Symlinking them to a project skills repo (e.g. `../programs/<repo>/skills/<name>`) means
+  a `git pull` in that repo refreshes the agent's skills with no copy step. Relative symlinks within the
+  working tree resolve identically on the host and in the container.
+
+Both tiers are available at once; on a same-`name:` collision Claude Code's documented precedence is
+personal > project, so name your base and project skills distinctly (or use `skillOverrides` in
+`settings.json` for per-skill control).
