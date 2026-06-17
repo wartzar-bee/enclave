@@ -396,6 +396,15 @@ PAGE = ("""<!DOCTYPE html>
   .bubble pre { background:var(--code); border:1px solid var(--border); border-radius:10px;
                 padding:13px 15px; overflow-x:auto; margin:10px 0; }
   .bubble pre code { background:none; padding:0; font-size:0.86em; line-height:1.5; }
+  .bubble table { border-collapse:collapse; margin:10px 0; font-size:14px; display:block; overflow-x:auto; max-width:100%; }
+  .bubble th, .bubble td { border:1px solid var(--border); padding:6px 12px; text-align:left; vertical-align:top; }
+  .bubble th { background:var(--code); font-weight:650; white-space:nowrap; }
+  .bubble ul, .bubble ol { margin:8px 0; padding-left:24px; }
+  .bubble li { margin:3px 0; }
+  .bubble h1, .bubble h2, .bubble h3 { font-size:1.05em; font-weight:650; margin:14px 0 6px; }
+  .bubble blockquote { border-left:3px solid var(--border); margin:8px 0; padding:2px 0 2px 12px; color:var(--muted); }
+  .bubble a { color:var(--accent); text-decoration:underline; }
+  .bubble hr { border:none; border-top:1px solid var(--border); margin:13px 0; }
   .imgs { display:flex; flex-wrap:wrap; gap:8px; }
   .imgs img { max-width:220px; max-height:220px; border-radius:12px; border:1px solid var(--border); }
   .acts { display:flex; gap:2px; margin-top:6px; opacity:0; transition:opacity .15s; }
@@ -567,11 +576,48 @@ const hr=new Date().getHours();
 greeting.textContent = hr<5?"Good evening":hr<12?"Good morning":hr<18?"Good afternoon":"Good evening";
 
 function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function mdRow(l){ return l.trim().replace(/^\\|/,"").replace(/\\|$/,"").split("|").map(c=>c.trim()); }
+function mdTable(head,body){
+  let h="<table><thead><tr>"+head.map(c=>"<th>"+esc(c)+"</th>").join("")+"</tr></thead>";
+  if(body.length) h+="<tbody>"+body.map(r=>"<tr>"+r.map(c=>"<td>"+esc(c)+"</td>").join("")+"</tr>").join("")+"</tbody>";
+  return h+"</table>";
+}
 function md(s){
-  let t=esc(s);
-  t=t.replace(/```([\\s\\S]*?)```/g,(m,c)=>"<pre><code>"+c.replace(/^\\n/,"")+"</code></pre>");
+  // 1) pull fenced code blocks OUT first — their content stays literal (never parsed as markdown/html)
+  const blocks=[];
+  s=s.replace(/```[a-zA-Z0-9_-]*\\r?\\n?([\\s\\S]*?)```/g,(m,c)=>{ blocks.push(c.replace(/\\n$/,"")); return "\\u0000"+(blocks.length-1)+"\\u0000"; });
+  // 2) block pass: tables + lists need line grouping
+  const lines=s.split(/\\r?\\n/), out=[]; let i=0;
+  const isSep=l=>/-/.test(l)&&/^\\s*\\|?[\\s:|-]+\\|?\\s*$/.test(l);
+  while(i<lines.length){
+    const ln=lines[i];
+    if(i+1<lines.length && ln.includes("|") && ln.trim() && isSep(lines[i+1])){
+      const head=mdRow(ln); i+=2; const body=[];
+      while(i<lines.length && lines[i].includes("|") && lines[i].trim()){ body.push(mdRow(lines[i])); i++; }
+      out.push(mdTable(head,body)); continue;
+    }
+    if(/^\\s*[-*+]\\s+/.test(ln)){
+      const it=[]; while(i<lines.length && /^\\s*[-*+]\\s+/.test(lines[i])){ it.push(lines[i].replace(/^\\s*[-*+]\\s+/,"")); i++; }
+      out.push("<ul>"+it.map(x=>"<li>"+esc(x)+"</li>").join("")+"</ul>"); continue;
+    }
+    if(/^\\s*\\d+\\.\\s+/.test(ln)){
+      const it=[]; while(i<lines.length && /^\\s*\\d+\\.\\s+/.test(lines[i])){ it.push(lines[i].replace(/^\\s*\\d+\\.\\s+/,"")); i++; }
+      out.push("<ol>"+it.map(x=>"<li>"+esc(x)+"</li>").join("")+"</ol>"); continue;
+    }
+    out.push(esc(ln)); i++;
+  }
+  let t=out.join("\\n");
+  // 3) headings, blockquote, hr (line-anchored; content already escaped)
+  t=t.replace(/^\\s*#{1,6}\\s+(.+)$/gm,"<h3>$1</h3>");
+  t=t.replace(/^\\s*&gt;\\s?(.+)$/gm,"<blockquote>$1</blockquote>");
+  t=t.replace(/^\\s*([-*_])\\1{2,}\\s*$/gm,"<hr>");
+  // 4) inline: code, bold, italic, links
   t=t.replace(/`([^`\\n]+)`/g,"<code>$1</code>");
-  t=t.replace(/\\*\\*([^*]+)\\*\\*/g,"<strong>$1</strong>");
+  t=t.replace(/\\*\\*([^*\\n]+)\\*\\*/g,"<strong>$1</strong>");
+  t=t.replace(/(^|[^*\\w])\\*([^*\\n]+)\\*(?!\\w)/g,"$1<em>$2</em>");
+  t=t.replace(/\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^)\\s]+)\\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  // 5) restore fenced code blocks (escaped, literal)
+  t=t.replace(/\\u0000(\\d+)\\u0000/g,(m,n)=>"<pre><code>"+esc(blocks[n])+"</code></pre>");
   return t;
 }
 function imgURL(p){ return "/"+p+(TOKEN?("?token="+encodeURIComponent(TOKEN)):""); }

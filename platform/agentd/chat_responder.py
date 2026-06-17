@@ -142,6 +142,50 @@ def _answer_api(prompt, model, timeout, log):
         return None
 
 
+def _is_first_turn(agent_dir, conv_id):
+    """True if this conversation has only the just-arrived user message (no prior turns) → time to title it."""
+    if not (conv_id and _SAFE_ID.match(conv_id)):
+        return False
+    return len(_read_jsonl(agent_dir / "state" / "chat" / (conv_id + ".jsonl"))) <= 1
+
+def _clean_title(s):
+    s = " ".join((s or "").split()).strip().strip('"').strip("'").rstrip(".")
+    return s[:60] or None
+
+def _gen_title(agent_dir, brain, user_msg, timeout, log):
+    """A short topic title for the conversation (ChatGPT/Claude-style) — NOT the verbatim first message.
+    Cheap one-shot; runs from a neutral cwd so it does NOT inherit the agent's work-tick CLAUDE.md."""
+    p = ("Reply with ONLY a short topic title (3-6 words, no quotes, no trailing punctuation) that "
+         "summarizes this request — like a chat tab title:\n\n" + (user_msg or "")[:500])
+    try:
+        if brain == "claude":
+            r = subprocess.run(["claude", "-p", p, "--model", "claude-haiku-4-5", "--dangerously-skip-permissions"],
+                               cwd="/tmp", capture_output=True, text=True, timeout=min(timeout, 60))
+            return _clean_title(r.stdout) if r.returncode == 0 else None
+        return _clean_title(_answer_api(p, _chat_model(agent_dir, brain), min(timeout, 60), log))
+    except Exception as e:
+        log(f"title gen failed: {e}"); return None
+
+def _set_title(agent_dir, conv_id, title):
+    """Write the generated topic into web_chat's conversation index (atomic; web_chat preserves it)."""
+    if not title:
+        return
+    idx_path = agent_dir / "state" / "chat" / "index.json"
+    try:
+        idx = json.loads(idx_path.read_text())
+    except Exception:
+        return
+    e = next((c for c in idx if c.get("id") == conv_id), None)
+    if not e:
+        return
+    e["title"] = title
+    try:
+        tmp = idx_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(idx))
+        tmp.replace(idx_path)
+    except Exception:
+        pass
+
 def chat_loop(agent_dir, log=print):
     agent_dir = pathlib.Path(agent_dir)
     chat_inbox = agent_dir / "state" / "chat-inbox.jsonl"
@@ -165,6 +209,7 @@ def chat_loop(agent_dir, log=print):
                 if not text and not images:
                     continue
                 conv_id = (m.get("conversation") or "").strip()
+                first = _is_first_turn(agent_dir, conv_id)   # check BEFORE answering (reply gets appended later)
                 model = _chat_model(agent_dir, brain)     # re-resolve so a live UI model switch is honored
                 with lock:
                     if brain == "claude":
@@ -174,6 +219,11 @@ def chat_loop(agent_dir, log=print):
                 if reply:
                     reply_file.write_text(reply)
                     log(f"chat reply sent ({len(reply)} chars)")
+                    if first:                              # name the conversation by topic (not the verbatim 1st msg)
+                        ti = _gen_title(agent_dir, brain, text, timeout, log)
+                        if ti:
+                            _set_title(agent_dir, conv_id, ti)
+                            log(f"chat titled: {ti}")
                 else:
                     reply_file.write_text("(couldn't generate a reply just now — please try again)")
         except Exception as e:
