@@ -27,6 +27,22 @@ wiki), `secrets/` (your read-only credential), and `.env`. For `BRAIN=claude` th
 `./bin/enclave publish --registry ghcr.io/<owner>` (after `docker login ghcr.io`) — then teammates set
 `ENCLAVE_AGENT_IMAGE`/`ENCLAVE_CHAT_IMAGE` in `.env` and run `./bin/enclave run --pull` (no 5-min build).
 
+## Where work is saved — home (brain) vs `/work` (project)
+Enclave answers "where does the agent's work go, and how does it stay searchable?" with two mounts:
+- **`home/` → `/agent`** — the agent's **brain**: `CLAUDE.md`, `memory/`, `skills/`, `inbox.md`,
+  `work.json`, `state/`. A scan-gated git vault (durable + secret-safe).
+- **`WORK_DIR` → `/work`** — the agent's **working folder**: the real project tree it operates on and
+  **saves work into** (rw). Set `WORK_DIR` in `.env` to any host path to make that tree the working
+  folder; leave it blank to default to `home/work` (inside the vault). `enclave init` prompts for it
+  (`--work-dir /abs/path` non-interactively).
+
+Saved work stays searchable by **indexing `/work`** — the host qmd gateway re-embeds it on a timer (or
+use the containerized `qmd`/`codegraph` profiles), so the agent's own output feeds back into its memory
+within minutes. The agent writes files freely; it can't `git` (guard-blocked) — you own commits.
+> ⚠ Mounting a real repo rw exposes whatever it contains to the agent — **including any secrets
+> checked into that tree**. Scrub the tree, treat the deployment as trusted, or use a read-only
+> reference mount plus a separate writable output folder. Full guide: **`docs/WORK-DIR.md`**.
+
 ## The chat (claude.ai-style, `platform/agentd/web_chat.py`, pure stdlib)
 - **Real-time replies** — the chat runs on its own plane (`state/chat-inbox.jsonl` →
   `chat_responder.py`, a tool-capable cheap-model turn) **concurrent with** the autonomous work tick,
@@ -61,8 +77,9 @@ platform/agentd/          the runtime: agentloop, runtime.sh, guard hooks, memor
                           vault_snapshot.py, web_chat, chat_responder, qmd + codegraph gateways, rlm.py
 tools/gcloud/             optional multi-tenant, read-only gcloud bridge (per-agent credential isolation)
 templates/                starter agent homes (ops, support, analyst)
-docs/                     design notes — WIKI-LAYER, MEMORY-PROVIDERS, MEMORY-MODES, CODE-MEMORY,
-                          WASM-SANDBOX, VETTING (dependency security passes), ROADMAP
+docs/                     design notes — WORK-DIR (working folder + indexing), WIKI-LAYER,
+                          MEMORY-PROVIDERS, MEMORY-MODES, CODE-MEMORY, WASM-SANDBOX,
+                          VETTING (dependency security passes), ROADMAP
 ```
 
 ## Memory — one linked, durable, secret-safe brain

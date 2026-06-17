@@ -32,8 +32,10 @@ services:
       - INTERVAL_SECONDS=${INTERVAL_SECONDS:-86400}
       - PERMISSION=${PERMISSION:-dangerous}
       - TOOLS_ROOT=/workspace
+      - WORK_DIR=/work                       # in-container path of the project working folder (set the HOST path via WORK_DIR in .env)
     volumes:
-      - ./home:/agent                       # agent home (rw)
+      - ./home:/agent                        # agent HOME (rw): its brain — CLAUDE.md, memory, skills, inbox, work queue, state
+      - ${WORK_DIR:-./home/work}:/work       # project WORKING FOLDER (rw): where the agent does + saves real work. Set WORK_DIR in .env to a host repo; defaults to home/work (inside the vault). Index it for fresh recall — see docs/WORK-DIR.md.
       - ./secrets:/workspace/.secrets:ro     # scoped credentials (read-only)
     restart: unless-stopped
 

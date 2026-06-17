@@ -8,7 +8,9 @@ voice proxy, support/analyst templates, **containerized qmd accelerator**, **RLM
 routing hook**, **unified memory graph** (`wiki.py graph --brain` — knowledge + memory + skills one
 linked vault), **codegraph code-memory** (in-agent / shared-index / HTTP bridge), **durable secret-safe
 vault** (scan-gated git + per-tick auto-snapshot + `vault-encrypt` at-rest), **YAGNI code discipline**
-distilled into the build harness.
+distilled into the build harness, **first-class working folder** (`WORK_DIR` → `/work` rw mount,
+distinct from the home/brain — where the agent does + saves real work, kept fresh by continuous
+indexing; `docs/WORK-DIR.md`).
 
 > **Hard rule:** never bake an external dependency (npm/pip/repo) into the image or a setup script
 > without a security pass first — provenance + pinned version + CVE scan + read the actual code for

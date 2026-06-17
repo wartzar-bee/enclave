@@ -30,6 +30,7 @@ A teammate setting up Enclave does **not** mint their own cloud access. To use t
 
 ## Known limitations (be honest)
 - A teammate who can edit the compose/guard config can widen access — this protects against a *compromised/injected agent*, not against a malicious operator with repo write access.
+- **The working folder (`WORK_DIR` → `/work`) is read-write by design.** If you point it at a real repo, the agent can read AND modify everything in that tree — including any secrets committed into it (this is a property of *that repo*, not Enclave). The guard still blocks `git` and foreign-secret reads, but it does not sandbox writes within the mounted tree. Mitigations: scrub secrets out of the tree, treat the deployment as trusted, or mount a read-only reference copy plus a separate writable output folder. See `docs/WORK-DIR.md`.
 - The vault secret-scan is **pattern-based** (high-confidence credential formats); a novel secret format could slip it. `enclave vault-encrypt` (ciphertext at rest) is the defense for that case.
 - The memory vault stores plaintext markdown locally; treat the off-machine copy accordingly (push to a private remote, or encrypt it).
 - Report issues internally before any external disclosure.

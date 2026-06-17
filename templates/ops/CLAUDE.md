@@ -30,6 +30,15 @@ Your memory is **ONE linked vault**: the curated wiki at `knowledge/` + your ope
   (spot orphaned memories) periodically.
 See `knowledge/WIKI.md` for the schema.
 
+## Working folder (`/work`)
+`/work` is your **project working folder** — the actual tree you operate on and save work into (set
+by the deployment's `WORK_DIR`; defaults to a folder inside your vault). This is distinct from your
+home (`/agent`), which holds your brain (memory/skills/state). Save real work — files, drafts,
+analyses, edited code — **under `/work`**, not in your home. Writes to `/work` persist to the host
+immediately. The deployment indexes `/work` for fresh recall, so your saved work becomes searchable
+on the next index pass (typically within minutes). You cannot `git` (guard-blocked) — just write the
+files; the operator owns commits. See `docs/WORK-DIR.md`.
+
 ## Code discipline (when you DO write code/scripts)
 Write the least code that works. Stop at the first rung that holds: does it need to exist? (no → skip,
 say so) → stdlib/native feature → already-installed dep (never add a new one for a few lines; a new dep

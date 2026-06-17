@@ -25,6 +25,7 @@ Flags for non-interactive init (CI / scripted):
   --cred TOKEN     the model credential (Claude OAuth / API key) — what the wizard prompts for
   --codegraph PATH code memory over a repo folder (an HTTP bridge `run` starts; twin of qmd)
   --qmd URL        a knowledge-search qmd MCP gateway URL (blank = none)
+  --work-dir PATH  the host project tree the agent works in (mounted rw at /work; blank = home/work)
   --bind 127.0.0.1:8888  --port 8888  --token TOK (optional web-UI ?token= gate)  --yes  --force
 Flags for run:
   --no-open   don't auto-open the browser
@@ -166,6 +167,10 @@ def cmd_init(args):
     bind = _flag(args, "--bind") or _ask("Web chat bind (host:port)", default="127.0.0.1:8888", yes=yes)
     port = _flag(args, "--port") or (bind.split(":")[-1] if ":" in bind else "8888")
     token = _flag(args, "--token", "")  # web UI ?token= gate (optional)
+    # Working folder: the host project tree the agent operates on + saves into (mounted rw at /work).
+    # Blank → ./home/work (inside the vault). Point it at a real repo to make that the working folder.
+    work_dir = _flag(args, "--work-dir") or _ask(
+        "Working folder — host path the agent works in (blank = home/work)", default="", yes=yes)
 
     # memory accelerators (opt-in) — ASK at install so .mcp.json reflects reality (no dead entries).
     #   codegraph = code memory over a repo folder, served as an HTTP bridge (twin of qmd).
@@ -247,6 +252,9 @@ def cmd_init(args):
     _write(home / "work.json", "[]\n")          # BARE list — memory.py requires it (not {"items":[]})
     _write(home / "state" / "rollup.md", f"# {name} status\n\n(no ticks yet)\n")
     (home / "logs").mkdir(parents=True, exist_ok=True)
+    # default working folder (mounted at /work) lives inside the vault unless WORK_DIR points elsewhere
+    (home / "work").mkdir(parents=True, exist_ok=True)
+    _write(home / "work" / ".gitkeep", "")
 
     # 4) knowledge wiki = the portable default memory (no DB/GPU/service)
     wiki = REPO / "platform" / "agentd" / "wiki.py"
@@ -285,6 +293,8 @@ def cmd_init(args):
     ]
     if cg_corpus:
         env_lines.append(f"CODE_CORPUS={cg_corpus}")   # `enclave run` brings up the codegraph bridge over this
+    # WORK_DIR: blank → compose default (./home/work). A host path makes that tree the working folder.
+    env_lines.append(f"WORK_DIR={work_dir}" if work_dir else "# WORK_DIR=/abs/path/to/project   # host working folder (mounted rw at /work); blank = home/work")
     _write(envf, "\n".join(env_lines) + "\n")
 
     # 7) make the vault durable BY DEFAULT — its own scan-gated git repo (secrets/ excluded, a
@@ -297,6 +307,7 @@ def cmd_init(args):
     print(f"  home/    → mounts to /agent (CLAUDE.md, agent.env, work.json, knowledge/ wiki)")
     mem = ["wiki (always-on)"] + (["qmd"] if qmd_url else []) + (["codegraph→" + cg_corpus] if cg_corpus else [])
     print(f"  memory   → {', '.join(mem)}" + ("  ·  codegraph bridge starts on `enclave run`" if cg_corpus else ""))
+    print(f"  /work    → {work_dir or 'home/work'} (rw working folder — where the agent saves work; index it for recall, see docs/WORK-DIR.md)")
     needs_cred = bool(bspec["secret_key"])
     cred_present = bool(cred)
     if needs_cred and not cred_present:  # maybe it's already in the file from a prior setup
