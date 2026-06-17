@@ -88,31 +88,49 @@ def _api_prompt(agent_dir, conv_id, msg, images):
     return "\n\n".join(parts)
 
 
+def _seed_prompt(agent_dir, conv_id, turn):
+    """First-turn prompt: the chat-mode preamble + any prior thread text (so context SURVIVES a fresh
+    session — e.g. after an image rebuild wiped the container's claude sessions)."""
+    seed = CHAT_PREAMBLE
+    hist = _conv_history(agent_dir, conv_id)
+    if hist:
+        seed += "\n\n## conversation so far\n" + "\n".join(
+            f"{h.get('role','?')}: {h.get('text','')[:800]}" for h in hist)
+    return seed + "\n\nUser: " + turn
+
 def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
-    """One turn of a CONTINUOUS Claude Code session per conversation. The first message starts a session
-    (we save its id to state/chat/<id>.session); later messages `--resume` it, so the FULL thread — text
-    AND tool calls — is real context, exactly like the CLI conversation, just a different UI. cwd=agent_dir
-    auto-loads CLAUDE.md + .claude/settings.json (guard hook) + .mcp.json (qmd). Guard still fires."""
+    """One turn of a CONTINUOUS Claude Code session per conversation. First message starts a session (id
+    saved to state/chat/<id>.session); later messages `--resume` it, so the FULL thread — text AND tool
+    calls — is native context, like the CLI, just a different UI. cwd=agent_dir auto-loads CLAUDE.md +
+    .claude/settings.json (guard) + .mcp.json (qmd). If a saved session is gone (container rebuild wipes
+    ~/.claude), we RETRY fresh in the same turn — seeded with the thread — so the user never sees a failure."""
     sf = (agent_dir / "state" / "chat" / (conv_id + ".session")) if (conv_id and _SAFE_ID.match(conv_id)) else None
-    sid = (sf.read_text().strip() or None) if (sf and sf.exists()) else None
     turn = msg
     if images:
         turn = "User attached image(s); read them with the Read tool:\n" + "\n".join(f"- {p}" for p in images) + "\n\n" + msg
-    cmd = ["claude", "--model", model, "--dangerously-skip-permissions", "--output-format", "json"]
-    if sid:
-        cmd += ["--resume", sid, "-p", turn]
-    else:
-        cmd += ["-p", CHAT_PREAMBLE + "\n\nUser: " + turn]      # first turn establishes the chat mode
-    try:
-        r = subprocess.run(cmd, cwd=str(agent_dir), capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        log("chat turn timed out"); return None
-    if r.returncode != 0:
+    base = ["claude", "--model", model, "--dangerously-skip-permissions", "--output-format", "json"]
+
+    def run(sid):
+        cmd = base + (["--resume", sid, "-p", turn] if sid else ["-p", _seed_prompt(agent_dir, conv_id, turn)])
+        try:
+            return subprocess.run(cmd, cwd=str(agent_dir), capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            log("chat turn timed out"); return None
+
+    sid = (sf.read_text().strip() or None) if (sf and sf.exists()) else None
+    r = run(sid)
+    if r is not None and r.returncode != 0 and sid:
         err = (r.stderr or r.stdout or "")
-        log(f"chat turn failed (rc={r.returncode}): {err[:200]}")
-        if sf and sid and ("resume" in err.lower() or "session" in err.lower()):
-            try: sf.unlink()                                    # stale session id → next msg starts fresh
-            except OSError: pass
+        log(f"chat resume failed (rc={r.returncode}): {err[:160]} — starting a fresh session")
+        try:
+            if sf: sf.unlink()                                  # stale/lost session → drop the dangling pointer
+        except OSError:
+            pass
+        r = run(None)                                           # retry fresh in the SAME turn (seeded w/ history)
+    if r is None:
+        return None
+    if r.returncode != 0:
+        log(f"chat turn failed (rc={r.returncode}): {((r.stderr or r.stdout) or '')[:200]}")
         return None
     out = (r.stdout or "").strip()
     try:
