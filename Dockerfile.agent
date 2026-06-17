@@ -32,7 +32,8 @@ COPY platform/agentd/  /workspace/platform/agentd/
 COPY tools/            /workspace/tools/
 
 # Non-root (claude refuses --dangerously-skip-permissions as root).
-RUN useradd -m -u 1001 -s /bin/bash agent && chown -R agent:agent /workspace
+RUN useradd -m -u 1001 -s /bin/bash agent && chown -R agent:agent /workspace \
+    && mkdir -p /home/agent/.claude && chown -R agent:agent /home/agent/.claude   # agent-owned so a persistent .claude volume is writable
 WORKDIR /agent
 USER agent
 ENV HOME=/home/agent AGENT_DIR=/agent

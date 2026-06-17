@@ -37,6 +37,7 @@ services:
       - ./home:/agent                        # agent HOME (rw): its brain — CLAUDE.md, memory, skills, inbox, work queue, state
       - ${WORK_DIR:-./home/work}:/work       # project WORKING FOLDER (rw): where the agent does + saves real work. Set WORK_DIR in .env to a host repo; defaults to home/work (inside the vault). Index it for fresh recall — see docs/WORK-DIR.md.
       - ./secrets:/workspace/.secrets:ro     # scoped credentials (read-only)
+      - enclave-agent-claude:/home/agent/.claude  # persist Claude Code chat SESSIONS across image rebuilds (thread continuity)
     restart: unless-stopped
 
   web-chat:
@@ -135,3 +136,4 @@ services:
 
 volumes:
   qmd-index:        # disposable qmd vector index (rebuildable from the wiki via QMD_MODE=reembed)
+  enclave-agent-claude:   # persists /home/agent/.claude (Claude Code sessions) so chat threads survive image rebuilds
