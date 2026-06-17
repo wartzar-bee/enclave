@@ -150,6 +150,56 @@ except Exception: print(0)
   exit 0
 fi
 
+# BRAIN=optimize (adaptive cost router, D-072): start on Claude (subscription — free at the margin),
+# shift to the cheapest REACHABLE OpenAI-compatible pool in policy.json as the 5h/7d cap fills.
+# route_brain.py prints ONE decision line; we either fall through to the Claude path (export MODEL)
+# or drive the tick with local_agent.py on the chosen pool. Fail-OPEN to Claude — never breaks a tick.
+if [ "${BRAIN:-claude}" = "optimize" ]; then
+  RB="$SCRIPT_DIR/route_brain.py"; [ -f "$RB" ] || RB="${TOOLS_ROOT:-/workspace}/platform/agentd/route_brain.py"
+  DECISION="$(MODEL="${MODEL:-claude-opus-4-8}" MODEL_ROUTINE="${MODEL_ROUTINE:-claude-sonnet-4-6}" \
+              python3 "$RB" "$AGENT_DIR" --reason "${TICK_REASON:-heartbeat}" 2>>"$LOG" || echo "claude ${MODEL:-claude-opus-4-8}")"
+  set -- $DECISION
+  if [ "$1" = "pool" ]; then
+    POOL_BASE="$2"; POOL_KEY_ENV="$3"; POOL_MODEL="$4"
+    # Resolve the pool's API key from env or any scoped secrets/*.env by its env-var name.
+    POOL_KEY="$(printenv "$POOL_KEY_ENV" 2>/dev/null || true)"
+    if [ -z "$POOL_KEY" ]; then
+      for SDIR in "$AGENT_DIR/.secrets" "${TOOLS_ROOT:-/workspace}/.secrets"; do
+        [ -d "$SDIR" ] || continue
+        for SFILE in "$SDIR"/*.env; do
+          [ -f "$SFILE" ] || continue
+          POOL_KEY="$(grep "^${POOL_KEY_ENV}=" "$SFILE" 2>/dev/null | head -1 | cut -d= -f2-)"
+          [ -n "$POOL_KEY" ] && break
+        done
+        [ -n "$POOL_KEY" ] && break
+      done
+    fi
+    [ -z "$POOL_KEY" ] && POOL_KEY="x"   # local servers accept any key
+    MEM="$AGENT_DIR/bin/memory.py"; [ -f "$MEM" ] || MEM="$SCRIPT_DIR/memory.py"
+    [ -f "$MEM" ] && { mkdir -p "$AGENT_DIR/state"; python3 "$MEM" --base "$AGENT_DIR" digest > "$AGENT_DIR/state/recall.md" 2>>"$LOG" || true; }
+    LA="$SCRIPT_DIR/local_agent.py"; [ -f "$LA" ] || LA="${TOOLS_ROOT:-/workspace}/platform/agentd/local_agent.py"
+    log "tick start (brain=optimize→pool, model=$POOL_MODEL @ $POOL_BASE, guard=on)"
+    LOCAL_BRAIN_BASE="$POOL_BASE" \
+    LOCAL_BRAIN_MODEL="$POOL_MODEL" \
+    LOCAL_BRAIN_KEY="$POOL_KEY" \
+    ESCALATION_BASE="$POOL_BASE" \
+    ESCALATION_MODEL="$POOL_MODEL" \
+    ESCALATION_KEY="$POOL_KEY" \
+    LOCAL_MAX_TOKENS="${LOCAL_MAX_TOKENS:-8192}" \
+    LOCAL_MAX_STEPS="${LOCAL_MAX_STEPS:-32}" \
+    LOCAL_REQ_TIMEOUT="${LOCAL_REQ_TIMEOUT:-120}" \
+    SPEND_LOG="$AGENT_DIR/state/api_spending.jsonl" \
+    ROLE="${ROLE:-}" GUARD_HOOK="${GUARD_HOOK:-}" python3 "$LA" "$AGENT_DIR" >> "$LOG" 2>&1
+    rc=$?
+    [ "$rc" -ne 0 ] && log "tick error (exit $rc)"
+    log "tick end"
+    exit 0
+  fi
+  # "claude <model>" → run the Claude path below with route_brain's chosen model.
+  export MODEL="${2:-${MODEL:-claude-opus-4-8}}"
+  log "brain=optimize → claude $MODEL (cap has headroom)"
+fi
+
 # ── Subscription-ceiling guard (P1, 2026-06-13) — REAL %-of-limit, the numbers `claude /status` shows ──
 # PRIMARY source = Claude's own unified rate-limit headers (claude_usage.py, cached). Usage credits are
 # OFF, so the fleet must stay strictly UNDER the subscription limit — we throttle on % of the ceiling

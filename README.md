@@ -81,7 +81,10 @@ It's a real Claude-Code conversation in the browser — only the UI differs:
   blocks `git`, foreign-secret reads, and (opt-in profiles) cloud writes / production mutations.
 - **Scoped secrets** — a read-only `./secrets/` mount; the agent can't reach anything else.
 - **Scoped knowledge** — semantic search is fronted by a per-agent gateway with a collection allowlist.
-- **Brain-agnostic** — `BRAIN=claude | api | local`; same container, same guard, one env var.
+- **Brain-agnostic** — `BRAIN=claude | api | local | optimize`; same container, same guard, one env var.
+  `optimize` is the adaptive cost router: it runs Claude (free at the margin) while the 5h/7d cap has
+  headroom, then shifts to the cheapest *reachable* pool in `policy.json` — any OpenAI-compatible
+  provider (xAI / OpenAI / Groq / OpenRouter / a local mlx-ollama server), added by editing one file.
 
 ## Layout
 ```

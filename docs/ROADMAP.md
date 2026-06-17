@@ -61,6 +61,20 @@ behind `ENCLAVE_WASM_SANDBOX=1` to **log** what would be sandboxed (non-blocking
 The WASM **runtime** dep stays gated — when vetted, a `run_sandboxed()` executor flips the flag from
 log to enforce; the policy/hook don't change. Tested (classifier + flag on/off + denials still deny).
 
+## ✅ #8 — BRAIN=optimize adaptive cost router  (DONE 2026-06-17)
+`platform/agentd/route_brain.py` + `policy.json` + a `runtime.sh` dispatch branch. Per tick it reads
+Claude's 5h/7d cap utilization (`state/claude-usage.json`) and classifies the tick judgment/mechanical
+(same signal as `route_tier.py`): **< soft (70%)** all on Claude tiered Opus/Sonnet; **soft..hard**
+mechanical work leaves Claude; **>= hard (90%)** everything leaves — to the cheapest *reachable* pool
+in `policy.json` (free local → low → high; judgment prefers the highest-quality reachable pool). Every
+pool is an OpenAI-compatible endpoint (`base_url` + `api_key_env` + `model` + `cost`), so ANY provider
+works (xAI / OpenAI / Groq / OpenRouter / local mlx-ollama) — add one by editing `policy.json`. Pools
+are pinged + skipped if unreachable or missing a key, so it **always degrades back to Claude** and
+never breaks a tick. `enclave init --brain optimize` runs a generic pool wizard (local + remote pools,
+per-pool `secrets/<name>.env`) and writes an editable per-deployment `policy.json` (which wins over the
+baked default). Reuses `local_agent.py` for the pool path. Tested: full decision matrix (7 cases),
+deployment-policy override, decision-line parse, `init --yes` defaults. See `docs/OPTIMIZE-BRAIN.md`.
+
 ## Open decisions / follow-ups
 - Multi-arch image push for #2 (x86 teammates) — pending operator OK on build time.
 - WASM runtime security pass (#7) and Cognee engine security pass (#6) — both gated on vetting.

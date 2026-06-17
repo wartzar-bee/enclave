@@ -1,0 +1,31 @@
+{
+  "_doc": "LLM pools for BRAIN=optimize. EVERY pool is an OpenAI-compatible chat endpoint — so ANY provider works: just give base_url + api_key_env + model. Add xAI / OpenAI / Groq / DeepSeek / OpenRouter / a local mlx/ollama server by adding a pool here. `enclave init` (optimize) seeds this from your answers; edit it anytime to add/remove pools.",
+  "_routing_doc": "route_brain.py runs Claude (the subscription — free at the margin) while its 5h/7d cap has headroom, tiered Opus(judgment)/Sonnet(mechanical). As the cap fills it shifts work to the CHEAPEST reachable pool below (by `cost`: free local → low → high), preferring `local` for privacy/$0; judgment work prefers a higher-cost pool, mechanical prefers the cheapest. Pools are pinged first and skipped if unreachable or missing a key — so it always degrades gracefully back to Claude.",
+  "cap": { "soft_pct": 70, "hard_pct": 90, "_doc": "Claude subscription utilization (5h or 7d, whichever higher). < soft: all on Claude. soft..hard: mechanical work leaves Claude. >= hard: everything leaves Claude (don't burn/wait on the cap)." },
+  "pools": {
+    "local": {
+      "base_url": "http://host.docker.internal:8081/v1",
+      "api_key_env": "LOCAL_LLM_KEY", "api_key_default": "x",
+      "model": "", "cost": "free", "local": true,
+      "_doc": "A local OpenAI-compatible server (mlx_lm on :8081, or ollama on :11434/v1). $0, private, no cap. Set `model` to a tag the server serves. Blank base_url/model = no local pool."
+    },
+    "cheap": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "model": "google/gemini-2.5-flash", "cost": "low", "local": false,
+      "_doc": "A cheap remote pool. Example: OpenRouter gemini-flash. Swap base_url+model for any provider."
+    },
+    "top": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "model": "anthropic/claude-sonnet-4.6", "cost": "high", "local": false,
+      "_doc": "A frontier remote pool for hard work when Claude's cap is exhausted."
+    },
+    "_example_xai": {
+      "base_url": "https://api.x.ai/v1",
+      "api_key_env": "XAI_API_KEY",
+      "model": "grok-4", "cost": "high", "local": false,
+      "_doc": "EXAMPLE of adding another provider — rename this key to enable (put XAI_API_KEY in secrets/xai.env)."
+    }
+  }
+}

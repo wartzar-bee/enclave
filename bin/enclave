@@ -23,7 +23,8 @@ The wizard + run/stop/etc. all operate on the Enclave repo this script lives in
 makes ./home its own scan-gated git vault so memory survives a machine wipe.
 
 Flags for non-interactive init (CI / scripted):
-  --name N --brain claude|api|local --model M --template T
+  --name N --brain claude|api|local|optimize --model M --template T
+                   (optimize = start on Claude, shift to the cheapest reachable policy.json pool as the cap fills)
   --cred TOKEN     the model credential (Claude OAuth / API key) — what the wizard prompts for
   --codegraph PATH code memory over a repo folder (an HTTP bridge `run` starts; twin of qmd)
   --qmd URL        a knowledge-search qmd MCP gateway URL (blank = none)
@@ -50,6 +51,11 @@ BRAINS = {
                "cred_prompt": "OpenRouter API key (sk-or-...)"},
     "local":  {"model": "qwen2.5:7b", "secret_file": None, "secret_key": None,
                "cred_prompt": None},
+    # optimize: start on Claude (subscription token below), shift to the cheapest reachable pool in
+    # policy.json as the cap fills. The pool wizard (init) writes policy.json + per-pool secret envs.
+    "optimize": {"model": "claude-opus-4-8", "secret_file": "anthropic.env",
+                 "secret_key": "CLAUDE_CODE_OAUTH_TOKEN",
+                 "cred_prompt": "Claude Code OAuth token (from `claude setup-token`) — optimize starts on Claude"},
 }
 
 
@@ -82,6 +88,50 @@ def _ask_secret(label, yes=False):
         return getpass.getpass(f"  {label}\n  (paste, or press Enter to skip and add it later): ").strip()
     except (EOFError, KeyboardInterrupt):
         print(); return ""
+
+def _optimize_pool_wizard(yes):
+    """Build the BRAIN=optimize pool config — any OpenAI-compatible provider (xAI/OpenAI/Groq/OpenRouter/
+    local mlx/ollama). Returns (policy_dict, {secret_filename: 'KEY=val\\n'}). --yes / non-interactive ships
+    the documented baked defaults (operator edits home/policy.json + adds secrets later)."""
+    try:
+        base = json.loads((REPO / "platform" / "agentd" / "policy.json").read_text())
+    except Exception:
+        base = {"cap": {"soft_pct": 70, "hard_pct": 90}, "pools": {}}
+    if yes or not _interactive():
+        return base, {}
+    print("\n  BRAIN=optimize runs Claude first (free at the margin) and shifts to the CHEAPEST reachable")
+    print("  pool as the 5h/7d cap fills. Add ANY OpenAI-compatible provider (xAI, OpenAI, Groq, OpenRouter,")
+    print("  a local mlx/ollama server). You can edit home/policy.json anytime to add/remove pools.\n")
+    pools, secret_envs = {}, {}
+    lbase = _ask("Local server base URL (e.g. http://host.docker.internal:8081/v1; blank = no local)",
+                 default="", yes=yes).strip()
+    if lbase:
+        lmodel = _ask("  Local model tag the server serves (blank = its default)", default="", yes=yes).strip()
+        pools["local"] = {"base_url": lbase, "api_key_env": "LOCAL_LLM_KEY", "api_key_default": "x",
+                          "model": lmodel, "cost": "free", "local": True}
+    print("\n  Remote pools — press Enter at the name to finish:")
+    while True:
+        nm = _ask("  Pool name (e.g. cheap, top, xai)", default="", yes=yes).strip()
+        if not nm:
+            break
+        nm = nm.replace(" ", "-")
+        base_url = _ask(f"    {nm} base URL (e.g. https://api.x.ai/v1, https://openrouter.ai/api/v1)",
+                        default="", yes=yes).strip()
+        if not base_url:
+            print("    (no base URL — skipped)"); continue
+        model = _ask(f"    {nm} model id (e.g. grok-4, google/gemini-2.5-flash, anthropic/claude-sonnet-4.6)",
+                     default="", yes=yes).strip()
+        key_env = _ask(f"    {nm} API-key ENV var name", default=f"{nm.upper().replace('-', '_')}_API_KEY",
+                       yes=yes).strip()
+        cost = _ask(f"    {nm} cost tier", default="high", choices=["free", "low", "high"], yes=yes)
+        keyval = _ask_secret(f"    {nm} API key")
+        pools[nm] = {"base_url": base_url, "api_key_env": key_env, "model": model,
+                     "cost": cost, "local": False}
+        secret_envs[f"{nm}.env"] = (f"{key_env}={keyval}\n" if keyval
+                                    else f"# add the key, no quotes:\n{key_env}=\n")
+    return {"cap": base.get("cap", {"soft_pct": 70, "hard_pct": 90}), "pools": pools,
+            "_doc": base.get("_doc", ""), "_routing_doc": base.get("_routing_doc", "")}, secret_envs
+
 
 def _flag(args, name, default=None):
     if name in args:
@@ -206,7 +256,7 @@ def cmd_init(args):
     if bspec["secret_key"]:
         cred = _flag(args, "--cred") or _ask_secret(bspec["cred_prompt"], yes=yes)
         # Guided token for the Claude brain: a teammate may not have a token yet — offer to mint one.
-        if not cred and not yes and _interactive() and brain == "claude":
+        if not cred and not yes and _interactive() and brain in ("claude", "optimize"):
             if shutil.which("claude"):
                 if _ask("No token entered. Run `claude setup-token` now to generate one?",
                         default="y", choices=["y", "n"], yes=yes) == "y":
@@ -215,6 +265,11 @@ def cmd_init(args):
                     cred = _ask_secret("Paste the token it just printed")
             else:
                 print("  (the `claude` CLI isn't on PATH — install it, run `claude setup-token`, then paste the token)")
+
+    # BRAIN=optimize: gather the generic pool config (local + remote OpenAI-compatible providers).
+    opt_policy, opt_secret_envs = ({}, {})
+    if brain == "optimize":
+        opt_policy, opt_secret_envs = _optimize_pool_wizard(yes)
 
     tdir = REPO / "templates" / tpl
     if not tdir.exists():
@@ -239,6 +294,9 @@ def cmd_init(args):
     if cg_corpus:
         mcp_servers["codegraph"] = {"type": "http", "url": f"http://host.docker.internal:{CODEGRAPH_PORT}/mcp"}
     _write(home / ".mcp.json", json.dumps({"mcpServers": mcp_servers}, indent=2) + "\n")
+    # 1c) BRAIN=optimize: the editable pool config route_brain reads (agent-dir policy.json wins over baked).
+    if brain == "optimize":
+        _write(home / "policy.json", json.dumps(opt_policy, indent=2) + "\n")
 
     # 2) agent.env (runtime defaults; NO inline comments after values — loader keeps everything after '=')
     lines = [
@@ -248,6 +306,11 @@ def cmd_init(args):
     ]
     if brain == "claude":
         lines.append(f"MODEL={model}")
+    elif brain == "optimize":
+        # MODEL = top/judgment Claude model; MODEL_ROUTINE = cheap/mechanical Claude model. route_brain
+        # reads both, then shifts to a policy.json pool as the cap fills (pools resolved at tick time).
+        lines.append(f"MODEL={model}")
+        lines.append("MODEL_ROUTINE=claude-sonnet-4-6")
     else:
         lines.append(f"BRAIN_MODEL={model}")
         if brain == "local":
@@ -294,6 +357,11 @@ def cmd_init(args):
             _write(sfile, f"{bspec['secret_key']}={cred}\n", mode=0o600)
         elif not sfile.exists():
             _write(sfile, f"# add your credential here, no quotes:\n{bspec['secret_key']}=\n", mode=0o600)
+    # 5b) BRAIN=optimize: one secrets/<pool>.env per remote pool (route_brain resolves keys by env-var name).
+    for fname, body in (opt_secret_envs or {}).items():
+        spath = secrets / fname
+        if not spath.exists():
+            _write(spath, body, mode=0o600)
     # ensure anthropic.env exists so compose's env_file never errors (it's required:false anyway)
     apath = secrets / "anthropic.env"
     if not apath.exists():
