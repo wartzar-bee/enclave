@@ -23,6 +23,42 @@ wiki), `secrets/` (your read-only credential), and `.env`. For `BRAIN=claude` th
 ./bin/enclave run --no-open
 ```
 
+## Operating it day-to-day
+Everything runs through `./bin/enclave` from the deployment folder:
+
+| Want to… | Command |
+|----------|---------|
+| Start / open the chat | `enclave run` (builds if needed, opens the browser) |
+| Stop the agent | `enclave stop` |
+| Watch the runner log | `enclave logs` |
+| Health + recent activity | `enclave status` |
+| Send a task to the work queue | `enclave send "…"` |
+| Switch the brain (keeps memory) | `enclave brain <claude\|api\|local\|optimize>` |
+| Commit the memory vault now | `enclave snapshot ["msg"]` (also auto-runs each tick) |
+
+**Switch brain** — flips the mode in place (rewrites `agent.env` + `.env`, runs the `optimize` pool
+wizard when needed) and recreates the container. **Memory/inbox/work are untouched** (unlike re-running
+`init`). The first switch to a new mode rebuilds the image (the runtime is baked in); after that add
+`--no-build` for an instant env-only recreate.
+```bash
+enclave brain optimize               # prompts for your LLM pools, seeds policy.json + secrets, rebuilds
+enclave brain optimize --yes         # seed the documented default pools instead of prompting
+enclave brain optimize --reconfigure # re-run the pool wizard even if policy.json already exists
+enclave brain claude --no-build      # fast switch back, no rebuild (image already has the mode)
+enclave brain api --model deepseek/deepseek-chat
+```
+The `optimize` brain (Claude-first, cost-aware fallthrough to any OpenAI-compatible pool — xAI / OpenAI /
+Groq / OpenRouter / local) is configured in `home/policy.json`; full guide: **`docs/OPTIMIZE-BRAIN.md`**.
+
+**Update to the latest runtime** — the clone *is* the deployment, so pull and rebuild:
+```bash
+git pull            # get the latest platform/ + bin/enclave
+enclave run         # rebuilds both images (docker compose up -d --build) and recreates the container
+```
+`run`/`brain` build by default; the changed `COPY platform/agentd/` layer is what pulls new runtime code
+into the image. If a rebuild ever serves stale code, force it:
+`docker compose build --no-cache agent chat && docker compose up -d`.
+
 ## Running several agents at once
 Each deployment is keyed to its **agent name** (`AGENT_ID`), not its folder — the compose project,
 container names, and named volumes all derive from it, so deployments never collide no matter where
@@ -92,7 +128,7 @@ Dockerfile.agent          lean agent image (python + node + claude CLI; opt-in c
 Dockerfile.chat/.relay    web-chat + telegram sidecars (stdlib, tiny)
 Dockerfile.qmd/.codegraph optional memory-accelerator images (off by default — compose profiles)
 docker-compose.yml        the stack (+ opt-in `qmd` / `codegraph` / `telegram` profiles)
-bin/enclave               CLI: new / init / run / publish / snapshot / vault-encrypt|decrypt / send / chat / status / stop / logs
+bin/enclave               CLI: new / init / brain / run / publish / snapshot / vault-encrypt|decrypt / send / chat / status / stop / logs
 platform/agentd/          the runtime: agentloop, runtime.sh, guard hooks, memory (memory.py + wiki.py),
                           vault_snapshot.py, web_chat, chat_responder, qmd + codegraph gateways, rlm.py
 tools/gcloud/             optional multi-tenant, read-only gcloud bridge (per-agent credential isolation)
