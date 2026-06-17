@@ -5,6 +5,7 @@ enclave — CLI for the Enclave agent runtime.
 Commands:
   enclave new <name> [--dir P]     Scaffold a NEW deployment in its own folder (names the folder + agent + free port)
   enclave init                     Interactive wizard: configure this deployment (home/, secrets/, .env)
+  enclave brain <mode>             Switch brain in place (claude|api|local|optimize) + recreate the container (keeps memory)
   enclave run                      Build + start the agent, then open the chat in your browser
   enclave app                      macOS: install an /Applications launcher (start agent + open chat by icon)
   enclave send <msg>               Send a message to the agent's inbox
@@ -425,6 +426,35 @@ def _read_env(key, default=None):
                 return line.split("=", 1)[1]
     return default
 
+def _set_env_kv(path, updates, remove=()):
+    """Update/append KEY=VALUE lines in an env file, preserving order + comments. `remove` drops keys.
+    NO inline comments after values (the runtime loader keeps everything after '=')."""
+    lines = path.read_text().splitlines() if path.exists() else []
+    out, seen = [], set()
+    for ln in lines:
+        s = ln.strip()
+        if s and not s.startswith("#") and "=" in s:
+            k = s.split("=", 1)[0]
+            if k in remove:
+                continue
+            if k in updates:
+                out.append(f"{k}={updates[k]}"); seen.add(k); continue
+        out.append(ln)
+    for k, v in updates.items():
+        if k not in seen:
+            out.append(f"{k}={v}")
+    _write(path, "\n".join(out) + "\n")
+
+def _secret_set(path, key):
+    """True if env-file `path` defines `key` with a non-empty value."""
+    try:
+        for ln in path.read_text().splitlines():
+            if ln.strip().startswith(key + "=") and ln.split("=", 1)[1].strip():
+                return True
+    except Exception:
+        pass
+    return False
+
 def _open_browser(url):
     import webbrowser
     try:
@@ -692,9 +722,75 @@ def cmd_app(args):
     print(f"  Find '{appname}' in Applications / Launchpad (or double-click it) to start the agent + open the chat.")
     print(f"  (Run `enclave run` once first so the images are built; the launcher uses existing images.)")
 
+def cmd_brain(args):
+    """Switch this deployment's brain IN PLACE (memory/inbox/work untouched), then recreate the container.
+
+    Usage: enclave brain <claude|api|local|optimize> [--model M] [--reconfigure] [--yes]
+                          [--no-build] [--no-restart]
+      --reconfigure  (optimize) re-run the pool wizard even if home/policy.json already exists
+      --no-build     recreate the container WITHOUT rebuilding (use when the image already has the mode)
+      --no-restart   write the config only; apply later with `enclave run`
+    """
+    home = REPO / "home"; secrets = REPO / "secrets"; envf = REPO / ".env"
+    agent_env = home / "agent.env"
+    if not agent_env.exists():
+        sys.exit("./home not configured — run 'enclave init' first.")
+    yes = _has(args, "--yes")
+    pos = [a for a in args if not a.startswith("-")]
+    brain = pos[0] if pos else _ask("Brain", default=_read_env("BRAIN", "claude"),
+                                     choices=list(BRAINS), yes=yes)
+    if brain not in BRAINS:
+        sys.exit(f"Unknown brain '{brain}'. Choose: {', '.join(BRAINS)}")
+    bspec = BRAINS[brain]
+    model = _flag(args, "--model") or bspec["model"]
+
+    upd_agent = {"BRAIN": brain}
+    upd_env = {"BRAIN": brain}
+    if brain == "claude":
+        upd_agent["MODEL"] = model; upd_env["MODEL"] = model
+    elif brain == "optimize":
+        top = model if model.startswith("claude") else "claude-opus-4-8"
+        upd_agent["MODEL"] = top; upd_agent["MODEL_ROUTINE"] = "claude-sonnet-4-6"; upd_env["MODEL"] = top
+        polf = home / "policy.json"
+        if not polf.exists() or _has(args, "--reconfigure"):
+            pol, sec = _optimize_pool_wizard(yes)
+            _write(polf, json.dumps(pol, indent=2) + "\n")
+            secrets.mkdir(mode=0o700, parents=True, exist_ok=True)
+            for fn, body in sec.items():
+                sp = secrets / fn
+                if not sp.exists():
+                    _write(sp, body, mode=0o600)
+        else:
+            print(f"  (kept existing pools in {polf} — edit it, or pass --reconfigure)")
+    else:  # api / local
+        upd_agent["BRAIN_MODEL"] = model; upd_env["MODEL"] = model
+        if brain == "local":
+            upd_agent["BRAIN_API_BASE"] = "http://host.docker.internal:11434/v1"
+
+    # drop brain-specific keys that don't apply to the new mode (keep the ones we just set)
+    stale = {"MODEL", "MODEL_ROUTINE", "BRAIN_MODEL", "BRAIN_API_BASE"} - set(upd_agent)
+    _set_env_kv(agent_env, upd_agent, remove=stale)
+    _set_env_kv(envf, upd_env)
+    print(f"✓ brain → {brain} (model={upd_agent.get('MODEL') or upd_agent.get('BRAIN_MODEL')})")
+
+    if brain in ("claude", "optimize") and not _secret_set(secrets / "anthropic.env", "CLAUDE_CODE_OAUTH_TOKEN"):
+        print("  ⚠ Claude token not set — add CLAUDE_CODE_OAUTH_TOKEN to secrets/anthropic.env")
+    if brain == "api" and not _secret_set(secrets / "openrouter.env", "OPENROUTER_API_KEY"):
+        print("  ⚠ OPENROUTER_API_KEY not set in secrets/openrouter.env")
+
+    if _has(args, "--no-restart"):
+        print("  config written — apply with `enclave run` (add --no-build if the image already has this mode)")
+        return
+    build = not _has(args, "--no-build")
+    print(f"Recreating the container to apply brain={brain}" + (" (rebuilding image)…" if build else "…"))
+    r = subprocess.run(["docker", "compose", "up", "-d"] + (["--build"] if build else []), cwd=REPO)
+    if r.returncode == 0:
+        print("✓ applied.")
+
+
 COMMANDS = {
     "new": cmd_new, "init": cmd_init, "run": cmd_run, "app": cmd_app, "stop": cmd_stop, "logs": cmd_logs,
-    "send": cmd_send, "status": cmd_status, "chat": cmd_chat, "publish": cmd_publish,
+    "send": cmd_send, "status": cmd_status, "chat": cmd_chat, "publish": cmd_publish, "brain": cmd_brain,
     "snapshot": cmd_snapshot, "vault-encrypt": cmd_vault_encrypt, "vault-decrypt": cmd_vault_decrypt,
 }
 
