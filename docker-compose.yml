@@ -29,6 +29,7 @@ services:
         required: false
     # BRAIN=api/local read their key (OPENROUTER_API_KEY/…) directly from the mounted /workspace/.secrets/*.env
     environment:
+      - AGENT_DIR=/agent                       # the CMD env-loader reads $AGENT_DIR/agent.env — must be set or home/agent.env extras (ROLE, ROUTER, COMMS_URL, …) silently never load
       - AGENT_ID=${AGENT_ID:-enclave-agent}
       - BRAIN=${BRAIN:-claude}
       - MODEL=${MODEL:-claude-sonnet-4-6}
