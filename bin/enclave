@@ -60,7 +60,7 @@ def _interactive():
 def _ask(label, default=None, choices=None, yes=False):
     if choices:
         label = f"{label} [{'/'.join(choices)}]"
-    if default is not None:
+    if default not in (None, ""):          # show a default in (parens); skip for None/empty (no stray "()")
         label = f"{label} ({default})"
     if yes or not _interactive():
         return default
