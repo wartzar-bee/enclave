@@ -796,7 +796,15 @@ function slashMatches(){
   const v=inp.value;
   if(!v.startsWith("/")||v.includes(" ")||v.includes("\\n")) return null;
   const q=v.slice(1).toLowerCase();
-  return commands.filter(c=>c.cmd.slice(1).toLowerCase().startsWith(q)).slice(0,8);
+  if(!q) return commands.slice(0,8);
+  const scored=[];                              // match anywhere in name (then description), prefix ranked first
+  for(const c of commands){
+    const name=c.cmd.slice(1).toLowerCase(), desc=(c.desc||"").toLowerCase();
+    const s = name.startsWith(q)?0 : name.includes(q)?1 : desc.includes(q)?2 : -1;
+    if(s>=0) scored.push([s,c]);
+  }
+  scored.sort((a,b)=>a[0]-b[0]||a[1].cmd.length-b[1].cmd.length);
+  return scored.slice(0,8).map(x=>x[1]);
 }
 function renderSlash(){
   const ms=slashMatches();
