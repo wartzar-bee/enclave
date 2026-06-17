@@ -31,6 +31,7 @@ Flags for non-interactive init (CI / scripted):
   --qmd URL        a knowledge-search qmd MCP gateway URL (blank = none)
   --work-dir PATH  the host project tree the agent works in (mounted rw at /work; blank = home/work)
   --bind 127.0.0.1:8888  --port 8888  --token TOK (optional web-UI ?token= gate)  --yes  --force
+  --allow-unknown-model   accept a Claude model id not in the known-good set (e.g. a newer release)
 Flags for run:
   --no-open   don't auto-open the browser
   --no-build  skip the image build (use existing local images)
@@ -58,6 +59,19 @@ BRAINS = {
                  "secret_key": "CLAUDE_CODE_OAUTH_TOKEN",
                  "cred_prompt": "Claude Code OAuth token (from `claude setup-token`) — optimize starts on Claude"},
 }
+
+# Known-good Claude model ids (the chat picker's allowlist). A typo here = a silently dead chat
+# ("couldn't generate a reply"), so init/brain reject an unknown one unless --allow-unknown-model.
+KNOWN_CLAUDE_MODELS = {"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"}
+
+def _check_claude_model(model, allow):
+    """For brains that run on Claude, reject a model id that isn't known-good (catches typos at config
+    time). Forward-compat escape hatch: --allow-unknown-model. No-op for non-Claude models."""
+    if allow or not (model or "").startswith("claude-") or model in KNOWN_CLAUDE_MODELS:
+        return
+    sys.exit(f"Unknown Claude model '{model}'. Valid: {', '.join(sorted(KNOWN_CLAUDE_MODELS))}.\n"
+             f"  (this is the typo that silently kills the chat — pass --allow-unknown-model to "
+             f"use a model not in this list, e.g. one released after this build.)")
 
 
 # ── small interactive helpers ────────────────────────────────────────────────
@@ -229,6 +243,8 @@ def cmd_init(args):
         sys.exit(f"Unknown brain '{brain}'. Choose: {', '.join(BRAINS)}")
     bspec = BRAINS[brain]
     model = _flag(args, "--model") or _ask("Model", default=bspec["model"], yes=yes)
+    if brain in ("claude", "optimize"):     # optimize's top model runs on Claude too
+        _check_claude_model(model, _has(args, "--allow-unknown-model"))
     bind = _flag(args, "--bind") or _ask("Web chat bind (host:port)", default=f"127.0.0.1:{_free_port()}", yes=yes)
     port = _flag(args, "--port") or (bind.split(":")[-1] if ":" in bind else "8888")
     token = _flag(args, "--token", "")  # web UI ?token= gate (optional)
@@ -743,6 +759,8 @@ def cmd_brain(args):
         sys.exit(f"Unknown brain '{brain}'. Choose: {', '.join(BRAINS)}")
     bspec = BRAINS[brain]
     model = _flag(args, "--model") or bspec["model"]
+    if brain in ("claude", "optimize"):
+        _check_claude_model(model, _has(args, "--allow-unknown-model"))
 
     upd_agent = {"BRAIN": brain}
     upd_env = {"BRAIN": brain}

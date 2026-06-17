@@ -23,11 +23,12 @@ Env:
   CHAT_MODEL             override the chat model (default: the UI picker / the agent's MODEL — same as the agent)
   CHAT_TURN_TIMEOUT      seconds per chat turn (default 150)
 """
-import os, sys, json, time, re, pathlib, subprocess, threading, urllib.request
+import os, sys, json, time, re, pathlib, subprocess, threading, urllib.request, urllib.error
 
 POLL_SECS = 1.5
 HISTORY_CTX = 12  # recent turns of THIS conversation to include for context
 _SAFE_ID = re.compile(r"^c[0-9]+$")
+ERR = "⚠️ "   # prefix marking a reply that is a surfaced error (not a real answer; never titled)
 
 
 def _read_jsonl(p):
@@ -156,8 +157,14 @@ def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
         return None
     rc, out, err = r
     if rc != 0:
-        log(f"chat turn failed (rc={rc}): {((err or out) or '')[:200]}")
-        return None
+        low = ((err or out) or "").strip()
+        log(f"chat turn failed (rc={rc}): {low[:200]}")
+        ll = low.lower()
+        if "model" in ll and ("not exist" in ll or "may not" in ll or "access to it" in ll):
+            return ERR + (f"Model `{model}` isn't available (it may not exist, or this token lacks "
+                          f"access). Pick a valid model from the dropdown at the top of the chat.")
+        return ERR + ("The agent couldn't complete that turn (exit "
+                      f"{rc}). " + (low[:200] or "Check `enclave logs` for details."))
     out = (out or "").strip()
     try:
         d = json.loads(out)
@@ -181,9 +188,17 @@ def _answer_api(prompt, model, timeout, log):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             d = json.load(resp)
         return (d["choices"][0]["message"]["content"] or "").strip() or None
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode(errors="ignore")[:200]
+        except Exception:
+            pass
+        log(f"chat turn (api) failed: HTTP {e.code} {body}")
+        return ERR + f"Model endpoint returned HTTP {e.code} for `{model}`. {body or 'Check the pool config / key.'}"
     except Exception as e:
         log(f"chat turn (api) failed: {e}")
-        return None
+        return ERR + f"Couldn't reach the model endpoint for `{model}` ({e}). Check the pool base URL / key."
 
 
 def _is_first_turn(agent_dir, conv_id):
@@ -269,13 +284,14 @@ def chat_loop(agent_dir, log=print):
                 elif reply:
                     reply_file.write_text(reply)
                     log(f"chat reply sent ({len(reply)} chars)")
-                    if first:                              # name the conversation by topic (not the verbatim 1st msg)
+                    if first and not reply.startswith(ERR):   # don't title a conversation off an error message
                         ti = _gen_title(agent_dir, brain, text, timeout, log)
                         if ti:
                             _set_title(agent_dir, conv_id, ti)
                             log(f"chat titled: {ti}")
                 else:
-                    reply_file.write_text("(couldn't generate a reply just now — please try again)")
+                    reply_file.write_text("⚠️ No reply — the turn timed out or the agent failed to start. "
+                                          "See `enclave logs`; try again.")
         except Exception as e:
             log(f"chat loop error: {e}")
         time.sleep(POLL_SECS)
