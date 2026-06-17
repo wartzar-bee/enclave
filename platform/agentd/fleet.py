@@ -142,6 +142,7 @@ def snapshot():
             "model": env.get("MODEL") or env.get("BRAIN_MODEL", "?"),
             "port": _port(env),
             "dir": row["dir"],
+            "configfile": row["configfile"],
             "home": str(home) if home else "",
             "manager": m.get("manager", ""),
             "tags": m.get("tags", []),
@@ -151,6 +152,98 @@ def snapshot():
             "last_seen": st["last_seen"],
         }
     return agents
+
+
+AUDIT = pathlib.Path(os.environ.get("ENCLAVE_FLEET_AUDIT",
+                     pathlib.Path.home() / ".config" / "enclave" / "fleet-audit.log"))
+STACKS_ROOTS = [pathlib.Path(p).expanduser().resolve()
+                for p in os.environ.get("ENCLAVE_STACKS_ROOTS", str(pathlib.Path.home() / "Dev")).split(":") if p]
+
+
+def _audit(action, target, extra=""):
+    try:
+        AUDIT.parent.mkdir(parents=True, exist_ok=True)
+        with AUDIT.open("a") as f:
+            f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {action} {target} {extra}\n".rstrip() + "\n")
+    except Exception:
+        pass
+
+
+def _resolve(aid):
+    if not _SAFE.match(aid or ""):
+        sys.exit(f"invalid agent id '{aid}'")
+    a = snapshot().get(aid)
+    if not a:
+        sys.exit(f"unknown agent '{aid}' (see `enclave fleet list`)")
+    return a
+
+
+def _allowed_stack(cfg):
+    """The compose file must live under an allowlisted stacks root — never run arbitrary compose files."""
+    try:
+        r = pathlib.Path(cfg).resolve()
+        return any(str(r).startswith(str(root) + os.sep) for root in STACKS_ROOTS) and r.is_file()
+    except Exception:
+        return False
+
+
+def _compose(a, *verb, timeout=180):
+    """docker compose -f <ConfigFile> --project-directory <dir> <verb> — the M1-correct addressing
+    (project name is baked via `name:`; -p won't reach these stacks). Validated + audited."""
+    cfg = a.get("configfile", "")
+    if not cfg or not _allowed_stack(cfg):
+        sys.exit(f"refusing: {a['id']}'s compose file is missing or outside ENCLAVE_STACKS_ROOTS")
+    cmd = ["docker", "compose", "-f", cfg, "--project-directory", a["dir"], *verb]
+    _audit(verb[0], a["id"], " ".join(verb[1:]))
+    return subprocess.run(cmd, timeout=timeout)
+
+
+def cmd_up(aid):
+    a = _resolve(aid); print(f"starting {aid} …"); _compose(a, "up", "-d")
+def cmd_down(aid):
+    a = _resolve(aid); print(f"stopping {aid} …"); _compose(a, "stop")
+def cmd_restart(aid):
+    a = _resolve(aid); print(f"restarting {aid} …"); _compose(a, "restart")
+def cmd_logs(aid, tail="80"):
+    a = _resolve(aid); _compose(a, "logs", "--tail", str(tail), timeout=30)
+
+
+def cmd_send(aid, text):
+    """Operator directive → the agent. Try the comms bridge (wakes the tick); fall back to inbox.md."""
+    a = _resolve(aid)
+    if not (text or "").strip():
+        sys.exit("empty directive")
+    env = _env(a["dir"])
+    url = env.get("COMMS_URL", "")
+    sent = False
+    if url:
+        # resolve the comms token from the deployment's mounted secrets
+        tok = ""
+        sf = pathlib.Path(a["dir"]) / "secrets" / "comms-bridge.env"
+        try:
+            for ln in sf.read_text().splitlines():
+                if "TOKEN=" in ln and not ln.startswith("#"):
+                    tok = ln.split("=", 1)[1].strip(); break
+        except Exception:
+            pass
+        try:
+            import urllib.request
+            body = json.dumps({"agent": aid, "from": "operator", "text": text}).encode()
+            req = urllib.request.Request(url.rstrip("/") + "/send", data=body, method="POST",
+                                         headers={"Content-Type": "application/json", "X-Comms-Token": tok})
+            urllib.request.urlopen(req, timeout=8)
+            sent = True
+        except Exception as e:
+            print(f"  (comms send failed: {e}; falling back to inbox)")
+    if not sent and a["home"]:
+        try:
+            with (pathlib.Path(a["home"]) / "inbox.md").open("a") as f:
+                f.write(f"\n- [ ] {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} — {text}\n")
+            sent = True
+        except Exception as e:
+            sys.exit(f"could not deliver directive: {e}")
+    _audit("send", aid, text[:80])
+    print(f"directive → {aid} ({'comms (live)' if url and sent else 'inbox (next tick)'})")
 
 
 def _fmt_age(ts):
@@ -207,12 +300,27 @@ def cmd_open(aid):
 def main():
     args = sys.argv[1:]
     cmd = args[0] if args else "list"
+    pos = [a for a in args[1:] if not a.startswith("-")]
     if cmd == "list":
         cmd_list(as_json="--json" in args)
-    elif cmd == "open" and len(args) > 1:
-        cmd_open(args[1])
+    elif cmd == "open" and pos:
+        cmd_open(pos[0])
+    elif cmd in ("up", "start") and pos:
+        cmd_up(pos[0])
+    elif cmd in ("down", "stop") and pos:
+        cmd_down(pos[0])
+    elif cmd == "restart" and pos:
+        cmd_restart(pos[0])
+    elif cmd == "logs" and pos:
+        cmd_logs(pos[0], _flag(args, "--tail", "80"))
+    elif cmd == "send" and len(pos) >= 2:
+        cmd_send(pos[0], " ".join(pos[1:]))
     else:
-        sys.exit("usage: fleet.py list [--json] | fleet.py open <agent-id>")
+        sys.exit("usage: fleet.py list [--json] | open|up|down|restart|logs <id> | send <id> <text>")
+
+
+def _flag(args, name, default=None):
+    return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else default
 
 
 if __name__ == "__main__":
