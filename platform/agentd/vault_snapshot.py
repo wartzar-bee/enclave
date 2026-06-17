@@ -140,6 +140,32 @@ def _vault_key(home):
     return keyf
 
 
+def _age_ok():
+    """age is the preferred encryptor (modern, audited, no PBKDF2-tuning footguns). We only USE it if the
+    operator has installed it — Enclave never auto-installs an external dep. Falls back to openssl."""
+    return shutil.which("age") is not None and shutil.which("age-keygen") is not None
+
+
+def _age_identity(home):
+    """An X25519 identity in .vault/age-identity.txt (gitignored, 600). Generated once; back it up
+    SEPARATELY — lose it and the archive is unrecoverable."""
+    idf = home / ".vault" / "age-identity.txt"
+    idf.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not idf.exists():
+        p = subprocess.run(["age-keygen", "-o", str(idf)], capture_output=True)
+        if p.returncode != 0:
+            raise SystemExit(f"age-keygen failed: {p.stderr.decode(errors='ignore')[:200]}")
+        os.chmod(idf, 0o600)
+    return idf
+
+
+def _age_recipient(idf):
+    p = subprocess.run(["age-keygen", "-y", str(idf)], capture_output=True, text=True)
+    if p.returncode != 0:
+        raise SystemExit(f"age-keygen -y failed: {(p.stderr or '')[:200]}")
+    return p.stdout.strip()
+
+
 def _tar_brain(home):
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
@@ -153,13 +179,22 @@ def _tar_brain(home):
 
 
 def encrypt(home, out=None):
-    """Encrypt the brain (NOT secrets/) to an AES-256+PBKDF2 archive. Returns the blob path."""
-    if shutil.which("openssl") is None:
-        raise SystemExit("openssl not found — install openssl (or age/git-crypt) for vault encryption.")
+    """Encrypt the brain (NOT secrets/) to a ciphertext archive. Prefers `age` (X25519) when installed,
+    else openssl AES-256+PBKDF2. Auto-detected on decrypt. Returns the blob path."""
     out = pathlib.Path(out) if out else home.parent / f"{home.resolve().name}-vault.enc"
+    data = _tar_brain(home)
+    if _age_ok():
+        idf = _age_identity(home)
+        p = subprocess.run(["age", "-r", _age_recipient(idf), "-o", str(out)],
+                           input=data, capture_output=True)
+        if p.returncode != 0:
+            raise SystemExit(f"age encrypt failed: {p.stderr.decode(errors='ignore')[:200]}")
+        return out
+    if shutil.which("openssl") is None:
+        raise SystemExit("no encryptor found — install `age` (recommended) or `openssl` for vault encryption.")
     keyf = _vault_key(home)
     p = subprocess.run(["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-salt", "-pass", f"file:{keyf}"],
-                       input=_tar_brain(home), capture_output=True)
+                       input=data, capture_output=True)
     if p.returncode != 0:
         raise SystemExit(f"openssl encrypt failed: {p.stderr.decode(errors='ignore')[:200]}")
     out.write_bytes(p.stdout)
@@ -167,17 +202,31 @@ def encrypt(home, out=None):
 
 
 def decrypt(home, blob):
-    """Restore the brain from an encrypted archive into home/ (overwrites the brain dirs)."""
-    if shutil.which("openssl") is None:
-        raise SystemExit("openssl not found.")
-    keyf = home / ".vault" / "key"
-    if not keyf.exists():
-        raise SystemExit(f"missing key {keyf} — the archive is unrecoverable without it.")
-    p = subprocess.run(["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-pass", f"file:{keyf}"],
-                       input=pathlib.Path(blob).read_bytes(), capture_output=True)
-    if p.returncode != 0:
-        raise SystemExit(f"openssl decrypt failed (wrong key?): {p.stderr.decode(errors='ignore')[:200]}")
-    with tarfile.open(fileobj=io.BytesIO(p.stdout), mode="r:gz") as tar:
+    """Restore the brain into home/ (overwrites the brain dirs). Auto-detects age vs openssl from the
+    archive header, so it works regardless of which encryptor produced it."""
+    raw = pathlib.Path(blob).read_bytes()
+    if raw[:18].startswith(b"age-encryption.org"):          # age armored/binary both carry this banner
+        if shutil.which("age") is None:
+            raise SystemExit("archive is age-encrypted but `age` is not installed.")
+        idf = home / ".vault" / "age-identity.txt"
+        if not idf.exists():
+            raise SystemExit(f"missing identity {idf} — the archive is unrecoverable without it.")
+        p = subprocess.run(["age", "-d", "-i", str(idf)], input=raw, capture_output=True)
+        if p.returncode != 0:
+            raise SystemExit(f"age decrypt failed: {p.stderr.decode(errors='ignore')[:200]}")
+        plain = p.stdout
+    else:
+        if shutil.which("openssl") is None:
+            raise SystemExit("openssl not found (archive is openssl-encrypted).")
+        keyf = home / ".vault" / "key"
+        if not keyf.exists():
+            raise SystemExit(f"missing key {keyf} — the archive is unrecoverable without it.")
+        p = subprocess.run(["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-pass", f"file:{keyf}"],
+                           input=raw, capture_output=True)
+        if p.returncode != 0:
+            raise SystemExit(f"openssl decrypt failed (wrong key?): {p.stderr.decode(errors='ignore')[:200]}")
+        plain = p.stdout
+    with tarfile.open(fileobj=io.BytesIO(plain), mode="r:gz") as tar:
         tar.extractall(home)   # archive only ever contains BRAIN_DIRS/FILES we wrote
     return home
 

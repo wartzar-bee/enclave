@@ -75,8 +75,29 @@ per-pool `secrets/<name>.env`) and writes an editable per-deployment `policy.jso
 baked default). Reuses `local_agent.py` for the pool path. Tested: full decision matrix (7 cases),
 deployment-policy override, decision-line parse, `init --yes` defaults. See `docs/OPTIMIZE-BRAIN.md`.
 
+## ✅ #9 — backlog sweep (DONE 2026-06-18)
+- **Multi-arch publish** — `enclave publish --platform linux/amd64,linux/arm64` does a buildx
+  build+push (auto-creates a QEMU builder); single-arch stays the default. README multi-arch overclaim
+  corrected (was "published multi-arch"; reality was arm64-only).
+- **`autonomous` template** — the 4th starter: a self-driving daemon that each tick reconstructs state
+  from memory + `work.json` and executes the next step toward an operator `{MISSION}` (3h heartbeat,
+  `SUPERVISE=auto`).
+- **Chat polish** — `/export` (+ "…" menu) downloads a conversation as markdown; `/retry` resends the
+  last message; ⌘/Ctrl-K new chat + Esc stop; mobile sidebar overlay + full-width chat. Surfaced model
+  errors (no more silent "couldn't generate a reply"); init/brain reject unknown Claude model ids.
+- **At-rest encryption** — `vault-encrypt` now prefers **age** (X25519) when installed, openssl
+  fallback; decrypt auto-detects the format. age is used only if present (never auto-installed).
+- **Security passes** — wasmtime (`docs/VETTING.md`): **PROCEED w/ conditions** (pin 45.0.0, Cranelift
+  only, nested, track advisories). Cognee: **KEEP GATED** (sprawling, default-on telemetry to
+  `test.prometh.ai`, default cloud egress).
+
 ## Open decisions / follow-ups
-- Multi-arch image push for #2 (x86 teammates) — pending operator OK on build time.
-- WASM runtime security pass (#7) and Cognee engine security pass (#6) — both gated on vetting.
+- **Chat streaming** — replies still wait-then-dump (the `claude -p --output-format json` turn is
+  non-streaming). True token streaming needs `--output-format stream-json` + incremental delivery (SSE) —
+  a real architecture change, deferred. A per-turn usage/cost line needs the same plumbing.
+- **WASM runtime** (#7) — cleared to wire (`wasmtime==45.0.0`); the `run_sandboxed()` executor is the
+  remaining ENGINEERING step (restricted exec surface; WASI can't run raw bash). Operator's call to start.
+- **Cognee engine** (#6) — stays gated; if graph memory is needed, build our own networkx+sqlite layer
+  behind the existing contract (per the hard rule).
 - Per-teammate cloud-cred model → **resolved:** devops provisions a scoped read-only identity (see
   `SECURITY.md`).

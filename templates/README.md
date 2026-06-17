@@ -20,6 +20,11 @@ Templates here:
   human approval; never sends, refunds, or mutates anything.
 - `analyst/` — a research/data analyst: investigates a question, synthesizes an evidence-based brief
   with citations, and may run read-only cloud/data queries (ships `GUARD_CLOUD_READONLY=1`).
+- `autonomous/` — a self-driving worker: instead of no-op'ing until messaged, each tick it reconstructs
+  state from its own memory + `work.json` queue, picks the next highest-value step toward a `{MISSION}`
+  the operator sets, does it, records evidence, and updates memory — no human in the loop. Runs as a
+  `daemon` on a short heartbeat (`INTERVAL_SECONDS=10800`); `SUPERVISE=auto` enables the in-container
+  off-opus supervisor when `BRAIN=local`. Still guard-bounded (no git, scoped secrets).
 
 A template's `agent.env` may declare extra runtime knobs (e.g. the read-only cloud profile);
 `enclave init` merges those on top of the core config it generates.

@@ -576,21 +576,48 @@ def cmd_stop(args):
     subprocess.run(["docker", "compose", "down"], cwd=REPO)
 
 def cmd_publish(args):
-    """Maintainer: build + push the agent/chat images to a registry so teammates can `run --pull`."""
+    """Maintainer: build + push the agent/chat images to a registry so teammates can `run --pull`.
+    Single-arch by default (the maintainer's arch). --platform linux/amd64,linux/arm64 does a MULTI-ARCH
+    buildx push so x86 teammates work too (needs Docker buildx + QEMU; emulated builds are slow)."""
     reg = _flag(args, "--registry") or _read_env("ENCLAVE_REGISTRY") or os.environ.get("ENCLAVE_REGISTRY")
     if not reg:
         sys.exit("Set a registry: enclave publish --registry ghcr.io/<owner>   "
                  "(login first: docker login ghcr.io)")
     tag = _flag(args, "--tag", "latest")
+    platform = _flag(args, "--platform")    # e.g. "linux/amd64,linux/arm64" → multi-arch buildx push
+    multi = bool(platform and "," in platform)
     targets = [("Dockerfile.agent", f"{reg}/enclave-agent:{tag}"),
                ("Dockerfile.chat", f"{reg}/enclave-chat:{tag}")]
-    for dockerfile, ref in targets:
-        print(f"\n=== build + push {ref} ===")
-        if subprocess.run(["docker", "build", "-f", dockerfile, "-t", ref, "."], cwd=REPO).returncode != 0:
-            sys.exit(f"build failed for {ref}")
-        if subprocess.run(["docker", "push", ref], cwd=REPO).returncode != 0:
-            sys.exit(f"push failed for {ref} — is `docker login {reg.split('/')[0]}` done?")
-    print("\nPublished:")
+
+    if multi:
+        # buildx multi-arch MUST build+push in one step (a manifest list can't be `docker push`ed after).
+        if subprocess.run(["docker", "buildx", "version"], cwd=REPO,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+            sys.exit("docker buildx not available — install Docker Desktop / the buildx plugin for multi-arch.")
+        # Ensure a builder that can emulate other arches (QEMU). Idempotent: create-or-reuse 'enclave-mx'.
+        if subprocess.run(["docker", "buildx", "inspect", "enclave-mx"], cwd=REPO,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+            subprocess.run(["docker", "buildx", "create", "--name", "enclave-mx", "--use"], cwd=REPO)
+        else:
+            subprocess.run(["docker", "buildx", "use", "enclave-mx"], cwd=REPO)
+        print(f"⏳ multi-arch build ({platform}) — emulated arches are slow, this can take a while.")
+        for dockerfile, ref in targets:
+            print(f"\n=== buildx build+push {ref}  [{platform}] ===")
+            if subprocess.run(["docker", "buildx", "build", "--platform", platform,
+                               "-f", dockerfile, "-t", ref, "--push", "."], cwd=REPO).returncode != 0:
+                sys.exit(f"buildx build+push failed for {ref} — logged in to {reg.split('/')[0]}?")
+    else:
+        if platform:
+            print(f"(single-arch build for {platform})")
+        for dockerfile, ref in targets:
+            print(f"\n=== build + push {ref} ===")
+            build = ["docker", "build"] + (["--platform", platform] if platform else []) + \
+                    ["-f", dockerfile, "-t", ref, "."]
+            if subprocess.run(build, cwd=REPO).returncode != 0:
+                sys.exit(f"build failed for {ref}")
+            if subprocess.run(["docker", "push", ref], cwd=REPO).returncode != 0:
+                sys.exit(f"push failed for {ref} — is `docker login {reg.split('/')[0]}` done?")
+    print("\nPublished" + (f" (multi-arch {platform})" if multi else "") + ":")
     for _, ref in targets:
         print(f"  {ref}")
     print("\nTeammates: set these in .env, then `enclave run --pull`:")

@@ -75,6 +75,10 @@ the folder; isolation (home, secrets, work, chat sessions, ports) is automatic.
 **No local build (prebuilt images):** a maintainer publishes once —
 `./bin/enclave publish --registry ghcr.io/<owner>` (after `docker login ghcr.io`) — then teammates set
 `ENCLAVE_AGENT_IMAGE`/`ENCLAVE_CHAT_IMAGE` in `.env` and run `./bin/enclave run --pull` (no 5-min build).
+By default `publish` builds for the **maintainer's architecture only**. For a mixed fleet (Apple-silicon
++ x86), publish **multi-arch**: `./bin/enclave publish --registry ghcr.io/<owner> --platform
+linux/amd64,linux/arm64` (uses buildx + QEMU; the emulated arch is slow to build but teammates on either
+arch then `run --pull` cleanly).
 
 ## Where work is saved — home (brain) vs `/work` (project)
 Enclave answers "where does the agent's work go, and how does it stay searchable?" with two mounts:
@@ -100,8 +104,12 @@ It's a real Claude-Code conversation in the browser — only the UI differs:
   Threads live in `state/chat/<id>.jsonl`; **sessions persist across image rebuilds** (named volume on
   `~/.claude`). New chat = a fresh session; the agent's durable memory carries across all of them.
 - **Slash commands** — type `/` for a menu of the agent's **skills** (`/ps-op-support`, `/ps-data`, …,
-  substring search) plus UI commands `/clear` and `/help`. Skills run in-session; UI commands run locally.
+  substring search) plus UI commands `/clear`, `/retry` (resend your last message), `/export` (download
+  the chat as markdown), `/help`. Skills run in-session; UI commands run locally.
+- **Export** — `/export` or the chat's "…" menu → **Export markdown** downloads the whole conversation.
 - **Stop** — the send button flips to ⏹ while a turn runs and kills the in-flight turn.
+- **Keyboard + mobile** — ⌘/Ctrl-K new chat, Esc stops a running turn (else closes menus); on a phone
+  the sidebar slides in as an overlay and the chat is full-width.
 - **File downloads** — the agent writes deliverables to `/agent/outputs/` and links them
   `[name](/download?path=name)`; the chat renders a ⬇ download button (CSV, reports, exports).
 - **Rich rendering** — markdown → HTML (tables, lists, headings, links); fenced code stays literal.
@@ -159,8 +167,9 @@ manual commits too. `enclave vault-encrypt` writes an AES-256 archive (key in `s
 so an off-machine copy is ciphertext. The agent can't `git` (guard-blocked) — the runtime owns commits.
 
 ## Known gaps (honest)
-- **Prebuilt images** — `enclave-agent`/`enclave-chat` are published multi-arch to ghcr (`run --pull`);
-  the optional `qmd`/`codegraph` accelerator images still build locally on first `--profile … up`.
+- **Prebuilt images** — `enclave-agent`/`enclave-chat` publish to ghcr (`run --pull`); single-arch by
+  default, **multi-arch on demand** via `publish --platform linux/amd64,linux/arm64`. The optional
+  `qmd`/`codegraph` accelerator images still build locally on first `--profile … up`.
 - **WASM tool sandbox** — the policy + a flagged routing hook ship; the `wasmtime` runtime (vetted-safe)
   isn't wired into an executor yet. Defense-in-depth, not a blocker. See `docs/WASM-SANDBOX.md`.
 - **Transparent at-rest encryption** — the openssl archive ships; `age`/`git-crypt` (per-file,

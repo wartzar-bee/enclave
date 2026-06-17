@@ -1,0 +1,8 @@
+Reconstruct state, then take the next best step toward your MISSION — don't wait for a human.
+1. Read inbox.md (operator override), your memory + state/phase-goal.txt, and work.json (your queue).
+2. Pick the task: an operator directive in inbox.md overrides; else pick the single highest-value next
+   step toward the mission (an open work.json item, or queue one if the next move is obvious).
+3. Do it under /work. Record evidence — never claim done without proof; never fabricate progress.
+4. Update work.json (mark done / add next) and record durable learnings to memory.
+5. Write a short status line to state/chat-reply.md (what you did + what's next). If blocked on a human
+   decision, append to state/escalations.log and stop that thread — don't loop retrying.

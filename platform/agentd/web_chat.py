@@ -175,6 +175,24 @@ def conversation_messages(cid):
     except Exception:
         return []
 
+def conversation_markdown(cid):
+    """Render a conversation as portable markdown (title + each turn). Returns (filename, text) or None."""
+    msgs = conversation_messages(cid)
+    if not msgs:
+        return None
+    title = next((c.get("title") for c in _load_index() if c.get("id") == cid), None) or "conversation"
+    lines = [f"# {title}", ""]
+    for m in msgs:
+        who = "You" if m.get("role") == "user" else AGENT_NAME
+        lines.append(f"## {who}")
+        if m.get("text"):
+            lines.append(m["text"])
+        for im in (m.get("images") or []):
+            lines.append(f"![image](/{im})")
+        lines.append("")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", title).strip("-")[:48] or "conversation"
+    return (f"{safe}.md", "\n".join(lines) + "\n")
+
 def delete_conversation(cid):
     with _lock:
         p = _conv_path(cid)
@@ -275,6 +293,8 @@ def list_commands():
     """UI commands + skills discovered in /agent and /work .claude/skills — powers the slash menu."""
     cmds = [
         {"cmd": "/clear", "desc": "Start a new chat", "kind": "ui"},
+        {"cmd": "/retry", "desc": "Resend your last message (re-ask)", "kind": "ui"},
+        {"cmd": "/export", "desc": "Download this chat as markdown", "kind": "ui"},
         {"cmd": "/help", "desc": "Show available commands", "kind": "ui"},
     ]
     seen = set()
@@ -533,6 +553,17 @@ PAGE = ("""<!DOCTYPE html>
              transition:flex-basis .18s ease, width .18s ease, padding .18s ease; }
   body.collapsed #sidebar { flex-basis:0; width:0; padding:10px 0; border-right:none; }
   body.collapsed #sidebar > * { opacity:0; pointer-events:none; }
+  /* mobile: sidebar slides in as an overlay within #shell (no header-offset math); chat is full-width */
+  @media (max-width:720px){
+    #shell { position:relative; }
+    #sidebar { position:absolute; top:0; left:0; bottom:0; z-index:40; width:84%; max-width:300px;
+               flex-basis:auto; transform:translateX(0); transition:transform .2s ease;
+               box-shadow:2px 0 20px rgba(0,0,0,.3); }
+    body.collapsed #sidebar { transform:translateX(-104%); width:84%; max-width:300px; padding:10px;
+               border-right:1px solid var(--border); }
+    body.collapsed #sidebar > * { opacity:1; pointer-events:auto; }
+    #app { max-width:100%; width:100%; }
+  }
   .sb-btn { display:flex; align-items:center; gap:9px; width:100%; text-align:left; border:1px solid var(--border);
             background:transparent; color:var(--text); border-radius:10px; padding:9px 11px; cursor:pointer;
             font:inherit; font-size:13.5px; white-space:nowrap; }
@@ -634,7 +665,7 @@ const log=$("log"), inp=$("inp"), btn=$("send"), greeting=$("greeting");
 const thumbs=$("thumbs"), fileIn=$("file"), micBtn=$("mic"), speakBtn=$("speak");
 const wrap=$("inputwrap"), menu=$("menu"), modelpill=$("modelpill"), modelname=$("modelname");
 let polling=false, pending=[], cfg={models:[],model:""}, autoSpeak=false;
-let activeConv=null, commands=[], slashSel=0, stopReq=false;
+let activeConv=null, commands=[], slashSel=0, stopReq=false, lastUserText="";
 const convlist=$("convlist"), searchIn=$("search"), slash=$("slash");
 
 const hr=new Date().getHours();
@@ -770,13 +801,16 @@ function openConvMenu(row,c,kb){
   star.onclick=async e=>{ e.stopPropagation(); closeConvMenus();
     try{ await api("/api/conversation/star",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:c.id,starred:!c.starred})}); }catch(e){}
     loadConversations(searchIn.value.trim()); };
+  const exp=document.createElement("div"); exp.className="mi";
+  exp.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg><span>Export markdown</span>';
+  exp.onclick=e=>{ e.stopPropagation(); closeConvMenus(); exportConv(c.id); };
   const del=document.createElement("div"); del.className="mi del";
   del.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg><span>Delete chat</span>';
   del.onclick=async e=>{ e.stopPropagation(); closeConvMenus(); if(!confirm("Delete this chat? This cannot be undone.")) return;
     try{ await api("/api/conversation/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:c.id})}); }catch(e){}
     if(c.id===activeConv) newChat();
     loadConversations(searchIn.value.trim()); };
-  menu.append(star,del); row.appendChild(menu);
+  menu.append(star,exp,del); row.appendChild(menu);
 }
 async function selectConv(id){
   if(polling) return;
@@ -786,6 +820,7 @@ async function selectConv(id){
   }catch(e){}
   setEmpty();
   document.querySelectorAll(".conv").forEach(r=>r.classList.toggle("active", r.dataset.id===id));
+  if(window.matchMedia("(max-width:720px)").matches) document.body.classList.add("collapsed");  // close the overlay
 }
 function newChat(){ activeConv=null; closeConvMenus(); log.innerHTML=""; setEmpty(); inp.focus();
   document.querySelectorAll(".conv.active").forEach(r=>r.classList.remove("active")); }
@@ -823,6 +858,17 @@ function pickSlash(cmd){
 function runUI(cmd){
   if(cmd==="/clear"||cmd==="/new") newChat();
   else if(cmd==="/help") showHelp();
+  else if(cmd==="/retry") retryLast();
+  else if(cmd==="/export") exportConv(activeConv);
+}
+function exportConv(id){
+  if(!id){ agentMsg().finalize("_Nothing to export — this chat hasn't started yet._"); return; }
+  const u="/api/conversation/export?id="+encodeURIComponent(id)+(TOKEN?("&token="+encodeURIComponent(TOKEN)):"");
+  const a=document.createElement("a"); a.href=u; a.download=""; document.body.appendChild(a); a.click(); a.remove();
+}
+function retryLast(){
+  if(polling||!lastUserText){ return; }
+  inp.value=lastUserText; inp.dispatchEvent(new Event("input")); send();
 }
 function showHelp(){
   const ui=commands.filter(c=>c.kind==="ui").map(c=>`${c.cmd} — ${c.desc}`).join("\\n");
@@ -872,6 +918,7 @@ async function send(){
   if(text==="/help"){ inp.value=""; inp.style.height="auto"; syncSend(); showHelp(); return; }
   if((!text&&!pending.length)||polling) return;
   const images=pending.map(p=>p.path);
+  if(text) lastUserText=text;                 // remembered for /retry
   inp.value=""; inp.style.height="auto"; btn.disabled=true;
   pending=[]; renderThumbs();
   userMsg(text, images);
@@ -893,6 +940,11 @@ inp.addEventListener("keydown",e=>{
     if(e.key==="Escape"){ slash.classList.remove("open"); return; }
   }
   if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); }
+});
+/* global shortcuts: Cmd/Ctrl+K = new chat, Esc = stop a running turn (else close menus) */
+document.addEventListener("keydown",e=>{
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){ e.preventDefault(); newChat(); return; }
+  if(e.key==="Escape"){ if(polling){ stopTurn(); return; } closeConvMenus(); slash.classList.remove("open"); }
 });
 inp.addEventListener("input",()=>{ inp.style.height="auto"; inp.style.height=Math.min(inp.scrollHeight,200)+"px"; syncSend(); slashSel=0; renderSlash(); });
 inp.addEventListener("blur",()=>setTimeout(()=>slash.classList.remove("open"),150));
@@ -1009,6 +1061,7 @@ function syncVoiceUI(){
 /* ---- sidebar: toggle, new chat, search ---- */
 $("toggle").onclick=()=>{ const c=document.body.classList.toggle("collapsed"); try{ localStorage.setItem("sb_collapsed", c?"1":""); }catch(e){} };
 try{ if(localStorage.getItem("sb_collapsed")) document.body.classList.add("collapsed"); }catch(e){}
+if(window.matchMedia("(max-width:720px)").matches) document.body.classList.add("collapsed");  // mobile: start closed
 $("newchat").onclick=newChat;
 let searchT=null;
 searchIn.addEventListener("input",()=>{ clearTimeout(searchT); searchT=setTimeout(()=>loadConversations(searchIn.value.trim()),200); });
@@ -1067,6 +1120,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/search":
             q = parse_qs(urlparse(self.path).query).get("q", [""])[0]
             self._json({"results": search_conversations(q)}); return
+        if path == "/api/conversation/export":
+            cid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            md = conversation_markdown(cid) if _SAFE_ID.match(cid or "") else None
+            if not md:
+                self._json({"error": "not found"}, 404); return
+            fname, text = md
+            data = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data); return
         if path == "/api/poll":
             with _lock:
                 reply, cid = check_new_reply()

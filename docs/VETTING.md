@@ -35,8 +35,12 @@ Opt-in code-memory accelerator (`Dockerfile.agent` `--build-arg INSTALL_CODEGRAP
 Tested in-container: install → `codegraph init` indexes → `query`/`callers` resolve; telemetry
 reports disabled via `DO_NOT_TRACK`. Pin 1.0.1; re-vet on bump (esp. the downloaded bundle).
 
-## `cognee` (#6 graph engine) — 1.1.2 — VERDICT: DO NOT BAKE IN (2026-06-16)
+## `cognee` (#6 graph engine) — 1.1.2 — VERDICT: DO NOT BAKE IN (2026-06-16, re-verified 2026-06-18)
 Security pass ran; the adapter stub (`providers/cognee_provider.py`) stays, the engine stays out.
+Re-verify (2026-06-18) confirmed + sharpened: latest stable **1.1.2** (do NOT pin `1.2.0.dev0`); the
+telemetry endpoint is the vendor host **`https://test.prometh.ai`** (not PostHog), and the API-key
+fingerprint is PBKDF2-HMAC-SHA256 (the key isn't sent, but a stable hash of it is). €7.5M-seed, funded,
+maintained — legit, but the verdict stands and strengthens. Verdict unchanged: **KEEP GATED.**
 
 | Check | Result |
 |---|---|
@@ -54,15 +58,19 @@ matching the comic-creator precedent. If someone still insists on Cognee, it mus
 its own container** with `TELEMETRY_DISABLED=1`, `ENV=dev`, a pinned local LLM endpoint, and egress
 firewalled — a heavy lift for an opt-in the wiki already replaces.
 
-## `wasmtime` (wasmtime-py, #7 WASM runtime) — 45.0.0 — VERDICT: SAFE to pin (cleared to wire)
+## `wasmtime` (wasmtime-py, #7 WASM runtime) — 45.0.0 — VERDICT: PROCEED WITH CONDITIONS (2026-06-16, re-verified 2026-06-18)
 | Check | Result |
 |---|---|
 | Provenance / license | `bytecodealliance/wasmtime-py` — **Bytecode Alliance** (the WASI reference org; Mozilla/Fastly/Intel). **Apache-2.0 WITH LLVM-exception** |
 | **Runtime dependencies** | **ZERO** (the only 4 `requires_dist` are `testing` extras). Minimal attack surface. |
 | Install footprint | Ships **prebuilt platform wheels** (manylinux/musl x86_64+aarch64, macOS, Windows, + pure `py3-none-any`) — **no source compile at install**; native runtime bundled by the org. |
-| CVEs (OSV, 45.0.0) | 0 known |
+| Telemetry | None observed / not documented (native runtime bundled in the wheel — no install/runtime fetch). |
+| CVEs | **0 open against 45.0.0** (2026-05-26). But wasmtime is a high-churn sandbox target: the **2026-04-09 batch had TWO critical (9.0) escapes** — CVE-2026-34987 (Winch) and **CVE-2026-34971 (aarch64 Cranelift — our Apple-Silicon host)**, both fixed by 45.0.0. |
 
-**Decision:** the *dependency* is cleared — pin `wasmtime==45.0.0`. The `run_sandboxed()` executor
-itself is the next BUILD step (still gated only by engineering, not security): note the open design
-question from `docs/WASM-SANDBOX.md` — WASI can't run arbitrary `bash`, so the executor needs a
-restricted exec surface (or an interpreter compiled to WASM), not a drop-in shell wrapper.
+**Decision — PROCEED WITH CONDITIONS** (the *dependency* is cleared; these are live obligations):
+1. **Pin `wasmtime==45.0.0`** and **track Bytecode-Alliance advisories** — bump promptly on each batch (the 2026-04-09 double-escape shows staying-current IS the control).
+2. **Default Cranelift backend only — never enable Winch** (the worst recent escapes were Winch-specific).
+3. **Defense-in-depth only** — keep it nested *inside* the `cap_drop:ALL` container + the guard; grant no network capability, minimal fs preopens. An escape then still lands in the container, not the host.
+4. The `run_sandboxed()` executor is the next BUILD step (gated by engineering, not security): per
+   `docs/WASM-SANDBOX.md`, WASI can't run arbitrary `bash`, so it needs a restricted exec surface (or an
+   interpreter compiled to WASM), not a drop-in shell wrapper.
