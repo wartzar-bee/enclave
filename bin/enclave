@@ -391,6 +391,14 @@ def _ensure_codegraph_bridge():
         return
     if not os.path.isdir(corpus):
         print(f"  ⚠ CODE_CORPUS={corpus} not found — codegraph bridge not started."); return
+    # idempotent: if a codegraph bridge is ALREADY serving the port (a shared/standalone one), reuse it —
+    # don't start a duplicate that would collide on the port (like the agent reuses the host qmd gateway).
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{CODEGRAPH_PORT}/health", timeout=2) as r:
+            if r.status < 500:
+                print(f"  codegraph bridge already serving on :{CODEGRAPH_PORT} — reusing it (no duplicate)."); return
+    except Exception:
+        pass
     name = (_read_env("AGENT_ID", "enclave-agent") or "enclave-agent") + "-codegraph"
     img = "enclave-codegraph:latest"
     if subprocess.run(["docker", "image", "inspect", img], capture_output=True).returncode != 0:
