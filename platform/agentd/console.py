@@ -73,7 +73,11 @@ PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport
 <title>Enclave Fleet</title><style>
 :root{--bg:#0f1115;--card:#171a21;--bd:#262b36;--tx:#e6e8ee;--mut:#8a93a6;--accent:#5b8cff;--ok:#3fbf6f;--idle:#c9a23f;--down:#c2603f}
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);height:100vh;display:flex}
-#rail{width:300px;flex:0 0 300px;background:var(--card);border-right:1px solid var(--bd);display:flex;flex-direction:column;overflow:hidden}
+#rail{width:300px;flex:0 0 300px;background:var(--card);border-right:1px solid var(--bd);display:flex;flex-direction:column;overflow:hidden;transition:flex-basis .18s ease,width .18s ease}
+body.railcollapsed #rail{width:0;flex-basis:0;border-right:none}
+body.railcollapsed #rail>*{opacity:0;pointer-events:none}
+#railtoggle{background:transparent;border:1px solid var(--bd);color:var(--mut);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:15px;line-height:1;flex:0 0 30px}
+#railtoggle:hover{background:#2b3550;color:var(--tx)}
 #rail h1{font-size:13px;margin:0;padding:13px 14px;color:var(--mut);letter-spacing:.04em;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between}
 #search{margin:8px;padding:7px 10px;background:var(--bg);border:1px solid var(--bd);border-radius:9px;color:var(--tx);font:inherit}
 #list{flex:1;overflow:auto;padding:4px}
@@ -98,7 +102,8 @@ iframe{flex:1;border:0;width:100%;background:#fff}
 <aside id="rail"><h1>ENCLAVE FLEET <span id="count"></span></h1>
 <input id="search" placeholder="filter agents…" autocomplete="off"><div id="list"></div></aside>
 <main id="main">
-  <div id="bar"><span class="t" id="bt">—</span><span class="m" id="bm"></span><span style="flex:1"></span>
+  <div id="bar"><button id="railtoggle" title="Toggle agent rail" onclick="toggleRail()">☰</button>
+    <span class="t" id="bt">—</span><span class="m" id="bm"></span><span style="flex:1"></span>
     <button class="btn" onclick="act('restart')">Restart</button>
     <button class="btn danger" onclick="act('down')">Stop</button>
     <button class="btn" onclick="act('up')">Start</button>
@@ -144,6 +149,8 @@ async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dt
   await post("/api/action",{action:"send",id:sel,text:t});}
 async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});}catch(e){}}
 async function load(){try{const j=await(await fetch(qs("/api/fleet"))).json();agents=j.agents||{};render();if(sel&&agents[sel]){bm.textContent=agents[sel].status+" · :"+agents[sel].port;}}catch(e){}}
+function toggleRail(){const c=document.body.classList.toggle("railcollapsed");try{localStorage.setItem("rail_collapsed",c?"1":"");}catch(e){}}
+try{if(localStorage.getItem("rail_collapsed"))document.body.classList.add("railcollapsed");}catch(e){}
 search.addEventListener("input",render);
 load();
 try{const es=new EventSource(qs("/api/stream"));es.onmessage=e=>{try{agents=JSON.parse(e.data).agents||agents;render();}catch(_){}};}catch(e){setInterval(load,5000);}
