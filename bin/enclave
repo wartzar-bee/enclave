@@ -184,7 +184,8 @@ def cmd_init(args):
     # Working folder: the host project tree the agent operates on + saves into (mounted rw at /work).
     # Blank → ./home/work (inside the vault). Point it at a real repo to make that the working folder.
     work_dir = _flag(args, "--work-dir") or _ask(
-        "Working folder — host path the agent works in (blank = home/work)", default="", yes=yes)
+        "Working folder — ABSOLUTE host path the agent works in, e.g. /Users/you/Dev/myproject "
+        "(blank = home/work, inside the vault)", default=None, yes=yes)
 
     # memory accelerators (opt-in) — ASK at install so .mcp.json reflects reality (no dead entries).
     #   codegraph = code memory over a repo folder, served as an HTTP bridge (twin of qmd).
