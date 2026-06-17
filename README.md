@@ -59,6 +59,21 @@ enclave run         # rebuilds both images (docker compose up -d --build) and re
 into the image. If a rebuild ever serves stale code, force it:
 `docker compose build --no-cache agent chat && docker compose up -d`.
 
+## Managing a fleet (many agents)
+Every deployment is independent, but you manage them all from one place — no per-agent babysitting.
+
+- **`enclave fleet`** — CLI control plane over *all* deployments on the host (discovered via
+  `docker compose ls`): `fleet list` (status / brain / model / chat-port / open-work / liveness, grouped
+  by manager), `fleet up|down|restart|logs|send <id>`, `fleet open <id>`. Every mutation is validated
+  (id + the compose file must live under `ENCLAVE_STACKS_ROOTS`) and written to an append-only audit log.
+- **`enclave console`** — a web panel: a left **rail of agents** (grouped under their manager — the
+  studio-agent→sub-agents hierarchy — with live status dots), a **detail pane** (the agent's real chat
+  embedded, plus Status/Logs), and a **directive box** that wakes the agent's tick. One background thread
+  reads all state off disk into a cached snapshot (it never hammers the agents), pushed to the browser
+  over SSE. Binds `127.0.0.1` only (reach it remotely via an SSH tunnel); optional `CONSOLE_TOKEN` gate;
+  mutations go through the validated `fleet` helper, never direct docker calls.
+  Design notes: `docs/FLEET-CONSOLE-PLAN.md`.
+
 ## Running several agents at once
 Each deployment is keyed to its **agent name** (`AGENT_ID`), not its folder — the compose project,
 container names, and named volumes all derive from it, so deployments never collide no matter where

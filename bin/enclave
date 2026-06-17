@@ -6,7 +6,8 @@ Commands:
   enclave new <name> [--dir P]     Scaffold a NEW deployment in its own folder (names the folder + agent + free port)
   enclave init                     Interactive wizard: configure this deployment (home/, secrets/, .env)
   enclave brain <mode>             Switch brain in place (claude|api|local|optimize) + recreate the container (keeps memory)
-  enclave fleet [list|open <id>]   Fleet control plane: list ALL deployments on this host (status/brain/model/port) or open one's chat
+  enclave fleet [list|open <id>]   Fleet control plane (CLI): list ALL deployments (status/brain/model/port); also up/down/restart/logs/send <id>
+  enclave console [--port N]       Web fleet console: rail of agents + detail/chat/logs + directives, all deployments in one panel
   enclave run                      Build + start the agent, then open the chat in your browser
   enclave app                      macOS: install an /Applications launcher (start agent + open chat by icon)
   enclave send <msg>               Send a message to the agent's inbox
@@ -766,6 +767,24 @@ def cmd_app(args):
     print(f"  Find '{appname}' in Applications / Launchpad (or double-click it) to start the agent + open the chat.")
     print(f"  (Run `enclave run` once first so the images are built; the launcher uses existing images.)")
 
+def cmd_console(args):
+    """Launch the web fleet console (rail + detail for ALL deployments on this host) + open the browser.
+    Usage: enclave console [--port N] [--no-open]   Env: CONSOLE_TOKEN (optional loopback gate)."""
+    script = REPO / "platform" / "agentd" / "console.py"
+    if not script.exists():
+        sys.exit("console.py not found in this build.")
+    port = _flag(args, "--port") or os.environ.get("CONSOLE_PORT") or str(_free_port(8700))
+    url = f"http://127.0.0.1:{port}/"
+    tok = os.environ.get("CONSOLE_TOKEN", "")
+    if tok:
+        url += f"?token={tok}"
+    if not _has(args, "--no-open"):
+        import threading as _t
+        _t.Timer(1.5, lambda: _open_browser(url)).start()
+    print(f"Fleet console → {url}  (Ctrl-C to stop)")
+    subprocess.run([sys.executable, str(script), "--port", str(port)])
+
+
 def cmd_fleet(args):
     """Fleet control plane across ALL Enclave deployments on this host (discovers via `docker compose ls`).
     Usage: enclave fleet [list] [--json]   |   enclave fleet open <agent-id>
@@ -848,7 +867,7 @@ COMMANDS = {
     "new": cmd_new, "init": cmd_init, "run": cmd_run, "app": cmd_app, "stop": cmd_stop, "logs": cmd_logs,
     "send": cmd_send, "status": cmd_status, "chat": cmd_chat, "publish": cmd_publish, "brain": cmd_brain,
     "snapshot": cmd_snapshot, "vault-encrypt": cmd_vault_encrypt, "vault-decrypt": cmd_vault_decrypt,
-    "fleet": cmd_fleet,
+    "fleet": cmd_fleet, "console": cmd_console,
 }
 
 def main():
