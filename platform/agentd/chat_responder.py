@@ -11,19 +11,23 @@ Two planes, on purpose:
   • work plane  — inbox.md + tick.txt (scheduled/▸directive autonomous work; serialized; `enclave send`)
   • chat plane  — state/chat-inbox.jsonl (interactive Q&A; this module; concurrent; the web chat)
 
-The chat turn is tool-capable for BRAIN=claude (it can read files + query qmd to answer from the
-agent's knowledge), guard-protected by the agent's .claude/settings.json. For BRAIN=api/local it
-falls back to a single-shot completion against the configured endpoint (no tools).
+For BRAIN=claude each conversation is a CONTINUOUS, RESUMABLE Claude Code session (one per web-chat
+thread): the first message starts a session, later messages `--resume` it — so the full thread (text
+AND tool calls) is real native context, exactly like the CLI conversation, just a different UI. It runs
+at the agent's own model (not a downgraded side-model) and is fully tool-capable (qmd, file read/write
+in /work, read-only backoffice queries), guard-protected by .claude/settings.json. For BRAIN=api/local
+it falls back to a single-shot completion with the recent thread replayed as text (no native session).
 
 Env:
   CHAT_RESPONDER=off     disable (agentloop checks this before importing)
-  CHAT_MODEL             model for chat turns (default: claude-haiku-4-5 for claude; else BRAIN_MODEL)
+  CHAT_MODEL             override the chat model (default: the UI picker / the agent's MODEL — same as the agent)
   CHAT_TURN_TIMEOUT      seconds per chat turn (default 150)
 """
-import os, sys, json, time, pathlib, subprocess, threading, urllib.request
+import os, sys, json, time, re, pathlib, subprocess, threading, urllib.request
 
 POLL_SECS = 1.5
-HISTORY_CTX = 6  # recent turns of context to include
+HISTORY_CTX = 12  # recent turns of THIS conversation to include for context
+_SAFE_ID = re.compile(r"^c[0-9]+$")
 
 
 def _read_jsonl(p):
@@ -33,61 +37,91 @@ def _read_jsonl(p):
         return []
 
 
-def _chat_model(brain):
+def _chat_model(agent_dir, brain):
+    """Run the chat at the SAME capability as the agent — honor an explicit CHAT_MODEL, else the UI model
+    picker (state/model.override), else the agent's own MODEL. No downgraded side-model."""
     m = os.environ.get("CHAT_MODEL", "").strip()
     if m:
         return m
+    try:
+        ov = (agent_dir / "state" / "model.override").read_text().strip().splitlines()
+        if ov and ov[0].strip():
+            return ov[0].strip()
+    except Exception:
+        pass
     if brain == "claude":
-        return "claude-haiku-4-5"          # fast + cheap for interactive Q&A
+        return os.environ.get("MODEL", "").strip() or "claude-sonnet-4-6"
     return os.environ.get("BRAIN_MODEL", "").strip() or "deepseek/deepseek-chat"
 
 
-def _recent_context(agent_dir):
-    """A little live state so the responder answers grounded, not blind."""
-    bits = []
-    for rel in ("state/rollup.md", "state/recall.md"):
-        f = agent_dir / rel
-        if f.exists():
-            t = f.read_text(errors="ignore").strip()
-            if t:
-                bits.append(f"## {rel}\n{t[:1500]}")
-    hist = _read_jsonl(agent_dir / "state" / "chat-history.jsonl")[-HISTORY_CTX:]
+# Established once on the first turn; session resume carries it across the whole thread.
+CHAT_PREAMBLE = (
+    "You are in a LIVE, CONTINUOUS chat with the operator through a web UI — treat it EXACTLY like an "
+    "interactive Claude Code conversation. Do NOT read inbox.md or follow the per-tick 'no new message' "
+    "protocol (that's for autonomous work ticks, not this). Converse naturally, REMEMBER everything said "
+    "earlier in this thread (e.g. 'try again' refers to the previous request), and use your full "
+    "tools/skills/knowledge — qmd search, reading/writing files in /work, and read-only backoffice "
+    "queries — to actually do what's asked. Be concise; output only your reply (shown directly in chat).")
+
+
+def _conv_history(agent_dir, conv_id):
+    """Recent turns of THIS conversation — only for the api/local fallback (no native session). The
+    claude brain uses real session resume instead, so it gets the full thread + tool context."""
+    if conv_id and _SAFE_ID.match(conv_id):
+        hist = _read_jsonl(agent_dir / "state" / "chat" / (conv_id + ".jsonl"))
+        if hist:
+            hist = hist[:-1]            # drop the just-arrived user msg (added separately below)
+    else:
+        hist = _read_jsonl(agent_dir / "state" / "chat-history.jsonl")
+    return hist[-HISTORY_CTX:]
+
+
+def _api_prompt(agent_dir, conv_id, msg, images):
+    parts = [CHAT_PREAMBLE]
+    hist = _conv_history(agent_dir, conv_id)
     if hist:
-        convo = "\n".join(f"{h.get('role','?')}: {h.get('text','')[:500]}" for h in hist)
-        bits.append("## recent conversation\n" + convo)
-    return "\n\n".join(bits)
-
-
-def _build_prompt(agent_dir, msg, images):
-    ctx = _recent_context(agent_dir)
-    parts = []
-    if ctx:
-        parts.append("Context (your current state — for grounding, do not quote verbatim):\n" + ctx)
+        parts.append("## conversation so far\n" +
+                     "\n".join(f"{h.get('role','?')}: {h.get('text','')[:800]}" for h in hist))
     if images:
-        parts.append("The user attached image(s); read them with the Read tool:\n" +
-                     "\n".join(f"- {p}" for p in images))
-    parts.append(
-        "Answer the user's chat message below. You may read your files and query qmd to ground the "
-        "answer in your knowledge. Be concise and lead with the answer. Output ONLY your reply text "
-        "(it is shown directly in a chat UI).")
-    parts.append("\nUser: " + msg)
+        parts.append("User attached image(s):\n" + "\n".join(f"- {p}" for p in images))
+    parts.append("User: " + msg)
     return "\n\n".join(parts)
 
 
-def _answer_claude(agent_dir, prompt, model, timeout, log):
-    """Tool-capable chat turn via the claude CLI. cwd=agent_dir → CLAUDE.md + .claude/settings.json
-    (guard hook) + .mcp.json (qmd) are auto-loaded. Guard still fires under skip-permissions."""
-    cmd = ["claude", "-p", prompt, "--model", model, "--dangerously-skip-permissions"]
+def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
+    """One turn of a CONTINUOUS Claude Code session per conversation. The first message starts a session
+    (we save its id to state/chat/<id>.session); later messages `--resume` it, so the FULL thread — text
+    AND tool calls — is real context, exactly like the CLI conversation, just a different UI. cwd=agent_dir
+    auto-loads CLAUDE.md + .claude/settings.json (guard hook) + .mcp.json (qmd). Guard still fires."""
+    sf = (agent_dir / "state" / "chat" / (conv_id + ".session")) if (conv_id and _SAFE_ID.match(conv_id)) else None
+    sid = (sf.read_text().strip() or None) if (sf and sf.exists()) else None
+    turn = msg
+    if images:
+        turn = "User attached image(s); read them with the Read tool:\n" + "\n".join(f"- {p}" for p in images) + "\n\n" + msg
+    cmd = ["claude", "--model", model, "--dangerously-skip-permissions", "--output-format", "json"]
+    if sid:
+        cmd += ["--resume", sid, "-p", turn]
+    else:
+        cmd += ["-p", CHAT_PREAMBLE + "\n\nUser: " + turn]      # first turn establishes the chat mode
     try:
         r = subprocess.run(cmd, cwd=str(agent_dir), capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
+        log("chat turn timed out"); return None
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "")
+        log(f"chat turn failed (rc={r.returncode}): {err[:200]}")
+        if sf and sid and ("resume" in err.lower() or "session" in err.lower()):
+            try: sf.unlink()                                    # stale session id → next msg starts fresh
+            except OSError: pass
         return None
     out = (r.stdout or "").strip()
-    if r.returncode != 0:
-        # CLI error (e.g. not logged in / cap) — log it, don't surface the raw text as the "reply".
-        log(f"chat turn failed (rc={r.returncode}): {(out or r.stderr or '')[:200]}")
-        return None
-    return out or None
+    try:
+        d = json.loads(out)
+        if sf and d.get("session_id"):
+            sf.write_text(d["session_id"])
+        return (d.get("result") or "").strip() or None
+    except Exception:
+        return out or None                                      # non-json fallback
 
 
 def _answer_api(prompt, model, timeout, log):
@@ -114,12 +148,11 @@ def chat_loop(agent_dir, log=print):
     reply_file = agent_dir / "state" / "chat-reply.md"
     chat_inbox.parent.mkdir(parents=True, exist_ok=True)
     brain = os.environ.get("BRAIN", "claude")
-    model = _chat_model(brain)
     timeout = int(os.environ.get("CHAT_TURN_TIMEOUT", "150"))
     lock = threading.Lock()
     # Baseline at EOF so a restart doesn't replay the whole backlog.
     seen = len(_read_jsonl(chat_inbox))
-    log(f"chat responder up (plane=state/chat-inbox.jsonl, brain={brain}, model={model})")
+    log(f"chat responder up (plane=state/chat-inbox.jsonl, brain={brain}, model={_chat_model(agent_dir, brain)}, sessions=per-conversation)")
 
     while True:
         try:
@@ -131,12 +164,13 @@ def chat_loop(agent_dir, log=print):
                 images = m.get("images") or []
                 if not text and not images:
                     continue
-                prompt = _build_prompt(agent_dir, text, images)
+                conv_id = (m.get("conversation") or "").strip()
+                model = _chat_model(agent_dir, brain)     # re-resolve so a live UI model switch is honored
                 with lock:
                     if brain == "claude":
-                        reply = _answer_claude(agent_dir, prompt, model, timeout, log)
+                        reply = _answer_claude(agent_dir, conv_id, text, images, model, timeout, log)
                     else:
-                        reply = _answer_api(prompt, model, timeout, log)
+                        reply = _answer_api(_api_prompt(agent_dir, conv_id, text, images), model, timeout, log)
                 if reply:
                     reply_file.write_text(reply)
                     log(f"chat reply sent ({len(reply)} chars)")
