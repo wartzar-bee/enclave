@@ -531,6 +531,18 @@ def _ensure_codegraph_bridge():
     print(f"  codegraph bridge up → host.docker.internal:{CODEGRAPH_PORT} (corpus: {corpus})" if r.returncode == 0
           else f"  ⚠ codegraph bridge failed: {r.stderr.strip()[:160]}")
 
+def _check_chat_js():
+    """Build-time guard: run check_chat_js.py so a JS syntax error in the rendered chat PAGE
+    fails the build instead of shipping a dead UI (web_chat.PAGE is a non-raw string — a single
+    backslash in an inline regex silently breaks it). Non-blocking if the checker/node is absent."""
+    checker = REPO / "platform" / "agentd" / "check_chat_js.py"
+    if not checker.exists():
+        return
+    r = subprocess.run([sys.executable, str(checker)], cwd=REPO)
+    if r.returncode == 1:   # 1 = a real JS syntax error; 2/other = setup issue → don't block
+        sys.exit("Aborting build — fix the chat UI JavaScript above before deploying.")
+
+
 def cmd_run(args):
     if not (REPO / "docker-compose.yml").exists():
         sys.exit("No docker-compose.yml in the repo — is this an Enclave checkout?")
@@ -546,6 +558,8 @@ def cmd_run(args):
         build = False
     else:
         build = not _has(args, "--no-build")
+    if build:
+        _check_chat_js()
     cmd = ["docker", "compose", "up", "-d"] + (["--build"] if build else [])
     print("Starting Enclave (docker compose up)…")
     r = subprocess.run(cmd, cwd=REPO)
@@ -586,6 +600,7 @@ def cmd_publish(args):
     if not reg:
         sys.exit("Set a registry: enclave publish --registry ghcr.io/<owner>   "
                  "(login first: docker login ghcr.io)")
+    _check_chat_js()    # don't publish an image with a broken chat UI
     tag = _flag(args, "--tag", "latest")
     platform = _flag(args, "--platform")    # e.g. "linux/amd64,linux/arm64" → multi-arch buildx push
     multi = bool(platform and "," in platform)
@@ -827,6 +842,7 @@ def cmd_update(args):
                  "enclave repo) — e.g. `enclave update --from ~/Dev/enclave` — or use --pull for images.")
     if _has(args, "--no-build"):
         print("  (skipped rebuild — run `enclave run` to apply)"); return
+    _check_chat_js()
     print("Rebuilding + recreating…")
     subprocess.run(["docker", "compose", "up", "-d", "--build"], cwd=REPO)
     print("✓ updated + live.")
