@@ -78,9 +78,12 @@ body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;-
 #rail{width:300px;flex:0 0 300px;background:var(--card);border-right:1px solid var(--bd);display:flex;flex-direction:column;overflow:hidden;transition:flex-basis .18s ease,width .18s ease}
 body.railcollapsed #rail{width:0;flex-basis:0;border-right:none}
 body.railcollapsed #rail>*{opacity:0;pointer-events:none}
-#railtoggle{background:transparent;border:1px solid var(--bd);color:var(--mut);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:15px;line-height:1;flex:0 0 30px}
+#railtoggle{display:none;background:transparent;border:1px solid var(--bd);color:var(--mut);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:15px;line-height:1;flex:0 0 30px}
+body.railcollapsed #railtoggle{display:inline-flex;align-items:center;justify-content:center}
+.railx{background:transparent;border:none;color:var(--mut);cursor:pointer;font-size:18px;line-height:1;padding:0 2px;flex:0 0 auto}
+.railx:hover{color:var(--tx)}
 #railtoggle:hover{background:var(--sel);color:var(--tx)}
-#rail h1{font-size:13px;margin:0;padding:13px 14px;color:var(--mut);letter-spacing:.04em;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between}
+#rail h1{font-size:13px;margin:0;padding:13px 14px;color:var(--mut);letter-spacing:.04em;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:9px}
 #search{margin:8px;padding:7px 10px;background:var(--bg);border:1px solid var(--bd);border-radius:9px;color:var(--tx);font:inherit}
 #list{flex:1;overflow:auto;padding:4px}
 .grp{font-size:11px;color:var(--mut);padding:8px 10px 3px;text-transform:uppercase;letter-spacing:.05em}
@@ -101,10 +104,10 @@ iframe{flex:1;border:0;width:100%;background:var(--bg)}
 #dtext{flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:9px;color:var(--tx);padding:8px 11px;font:inherit}
 .empty{margin:auto;color:var(--mut)}
 </style></head><body>
-<aside id="rail"><h1>ENCLAVE FLEET <span id="count"></span></h1>
+<aside id="rail"><h1><button class="railx" onclick="toggleRail()" title="Collapse panel">−</button><span>ENCLAVE FLEET</span><span id="count" style="margin-left:auto"></span></h1>
 <input id="search" placeholder="filter agents…" autocomplete="off"><div id="list"></div></aside>
 <main id="main">
-  <div id="bar"><button id="railtoggle" title="Toggle agent rail" onclick="toggleRail()">☰</button>
+  <div id="bar"><button id="railtoggle" title="Show agents" onclick="toggleRail()">☰</button>
     <span class="t" id="bt">—</span><span class="m" id="bm"></span><span style="flex:1"></span>
     <button class="btn" onclick="act('restart')">Restart</button>
     <button class="btn danger" onclick="act('down')">Stop</button>
