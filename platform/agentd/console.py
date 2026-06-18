@@ -71,33 +71,31 @@ def _fleet_cmd(*args, timeout=60):
 
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Enclave Fleet</title><style>
-:root{--bg:#0f1115;--card:#171a21;--bd:#262b36;--tx:#e6e8ee;--mut:#8a93a6;--accent:#5b8cff;--ok:#3fbf6f;--idle:#c9a23f;--down:#c2603f}
-body.light{--bg:#f7f8fa;--card:#ffffff;--bd:#dde3ec;--tx:#1a1d24;--mut:#5f6776;--accent:#2f6bff}
-body.light .row:hover{background:#eef1f6}body.light .row.sel{background:#e3e9f5}
-body.light .btn{background:#eef1f6}body.light .btn:hover{background:#dfe6f5}
-body.light #railtoggle:hover{background:#dfe6f5;color:var(--tx)}
+/* palette matches web_chat exactly so the console frame + the embedded chat are ONE UI */
+:root{--bg:#262624;--card:#30302e;--bd:#3f3f3b;--tx:#ececec;--mut:#9a988f;--accent:#d97757;--hover:#3a3a37;--sel:#403f3b;--ok:#3fbf6f;--idle:#c9a23f;--down:#c2603f}
+body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;--accent:#d97757;--hover:#f3f1ea;--sel:#ece7dc}
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);height:100vh;display:flex}
 #rail{width:300px;flex:0 0 300px;background:var(--card);border-right:1px solid var(--bd);display:flex;flex-direction:column;overflow:hidden;transition:flex-basis .18s ease,width .18s ease}
 body.railcollapsed #rail{width:0;flex-basis:0;border-right:none}
 body.railcollapsed #rail>*{opacity:0;pointer-events:none}
 #railtoggle{background:transparent;border:1px solid var(--bd);color:var(--mut);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:15px;line-height:1;flex:0 0 30px}
-#railtoggle:hover{background:#2b3550;color:var(--tx)}
+#railtoggle:hover{background:var(--sel);color:var(--tx)}
 #rail h1{font-size:13px;margin:0;padding:13px 14px;color:var(--mut);letter-spacing:.04em;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between}
 #search{margin:8px;padding:7px 10px;background:var(--bg);border:1px solid var(--bd);border-radius:9px;color:var(--tx);font:inherit}
 #list{flex:1;overflow:auto;padding:4px}
 .grp{font-size:11px;color:var(--mut);padding:8px 10px 3px;text-transform:uppercase;letter-spacing:.05em}
 .row{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:9px;cursor:pointer}
-.row:hover{background:#1e2330}.row.sel{background:#222a3b}
+.row:hover{background:var(--hover)}.row.sel{background:var(--sel)}
 .dot{width:9px;height:9px;border-radius:50%;flex:0 0 9px}.working{background:var(--ok)}.idle{background:var(--idle)}.down{background:var(--down)}
 .rid{font-weight:600}.rmeta{font-size:11.5px;color:var(--mut)}
 #main{flex:1;display:flex;flex-direction:column;min-width:0}
 #bar{padding:11px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
 #bar .t{font-weight:700;font-size:15px}#bar .m{color:var(--mut);font-size:12.5px}
-.btn{background:#222a3b;border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:6px 11px;cursor:pointer;font:inherit;font-size:12.5px}
-.btn:hover{background:#2b3550}.btn.danger:hover{background:#3a2420;border-color:#c2603f}
+.btn{background:var(--hover);border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:6px 11px;cursor:pointer;font:inherit;font-size:12.5px}
+.btn:hover{background:var(--sel)}.btn.danger:hover{background:#3a2420;border-color:#c2603f}
 .tabs{display:flex;gap:4px;padding:8px 14px 0}.tab{padding:6px 12px;border-radius:8px 8px 0 0;cursor:pointer;color:var(--mut)}.tab.sel{background:var(--card);color:var(--tx)}
 #pane{flex:1;background:var(--card);margin:0 0 0 0;overflow:auto;min-height:0;display:flex;flex-direction:column}
-iframe{flex:1;border:0;width:100%;background:#fff}
+iframe{flex:1;border:0;width:100%;background:var(--bg)}
 #status,#logs{padding:16px;white-space:pre-wrap;font:12.5px ui-monospace,Menlo,monospace;color:var(--tx);overflow:auto}
 #dbox{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--bd)}
 #dtext{flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:9px;color:var(--tx);padding:8px 11px;font:inherit}
