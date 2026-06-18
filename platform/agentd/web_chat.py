@@ -418,6 +418,9 @@ PAGE = ("""<!DOCTYPE html>
     :root { --bg:#262624; --card:#30302e; --text:#ececec; --muted:#9a988f;
             --user:#3a3a37; --border:#3f3f3b; --code:#1f1f1d; --menu:#30302e; --hover:#3a3a37; }
   }
+  /* ?theme=light|dark forces the theme (overrides the OS preference) — used when embedded in the fleet console */
+  html[data-theme="light"] { --bg:#faf9f5; --card:#ffffff; --text:#28261f; --muted:#73726c; --accent:#d97757; --accent-hover:#c2603f; --user:#f0eee6; --border:#e7e3d8; --code:#f3f1ea; --menu:#ffffff; --hover:#f3f1ea; }
+  html[data-theme="dark"]  { --bg:#262624; --card:#30302e; --text:#ececec; --muted:#9a988f; --user:#3a3a37; --border:#3f3f3b; --code:#1f1f1d; --menu:#30302e; --hover:#3a3a37; }
   * { box-sizing:border-box; }
   html,body { height:100%; }
   body { margin:0; background:var(--bg); color:var(--text);
@@ -596,6 +599,7 @@ PAGE = ("""<!DOCTYPE html>
   .convmenu .mi svg { width:15px; height:15px; color:var(--muted); }
   .convmenu .mi.del { color:#c2603f; } .convmenu .mi.del svg { color:#c2603f; }
 </style>
+<script>(function(){var t=new URLSearchParams(location.search).get("theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);})();</script>
 </head>
 <body class="empty">
 <header>

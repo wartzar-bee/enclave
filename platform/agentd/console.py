@@ -72,6 +72,10 @@ def _fleet_cmd(*args, timeout=60):
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Enclave Fleet</title><style>
 :root{--bg:#0f1115;--card:#171a21;--bd:#262b36;--tx:#e6e8ee;--mut:#8a93a6;--accent:#5b8cff;--ok:#3fbf6f;--idle:#c9a23f;--down:#c2603f}
+body.light{--bg:#f7f8fa;--card:#ffffff;--bd:#dde3ec;--tx:#1a1d24;--mut:#5f6776;--accent:#2f6bff}
+body.light .row:hover{background:#eef1f6}body.light .row.sel{background:#e3e9f5}
+body.light .btn{background:#eef1f6}body.light .btn:hover{background:#dfe6f5}
+body.light #railtoggle:hover{background:#dfe6f5;color:var(--tx)}
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);height:100vh;display:flex}
 #rail{width:300px;flex:0 0 300px;background:var(--card);border-right:1px solid var(--bd);display:flex;flex-direction:column;overflow:hidden;transition:flex-basis .18s ease,width .18s ease}
 body.railcollapsed #rail{width:0;flex-basis:0;border-right:none}
@@ -107,7 +111,8 @@ iframe{flex:1;border:0;width:100%;background:#fff}
     <button class="btn" onclick="act('restart')">Restart</button>
     <button class="btn danger" onclick="act('down')">Stop</button>
     <button class="btn" onclick="act('up')">Start</button>
-    <button class="btn" onclick="openChat()">↗ Chat tab</button></div>
+    <button class="btn" onclick="openChat()">↗ Chat tab</button>
+    <button class="btn" id="themebtn" title="Toggle light/dark" onclick="toggleTheme()">🌙</button></div>
   <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
     <span class="tab" data-t="status" onclick="tab('status')">Status</span>
     <span class="tab" data-t="logs" onclick="tab('logs')">Logs</span></div>
@@ -139,7 +144,7 @@ function openChat(){if(sel)window.open("http://127.0.0.1:"+agents[sel].port+"/",
 function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("sel",e.dataset.t===t));
   const p=document.getElementById("pane");if(!sel){p.innerHTML='<div class="empty">Select an agent.</div>';return;}
   const a=agents[sel];
-  if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/"></iframe>`;}
+  if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/?theme=${theme()}"></iframe>`;}
   else if(t==="status"){p.innerHTML=`<div id="status">${esc(JSON.stringify({id:a.id,up:a.up,status:a.status,brain:a.brain,model:a.model,port:a.port,manager:a.manager,tick:a.tick,reachable:a.reachable,work_open:a.work_open,headline:a.headline,home:a.home},null,2))}</div>`;}
   else if(t==="logs"){p.innerHTML='<div id="logs">loading…</div>';fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}`)).then(r=>r.text()).then(x=>{const e=document.getElementById("logs");if(e)e.textContent=x;});}
 }
@@ -149,6 +154,12 @@ async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dt
   await post("/api/action",{action:"send",id:sel,text:t});}
 async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});}catch(e){}}
 async function load(){try{const j=await(await fetch(qs("/api/fleet"))).json();agents=j.agents||{};render();if(sel&&agents[sel]){bm.textContent=agents[sel].status+" · :"+agents[sel].port;}}catch(e){}}
+function theme(){return document.body.classList.contains("light")?"light":"dark";}
+function applyThemeBtn(){const b=document.getElementById("themebtn");if(b)b.textContent=theme()==="light"?"🌙":"☀";}
+function toggleTheme(){document.body.classList.toggle("light");try{localStorage.setItem("console_theme",theme());}catch(e){}applyThemeBtn();
+  const f=document.querySelector("#pane iframe");if(f){try{const u=new URL(f.src);u.searchParams.set("theme",theme());f.src=u.toString();}catch(e){}}}
+try{if(localStorage.getItem("console_theme")==="light")document.body.classList.add("light");}catch(e){}
+applyThemeBtn();
 function toggleRail(){const c=document.body.classList.toggle("railcollapsed");try{localStorage.setItem("rail_collapsed",c?"1":"");}catch(e){}}
 try{if(localStorage.getItem("rail_collapsed"))document.body.classList.add("railcollapsed");}catch(e){}
 search.addEventListener("input",render);
