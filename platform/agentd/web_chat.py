@@ -296,6 +296,12 @@ def list_commands():
         {"cmd": "/retry", "desc": "Resend your last message (re-ask)", "kind": "ui"},
         {"cmd": "/export", "desc": "Download this chat as markdown", "kind": "ui"},
         {"cmd": "/help", "desc": "Show available commands", "kind": "ui"},
+        # Claude Code built-ins that work in headless `claude -p` (run in the agent's session, output shown
+        # in chat). Interactive-only ones (/remote-control,/model,/config,/agents,/memory,/resume) excluded.
+        {"cmd": "/usage", "desc": "Token & cost / cap usage breakdown", "kind": "builtin"},
+        {"cmd": "/context", "desc": "Context-window usage", "kind": "builtin"},
+        {"cmd": "/mcp", "desc": "MCP server status", "kind": "builtin"},
+        {"cmd": "/recap", "desc": "One-line recap of this session", "kind": "builtin"},
     ]
     seen = set()
     for root in (AGENT_DIR / ".claude" / "skills", WORK_DIR / ".claude" / "skills"):
@@ -857,6 +863,7 @@ function pickSlash(cmd){
   slash.classList.remove("open");
   const c=commands.find(x=>x.cmd===cmd);
   if(c&&c.kind==="ui"){ inp.value=""; syncSend(); runUI(cmd); return; }
+  if(c&&c.kind==="builtin"){ inp.value=cmd; send(); return; }   // Claude Code built-in → run in-session now
   inp.value=cmd+" "; inp.focus(); inp.dispatchEvent(new Event("input"));   // skill → insert, user adds args
 }
 function runUI(cmd){
