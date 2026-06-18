@@ -62,17 +62,18 @@ def _run_interruptible(cmd, cwd, timeout, stop_file, log):
 
 
 def _chat_model(agent_dir, brain):
-    """Run the chat at the SAME capability as the agent — honor an explicit CHAT_MODEL, else the UI model
-    picker (state/model.override), else the agent's own MODEL. No downgraded side-model."""
-    m = os.environ.get("CHAT_MODEL", "").strip()
-    if m:
-        return m
+    """Pick the chat model: an explicit UI pick (state/model.override) WINS, else CHAT_MODEL (the
+    configured chat default), else the agent's own MODEL. So a CHAT_MODEL default (e.g. snappy Sonnet)
+    still lets the operator switch models from the picker."""
     try:
         ov = (agent_dir / "state" / "model.override").read_text().strip().splitlines()
         if ov and ov[0].strip():
             return ov[0].strip()
     except Exception:
         pass
+    m = os.environ.get("CHAT_MODEL", "").strip()
+    if m:
+        return m
     if brain == "claude":
         return os.environ.get("MODEL", "").strip() or "claude-sonnet-4-6"
     return os.environ.get("BRAIN_MODEL", "").strip() or "deepseek/deepseek-chat"

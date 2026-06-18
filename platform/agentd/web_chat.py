@@ -322,8 +322,11 @@ def list_commands():
 
 
 # ── model config ─────────────────────────────────────────────────────────────
+# Short aliases the CLI accepts → canonical ids (so the picker shows a real, allowlisted model).
+_MODEL_ALIAS = {"opus": "claude-opus-4-8", "sonnet": "claude-sonnet-4-6", "haiku": "claude-haiku-4-5"}
+
 def agent_config():
-    brain, model = "claude", ""
+    brain, tick_model, chat_model = "claude", "", ""
     envf = AGENT_DIR / "agent.env"
     if envf.exists():
         for line in envf.read_text().splitlines():
@@ -331,16 +334,24 @@ def agent_config():
             if line.startswith("BRAIN="):
                 brain = line.split("=", 1)[1].strip() or brain
             elif line.startswith("BRAIN_MODEL="):
-                model = line.split("=", 1)[1].strip()
-            elif line.startswith("MODEL=") and not model:
-                model = line.split("=", 1)[1].strip()
+                tick_model = line.split("=", 1)[1].strip()
+            elif line.startswith("MODEL=") and not tick_model:
+                tick_model = line.split("=", 1)[1].strip()
+            elif line.startswith("CHAT_MODEL="):
+                chat_model = line.split("=", 1)[1].strip()
+    chat_model = os.environ.get("CHAT_MODEL", "").strip() or chat_model
+    override = ""
     if OVERRIDE.exists():
         try:
             o = OVERRIDE.read_text().strip().splitlines()
             if o and o[0].strip():
-                model = o[0].strip()
+                override = o[0].strip()
         except OSError:
             pass
+    # Reflect the model the CHAT actually uses — same precedence as chat_responder._chat_model:
+    # UI override > CHAT_MODEL > the agent's tick MODEL. Normalize CLI aliases to canonical ids.
+    model = override or chat_model or tick_model
+    model = _MODEL_ALIAS.get(model, model)
     models = list(MODELS.get(brain, []))
     if model and not any(m["id"] == model for m in models):
         models.insert(0, {"id": model, "label": model})
