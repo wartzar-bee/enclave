@@ -23,7 +23,7 @@ Env:
   CHAT_MODEL             override the chat model (default: the UI picker / the agent's MODEL — same as the agent)
   CHAT_TURN_TIMEOUT      seconds per chat turn (default 150)
 """
-import os, sys, json, time, re, pathlib, subprocess, threading, urllib.request, urllib.error
+import os, sys, json, time, re, pathlib, subprocess, threading, select, urllib.request, urllib.error
 
 POLL_SECS = 1.5
 HISTORY_CTX = 12  # recent turns of THIS conversation to include for context
@@ -59,6 +59,68 @@ def _run_interruptible(cmd, cwd, timeout, stop_file, log):
                 if stopped:
                     log("chat turn stopped by operator"); return "STOPPED"
                 log("chat turn timed out"); return None
+
+
+def _tool_brief(name, inp):
+    """One-line summary of a tool call for the trace log."""
+    inp = inp or {}
+    if name == "Bash": return (inp.get("command") or "")[:100]
+    if name in ("Read", "Write", "Edit", "NotebookEdit"): return inp.get("file_path") or inp.get("notebook_path") or ""
+    if name in ("Grep", "Glob"): return inp.get("pattern") or inp.get("query") or ""
+    if name == "WebFetch": return inp.get("url", "")
+    if name and name.startswith("mcp__"): return (inp.get("query") or inp.get("q") or json.dumps(inp)[:90])
+    return json.dumps(inp)[:90] if inp else ""
+
+
+def _run_streaming(cmd, cwd, timeout, stop_file, log):
+    """Run `claude -p --output-format stream-json --verbose`, LOGGING each tool call live so the operator
+    can trace what the agent does during a turn. Honors stop_file + timeout. Returns "STOPPED" |
+    None (timeout/spawn-fail) | (rc, result_text, session_id, stderr_tail)."""
+    try:
+        p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    except Exception as e:
+        log(f"chat spawn failed: {e}"); return None
+    deadline = time.time() + timeout
+    result, session_id, n_tools = None, None, 0
+    def _kill():
+        try: p.kill(); p.communicate(timeout=5)
+        except Exception: pass
+    while True:
+        if stop_file.exists():
+            _kill(); log("chat turn stopped by operator"); return "STOPPED"
+        if time.time() > deadline:
+            _kill(); log(f"chat turn timed out after {timeout}s ({n_tools} tool calls so far)"); return None
+        try:
+            rl, _, _ = select.select([p.stdout], [], [], 0.5)
+        except Exception:
+            rl = [p.stdout]
+        if not rl:
+            if p.poll() is not None: break
+            continue
+        line = p.stdout.readline()
+        if not line:
+            if p.poll() is not None: break
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        t = ev.get("type")
+        if t == "assistant":
+            for c in (ev.get("message", {}) or {}).get("content", []) or []:
+                if isinstance(c, dict) and c.get("type") == "tool_use":
+                    n_tools += 1
+                    log(f"chat ▸ {c.get('name', '?')}: {_tool_brief(c.get('name'), c.get('input'))}")
+        elif t == "result":
+            result = ev.get("result")
+            session_id = ev.get("session_id")
+    try:
+        _, err = p.communicate(timeout=5)
+    except Exception:
+        err = ""
+    if n_tools:
+        log(f"chat turn used {n_tools} tool call(s)")
+    return (p.returncode if p.returncode is not None else 0, result, session_id, err or "")
 
 
 def _chat_model(agent_dir, brain):
@@ -152,20 +214,21 @@ def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
     turn = msg
     if images:
         turn = "User attached image(s); read them with the Read tool:\n" + "\n".join(f"- {p}" for p in images) + "\n\n" + msg
-    base = ["claude", "--model", model, "--dangerously-skip-permissions", "--output-format", "json"]
+    base = ["claude", "--model", model, "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
     stop_file = agent_dir / "state" / "chat-stop"
+    log(f"chat turn start (conv={conv_id or '-'}, model={model}): {' '.join((msg or '').split())[:80]}")
+    t0 = time.time()
 
     def run(sid):
         cmd = base + (["--resume", sid, "-p", turn] if sid else ["-p", _seed_prompt(agent_dir, conv_id, turn)])
-        return _run_interruptible(cmd, str(agent_dir), timeout, stop_file, log)
+        return _run_streaming(cmd, str(agent_dir), timeout, stop_file, log)
 
     sid = (sf.read_text().strip() or None) if (sf and sf.exists()) else None
     r = run(sid)
     if r == "STOPPED":
         return "STOPPED"
-    if isinstance(r, tuple) and r[0] != 0 and sid:              # resume failed → drop pointer, retry fresh
-        err = (r[2] or r[1] or "")
-        log(f"chat resume failed (rc={r[0]}): {err[:160]} — starting a fresh session")
+    if isinstance(r, tuple) and (r[0] != 0 or r[1] is None) and sid:   # resume failed → drop pointer, retry fresh
+        log(f"chat resume failed (rc={r[0]}): {(r[3] or '')[:160]} — starting a fresh session")
         try:
             if sf: sf.unlink()
         except OSError:
@@ -175,9 +238,12 @@ def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
             return "STOPPED"
     if not isinstance(r, tuple):                                # timeout / spawn-fail
         return None
-    rc, out, err = r
-    if rc != 0:
-        low = ((err or out) or "").strip()
+    rc, result, session_id, err = r
+    if sf and session_id:
+        try: sf.write_text(session_id)
+        except OSError: pass
+    if rc != 0 and not result:
+        low = (err or "").strip()
         log(f"chat turn failed (rc={rc}): {low[:200]}")
         ll = low.lower()
         if "model" in ll and ("not exist" in ll or "may not" in ll or "access to it" in ll):
@@ -185,14 +251,8 @@ def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
                           f"access). Pick a valid model from the dropdown at the top of the chat.")
         return ERR + ("The agent couldn't complete that turn (exit "
                       f"{rc}). " + (low[:200] or "Check `enclave logs` for details."))
-    out = (out or "").strip()
-    try:
-        d = json.loads(out)
-        if sf and d.get("session_id"):
-            sf.write_text(d["session_id"])
-        return (d.get("result") or "").strip() or None
-    except Exception:
-        return out or None                                      # non-json fallback
+    log(f"chat turn done in {int(time.time() - t0)}s")
+    return (result or "").strip() or None
 
 
 def _answer_api(prompt, model, timeout, log):

@@ -1093,6 +1093,18 @@ loadConfig().then(syncVoiceUI);
 loadCommands();
 loadConversations().then(()=>{ const first=convlist.querySelector(".conv"); first? selectConv(first.dataset.id) : newChat(); });
 inp.focus();
+/* background poller: surfaces a reply whenever it lands, even outside an active send's pollReply
+   (e.g. a slow turn that finished after the loop, or a second queued message) — so a reply never
+   waits for the operator to send another message to appear. */
+setInterval(async()=>{
+  if(polling) return;                                  // pollReply owns delivery during a turn
+  try{ const j=await (await api("/api/poll")).json();
+    if(j&&j.reply){
+      if(!activeConv || j.conversation===activeConv) agentMsg().finalize(j.reply);
+      loadConversations(searchIn.value.trim());
+    }
+  }catch(e){}
+}, 3000);
 </script>
 </body>
 </html>""").replace("__SPARK__", SPARK)
