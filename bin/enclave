@@ -748,17 +748,51 @@ def cmd_new(args):
     sys.exit(rc)
 
 def cmd_app(args):
-    """macOS: install an /Applications launcher (.app) that starts this agent's containers + opens its
-    chat — a double-click icon in Applications/Launchpad. Usage: enclave app [--dir /Applications]"""
+    """macOS: install an /Applications launcher (.app). By default it starts THIS deployment's containers
+    + opens its chat. With --console (alias --fleet) it instead launches the web FLEET CONSOLE (:8700) —
+    the control panel for ALL agents on this host (start/stop/restart/logs). Double-click in Launchpad.
+    Usage: enclave app [--console] [--dir /Applications] [--port 8700]"""
     if sys.platform != "darwin":
         sys.exit("`enclave app` is macOS-only (it builds an /Applications .app launcher).")
     if not shutil.which("osacompile"):
         sys.exit("osacompile not found — install Xcode command line tools (`xcode-select --install`).")
+    appdir = pathlib.Path(_flag(args, "--dir") or "/Applications")
+
+    # --console / --fleet: a launcher for the whole-host control panel, not a single agent.
+    if _has(args, "--console") or _has(args, "--fleet"):
+        cport = _flag(args, "--port") or os.environ.get("CONSOLE_PORT") or "8700"
+        ctok = os.environ.get("CONSOLE_TOKEN", "")
+        curl = f"http://127.0.0.1:{cport}/" + (f"?token={ctok}" if ctok else "")
+        appname = "Enclave Fleet"
+        apppath = appdir / f"{appname}.app"
+        # Start the console detached (idempotent: a 2nd bind on the port just exits to the log), then open it.
+        script = (
+            'set repo to "%s"\n'
+            'display notification "Opening the Enclave fleet console…" with title "Enclave"\n'
+            'do shell script "cd " & quoted form of repo & " && PATH=/usr/local/bin:/opt/homebrew/bin:$PATH '
+            'nohup ./bin/enclave console --no-open --port %s >/tmp/enclave-console.log 2>&1 &"\n'
+            'delay 1.5\n'
+            'open location "%s"\n'
+        ) % (str(REPO), cport, curl)
+        import tempfile as _tf
+        src = _tf.NamedTemporaryFile("w", suffix=".applescript", delete=False); src.write(script); src.close()
+        try:
+            if apppath.exists():
+                shutil.rmtree(apppath)
+            r = subprocess.run(["osacompile", "-o", str(apppath), src.name])
+        finally:
+            os.unlink(src.name)
+        if r.returncode != 0:
+            sys.exit("osacompile failed.")
+        print(f"✓ Installed fleet launcher: {apppath}")
+        print(f"  Double-click '{appname}' in Applications / Launchpad → opens the fleet console at {curl}")
+        print(f"  (Control ALL agents from there: start / stop / restart / logs / chat.)")
+        return
+
     name = _read_env("AGENT_ID", "enclave-agent")
     bind = _read_env("WEB_CHAT_BIND", "127.0.0.1:8888")
     host, _, port = bind.partition(":"); url = f"http://{host or '127.0.0.1'}:{port or '8888'}/"
     appname = f"Enclave – {name}"
-    appdir = pathlib.Path(_flag(args, "--dir") or "/Applications")
     apppath = appdir / f"{appname}.app"
     # AppleScript: bring the stack up (existing images, no browser) then open the chat URL.
     script = (
