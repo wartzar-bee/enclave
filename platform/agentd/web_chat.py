@@ -56,6 +56,7 @@ DOWNLOAD_EXT = {".csv", ".tsv", ".txt", ".md", ".json", ".xlsx", ".xls", ".pdf",
                 ".xml", ".log", ".html", ".docx", ".yaml", ".yml"}
 WORK_DIR = pathlib.Path(os.environ.get("WORK_DIR", "/work"))   # ro in the chat container — for skill discovery
 STOP_FILE = AGENT_DIR / "state" / "chat-stop"   # web_chat touches it → chat_responder kills the in-flight turn
+ACTIVITY_FILE = AGENT_DIR / "state" / "chat-activity"  # chat_responder writes live tool progress here per turn
 OVERRIDE = AGENT_DIR / "state" / "model.override"
 
 MAX_UPLOAD = 16 * 1024 * 1024          # 16 MB per image (pre-base64)
@@ -506,6 +507,7 @@ PAGE = ("""<!DOCTYPE html>
                background:var(--muted); animation:bounce 1.3s infinite ease-in-out both; }
   .dots span:nth-child(2){ animation-delay:.18s; } .dots span:nth-child(3){ animation-delay:.36s; }
   @keyframes bounce { 0%,80%,100%{ transform:scale(.5); opacity:.4; } 40%{ transform:scale(1); opacity:1; } }
+  .act { color:var(--muted); font-size:12.5px; font-family:ui-monospace,Menlo,monospace; }
 
   /* composer */
   #composer { padding:10px 0 22px; }
@@ -925,6 +927,8 @@ async function pollReply(convAtSend){
         if(activeConv===convAtSend) finalize(j.reply);       // still viewing that thread → show it
         else { const mm=b.closest(".msg"); if(mm) mm.remove(); }  // navigated away; saved in its thread
         done=true;
+      } else if(j.activity && activeConv===convAtSend){      // live progress: show what the agent is doing
+        b.innerHTML='<span class="act">'+esc(j.activity)+'</span> <span class="dots"><span></span><span></span><span></span></span>';
       } }catch(e){}
   }
   if(done) loadConversations(searchIn.value.trim());          // bump title/order in the sidebar
@@ -1170,7 +1174,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/poll":
             with _lock:
                 reply, cid = check_new_reply()
-            self._json({"reply": reply, "conversation": cid}); return
+            activity = ""
+            if not reply:
+                try:
+                    activity = ACTIVITY_FILE.read_text().strip()
+                except OSError:
+                    pass
+            self._json({"reply": reply, "conversation": cid, "activity": activity}); return
         if path == "/api/config":
             self._json(agent_config()); return
         if path == "/api/commands":

@@ -82,9 +82,15 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
         log(f"chat spawn failed: {e}"); return None
     deadline = time.time() + timeout
     result, session_id, n_tools = None, None, 0
+    actfile = pathlib.Path(cwd) / "state" / "chat-activity"   # live progress the web UI polls during a turn
+    def _act(s):
+        try: actfile.write_text(s)
+        except Exception: pass
+    _act("thinking…")
     def _kill():
         try: p.kill(); p.communicate(timeout=5)
         except Exception: pass
+        _act("")
     while True:
         if stop_file.exists():
             _kill(); log("chat turn stopped by operator"); return "STOPPED"
@@ -110,7 +116,9 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
             for c in (ev.get("message", {}) or {}).get("content", []) or []:
                 if isinstance(c, dict) and c.get("type") == "tool_use":
                     n_tools += 1
-                    log(f"chat ▸ {c.get('name', '?')}: {_tool_brief(c.get('name'), c.get('input'))}")
+                    brief = _tool_brief(c.get('name'), c.get('input'))
+                    log(f"chat ▸ {c.get('name', '?')}: {brief}")
+                    _act(f"⚙ {c.get('name', '?')}: {brief}"[:120])
         elif t == "result":
             result = ev.get("result")
             session_id = ev.get("session_id")
@@ -120,6 +128,7 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
         err = ""
     if n_tools:
         log(f"chat turn used {n_tools} tool call(s)")
+    _act("")
     return (p.returncode if p.returncode is not None else 0, result, session_id, err or "")
 
 
