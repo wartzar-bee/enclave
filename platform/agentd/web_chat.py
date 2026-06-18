@@ -57,6 +57,7 @@ DOWNLOAD_EXT = {".csv", ".tsv", ".txt", ".md", ".json", ".xlsx", ".xls", ".pdf",
 WORK_DIR = pathlib.Path(os.environ.get("WORK_DIR", "/work"))   # ro in the chat container — for skill discovery
 STOP_FILE = AGENT_DIR / "state" / "chat-stop"   # web_chat touches it → chat_responder kills the in-flight turn
 ACTIVITY_FILE = AGENT_DIR / "state" / "chat-activity"  # chat_responder writes live tool progress here per turn
+LOG_FILE = AGENT_DIR / "logs" / "runner.log"           # the agent's full log (turns + ▸ tool trace) — live Logs panel
 OVERRIDE = AGENT_DIR / "state" / "model.override"
 
 MAX_UPLOAD = 16 * 1024 * 1024          # 16 MB per image (pre-base64)
@@ -509,6 +510,14 @@ PAGE = ("""<!DOCTYPE html>
   @keyframes bounce { 0%,80%,100%{ transform:scale(.5); opacity:.4; } 40%{ transform:scale(1); opacity:1; } }
   .act { color:var(--muted); font-size:12px; font-family:ui-monospace,Menlo,monospace; line-height:1.5;
          max-height:170px; overflow:auto; display:block; margin-bottom:4px; white-space:pre-wrap; }
+  #logsdrawer { position:fixed; left:0; right:0; bottom:0; height:40vh; background:var(--card);
+                border-top:1px solid var(--border); display:none; flex-direction:column; z-index:60;
+                box-shadow:0 -8px 28px rgba(0,0,0,.3); }
+  body.logsopen #logsdrawer { display:flex; }
+  .logshdr { display:flex; justify-content:space-between; align-items:center; padding:8px 14px;
+             border-bottom:1px solid var(--border); color:var(--muted); font-size:12.5px; }
+  #logsout { flex:1; margin:0; padding:10px 14px; overflow:auto; white-space:pre-wrap; word-break:break-word;
+             font:11.5px/1.55 ui-monospace,Menlo,monospace; color:var(--text); }
 
   /* composer */
   #composer { padding:10px 0 22px; }
@@ -629,10 +638,15 @@ PAGE = ("""<!DOCTYPE html>
     </button>
     <div class="brand">__SPARK__ <span>__NAME__</span></div>
   </div>
-  <button id="speak" class="iconbtn" title="Read replies aloud">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/></svg>
-  </button>
+  <div style="display:flex;align-items:center;gap:4px">
+    <button id="logsbtn" class="iconbtn" title="Live logs / trace" onclick="toggleLogs()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg>
+    </button>
+    <button id="speak" class="iconbtn" title="Read replies aloud">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/></svg>
+    </button>
+  </div>
 </header>
 <div id="shell">
   <aside id="sidebar">
@@ -1111,7 +1125,27 @@ setInterval(async()=>{
     }
   }catch(e){}
 }, 3000);
+/* ---- live Logs panel: tail the agent's full log (turns + ▸ tool trace) right here ---- */
+let logTimer=null, logOff=0;
+function toggleLogs(){
+  const open=document.body.classList.toggle("logsopen");
+  $("logsbtn").classList.toggle("on",open);
+  if(open){ logOff=0; logsout.textContent=""; tailLogs(); logTimer=setInterval(tailLogs,1500); }
+  else if(logTimer){ clearInterval(logTimer); logTimer=null; }
+}
+async function tailLogs(){
+  try{ const j=await (await api("/api/logs?since="+logOff)).json();
+    if(j&&j.text){ const near = logsout.scrollTop+logsout.clientHeight >= logsout.scrollHeight-40;
+      logsout.textContent += j.text; if(near) logsout.scrollTop=logsout.scrollHeight; }
+    if(j&&typeof j.offset==="number") logOff=j.offset;
+  }catch(e){}
+}
 </script>
+<div id="logsdrawer">
+  <div class="logshdr"><span>Live logs — full trace (turns · ▸ tool calls · errors)</span>
+    <button class="iconbtn" onclick="toggleLogs()" title="Close logs">✕</button></div>
+  <pre id="logsout"></pre>
+</div>
 </body>
 </html>""").replace("__SPARK__", SPARK)
 
@@ -1183,6 +1217,22 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
             self._json({"reply": reply, "conversation": cid, "activity": activity}); return
+        if path == "/api/logs":          # incremental tail of the agent's full log (live Logs panel)
+            try:
+                since = int(parse_qs(urlparse(self.path).query).get("since", ["0"])[0])
+            except ValueError:
+                since = 0
+            try:
+                sz = LOG_FILE.stat().st_size
+                if since <= 0 or since > sz:
+                    since = max(0, sz - 20000)        # first open / rotated → last ~20KB
+                with LOG_FILE.open("r", errors="ignore") as f:
+                    f.seek(since)
+                    text = f.read()
+                self._json({"text": text, "offset": sz})
+            except OSError:
+                self._json({"text": "", "offset": 0})
+            return
         if path == "/api/config":
             self._json(agent_config()); return
         if path == "/api/commands":
