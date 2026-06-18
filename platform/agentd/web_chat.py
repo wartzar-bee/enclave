@@ -929,7 +929,7 @@ async function pollReply(convAtSend){
         else { const mm=b.closest(".msg"); if(mm) mm.remove(); }  // navigated away; saved in its thread
         done=true;
       } else if(j.activity && activeConv===convAtSend){      // live progress: the agent's accumulating tool trace
-        b.innerHTML='<div class="act">'+esc(j.activity).replace(/\n/g,'<br>')+'</div><span class="dots"><span></span><span></span><span></span></span>';
+        b.innerHTML='<div class="act">'+esc(j.activity).replace(/\\n/g,'<br>')+'</div><span class="dots"><span></span><span></span><span></span></span>';
         const lg=b.closest("#log"); if(lg) lg.scrollTop=lg.scrollHeight;
       } }catch(e){}
   }
