@@ -577,6 +577,9 @@ PAGE = ("""<!DOCTYPE html>
   .slashmenu .si .d { font-size:12.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .sendbtn.stopmode { background:var(--text); }
   .sendbtn.stopmode:hover { background:var(--accent-hover); }
+  .sendbtn.voicemode { background:transparent; color:var(--muted); }
+  .sendbtn.voicemode:hover { background:var(--hover); color:var(--text); }
+  .sendbtn.voicemode.rec { background:var(--accent); color:#fff; }
 
   /* ── sidebar (collapsible, ChatGPT/Claude-style) ── */
   #shell { flex:1; display:flex; min-height:0; }
@@ -701,6 +704,8 @@ const TOKEN = new URLSearchParams(location.search).get("token") || "";
 const $ = id => document.getElementById(id);
 const log=$("log"), inp=$("inp"), btn=$("send"), greeting=$("greeting");
 const thumbs=$("thumbs"), fileIn=$("file"), micBtn=$("mic"), speakBtn=$("speak");
+const SEND_SVG='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+const MIC_SVG='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 19v3"/></svg>';
 const wrap=$("inputwrap"), menu=$("menu"), modelpill=$("modelpill"), modelname=$("modelname");
 let polling=false, pending=[], cfg={models:[],model:""}, autoSpeak=false;
 let activeConv=null, commands=[], slashSel=0, stopReq=false, lastUserText="";
@@ -919,9 +924,7 @@ function showHelp(){
 function setStopMode(on){
   if(on){ btn.classList.add("stopmode"); btn.disabled=false; btn.title="Stop";
     btn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>'; }
-  else { btn.classList.remove("stopmode"); btn.title="Send";
-    btn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
-    syncSend(); }
+  else { btn.classList.remove("stopmode"); syncSend(); }
 }
 async function stopTurn(){ stopReq=true; try{ await api("/api/stop",{method:"POST"}); }catch(e){} }
 
@@ -972,7 +975,11 @@ async function send(){
   if(wasNew){ if(searchIn.value){ searchIn.value=""; } loadConversations(); }
   pollReply(activeConv);
 }
-btn.onclick=()=>{ btn.classList.contains("stopmode") ? stopTurn() : send(); };
+btn.onclick=()=>{
+  if(btn.classList.contains("stopmode")) return stopTurn();
+  if(btn.classList.contains("voicemode")){ if(micBtn&&micBtn.onclick) micBtn.onclick(); return; }
+  send();
+};
 inp.addEventListener("keydown",e=>{
   if(slash.classList.contains("open")){
     const items=[...slash.children];
@@ -990,7 +997,14 @@ document.addEventListener("keydown",e=>{
 });
 inp.addEventListener("input",()=>{ inp.style.height="auto"; inp.style.height=Math.min(inp.scrollHeight,200)+"px"; syncSend(); slashSel=0; renderSlash(); });
 inp.addEventListener("blur",()=>setTimeout(()=>slash.classList.remove("open"),150));
-function syncSend(){ btn.disabled=(inp.value.trim().length===0 && pending.length===0); }
+function syncSend(){            // empty box → voice/dictate button; typing → send button (claude.ai-style)
+  if(btn.classList.contains("stopmode")) return;
+  const empty=(inp.value.trim().length===0 && pending.length===0);
+  btn.disabled=false;
+  btn.classList.toggle("voicemode", empty);
+  btn.title=empty?"Voice / dictate":"Send";
+  btn.innerHTML=empty?MIC_SVG:SEND_SVG;
+}
 
 /* ---- attachments ---- */
 $("attach").onclick=()=>fileIn.click();
@@ -1112,7 +1126,7 @@ document.addEventListener("click",closeConvMenus);
 loadConfig().then(syncVoiceUI);
 loadCommands();
 loadConversations().then(()=>{ const first=convlist.querySelector(".conv"); first? selectConv(first.dataset.id) : newChat(); });
-inp.focus();
+inp.focus(); syncSend();   // initialise the empty-box voice button
 /* background poller: surfaces a reply whenever it lands, even outside an active send's pollReply
    (e.g. a slow turn that finished after the loop, or a second queued message) — so a reply never
    waits for the operator to send another message to appear. */
