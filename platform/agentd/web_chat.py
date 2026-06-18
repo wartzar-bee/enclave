@@ -507,7 +507,8 @@ PAGE = ("""<!DOCTYPE html>
                background:var(--muted); animation:bounce 1.3s infinite ease-in-out both; }
   .dots span:nth-child(2){ animation-delay:.18s; } .dots span:nth-child(3){ animation-delay:.36s; }
   @keyframes bounce { 0%,80%,100%{ transform:scale(.5); opacity:.4; } 40%{ transform:scale(1); opacity:1; } }
-  .act { color:var(--muted); font-size:12.5px; font-family:ui-monospace,Menlo,monospace; }
+  .act { color:var(--muted); font-size:12px; font-family:ui-monospace,Menlo,monospace; line-height:1.5;
+         max-height:170px; overflow:auto; display:block; margin-bottom:4px; white-space:pre-wrap; }
 
   /* composer */
   #composer { padding:10px 0 22px; }
@@ -927,8 +928,9 @@ async function pollReply(convAtSend){
         if(activeConv===convAtSend) finalize(j.reply);       // still viewing that thread → show it
         else { const mm=b.closest(".msg"); if(mm) mm.remove(); }  // navigated away; saved in its thread
         done=true;
-      } else if(j.activity && activeConv===convAtSend){      // live progress: show what the agent is doing
-        b.innerHTML='<span class="act">'+esc(j.activity)+'</span> <span class="dots"><span></span><span></span><span></span></span>';
+      } else if(j.activity && activeConv===convAtSend){      // live progress: the agent's accumulating tool trace
+        b.innerHTML='<div class="act">'+esc(j.activity).replace(/\n/g,'<br>')+'</div><span class="dots"><span></span><span></span><span></span></span>';
+        const lg=b.closest("#log"); if(lg) lg.scrollTop=lg.scrollHeight;
       } }catch(e){}
   }
   if(done) loadConversations(searchIn.value.trim());          // bump title/order in the sidebar

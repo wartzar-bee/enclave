@@ -83,10 +83,14 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
     deadline = time.time() + timeout
     result, session_id, n_tools = None, None, 0
     actfile = pathlib.Path(cwd) / "state" / "chat-activity"   # live progress the web UI polls during a turn
+    steps = []
     def _act(s):
         try: actfile.write_text(s)
         except Exception: pass
-    _act("thinking…")
+    def _step(s):
+        steps.append(s)
+        _act("\n".join(steps[-15:]))     # accumulating trace (last 15 steps) shown live in the chat bubble
+    _act("working…")
     def _kill():
         try: p.kill(); p.communicate(timeout=5)
         except Exception: pass
@@ -118,7 +122,7 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
                     n_tools += 1
                     brief = _tool_brief(c.get('name'), c.get('input'))
                     log(f"chat ▸ {c.get('name', '?')}: {brief}")
-                    _act(f"⚙ {c.get('name', '?')}: {brief}"[:120])
+                    _step(f"⚙ {c.get('name', '?')}: {brief}"[:110])
         elif t == "result":
             result = ev.get("result")
             session_id = ev.get("session_id")
