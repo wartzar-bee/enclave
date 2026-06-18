@@ -34,6 +34,7 @@ Everything runs through `./bin/enclave` from the deployment folder:
 | Health + recent activity | `enclave status` |
 | Send a task to the work queue | `enclave send "…"` |
 | Switch the brain (keeps memory) | `enclave brain <claude\|api\|local\|optimize>` |
+| Update the runtime to latest + rebuild | `enclave update` (git clone) · `enclave update --from <product-dir>` (any) · `enclave update --pull` (prebuilt images) |
 | Commit the memory vault now | `enclave snapshot ["msg"]` (also auto-runs each tick) |
 
 **Switch brain** — flips the mode in place (rewrites `agent.env` + `.env`, runs the `optimize` pool

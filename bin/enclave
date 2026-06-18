@@ -8,6 +8,7 @@ Commands:
   enclave brain <mode>             Switch brain in place (claude|api|local|optimize) + recreate the container (keeps memory)
   enclave fleet [list|open <id>]   Fleet control plane (CLI): list ALL deployments (status/brain/model/port); also up/down/restart/logs/send <id>
   enclave console [--port N]       Web fleet console: rail of agents + detail/chat/logs + directives, all deployments in one panel
+  enclave update [--from D|--pull] Update this deployment's runtime to latest + rebuild (keeps home/secrets/.env/compose)
   enclave run                      Build + start the agent, then open the chat in your browser
   enclave app                      macOS: install an /Applications launcher (start agent + open chat by icon)
   enclave send <msg>               Send a message to the agent's inbox
@@ -767,6 +768,70 @@ def cmd_app(args):
     print(f"  Find '{appname}' in Applications / Launchpad (or double-click it) to start the agent + open the chat.")
     print(f"  (Run `enclave run` once first so the images are built; the launcher uses existing images.)")
 
+PRODUCT_PATHS = ["platform", "bin", "templates", "docs", "README.md", "SECURITY.md",
+                 "Dockerfile.agent", "Dockerfile.chat", "Dockerfile.relay",
+                 "Dockerfile.qmd", "Dockerfile.codegraph"]
+
+def cmd_update(args):
+    """Update THIS deployment's Enclave runtime to the latest + rebuild — preserving home/, secrets/,
+    .env, and your local docker-compose.yml. Works for git-clone AND `enclave new` (non-git) deployments.
+    Usage: enclave update [--from <product-dir>] [--pull] [--branch B] [--no-build] [--force-compose]
+      --pull   prebuilt-image mode: docker compose pull + recreate (no source refresh)
+      --from   copy runtime files from a local product checkout (for non-git deployments)
+      (no flag) git-clone deployments fetch origin and refresh the runtime paths"""
+    if not (REPO / "docker-compose.yml").exists():
+        sys.exit("Not an Enclave deployment (no docker-compose.yml here).")
+    # 1) prebuilt-image mode — the image carries the code; just pull + recreate
+    if _has(args, "--pull") or _read_env("ENCLAVE_AGENT_IMAGE"):
+        print("Updating via prebuilt images (docker compose pull)…")
+        subprocess.run(["docker", "compose", "pull"], cwd=REPO)
+        subprocess.run(["docker", "compose", "up", "-d"], cwd=REPO)
+        print("✓ updated (pulled images + recreated)."); return
+    # 2) build-from-source mode — refresh the runtime files, then rebuild
+    src = _flag(args, "--from")
+    if src:
+        src = pathlib.Path(src).expanduser().resolve()
+        if not (src / "platform" / "agentd").exists():
+            sys.exit(f"{src} doesn't look like an Enclave product (no platform/agentd/).")
+        if src == REPO:
+            sys.exit("--from is this same folder; point it at a different product checkout.")
+        for p in PRODUCT_PATHS:
+            s = src / p
+            if not s.exists():
+                continue
+            d = REPO / p
+            if s.is_dir():
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            else:
+                shutil.copy2(s, d)
+        print(f"✓ runtime files copied from {src} (home/secrets/.env/compose preserved).")
+        if not _has(args, "--force-compose") and (src / "docker-compose.yml").exists():
+            try:
+                if (src / "docker-compose.yml").read_text() != (REPO / "docker-compose.yml").read_text():
+                    print("  ⚠ docker-compose.yml differs from the source — NOT overwritten (your deployment "
+                          "edits preserved). Review manually, or pass --force-compose to take the product's.")
+            except OSError:
+                pass
+    elif (REPO / ".git").exists():
+        branch = _flag(args, "--branch", "main")
+        print(f"Fetching origin/{branch}…")
+        if subprocess.run(["git", "fetch", "origin", branch], cwd=REPO).returncode != 0:
+            sys.exit("git fetch failed (check the remote/credentials), or pass --from <product-dir>.")
+        for p in PRODUCT_PATHS:                      # refresh only runtime paths; keep local compose/.env/home/secrets
+            subprocess.run(["git", "checkout", f"origin/{branch}", "--", p], cwd=REPO,
+                           stderr=subprocess.DEVNULL)
+        subprocess.run(["git", "reset", "-q"], cwd=REPO)   # unstage (a deployment isn't committed)
+        print(f"✓ runtime files refreshed from origin/{branch} (compose/.env/home/secrets preserved).")
+    else:
+        sys.exit("This deployment isn't a git clone. Pass --from <product-dir> (a checkout of the "
+                 "enclave repo) — e.g. `enclave update --from ~/Dev/enclave` — or use --pull for images.")
+    if _has(args, "--no-build"):
+        print("  (skipped rebuild — run `enclave run` to apply)"); return
+    print("Rebuilding + recreating…")
+    subprocess.run(["docker", "compose", "up", "-d", "--build"], cwd=REPO)
+    print("✓ updated + live.")
+
+
 def cmd_console(args):
     """Launch the web fleet console (rail + detail for ALL deployments on this host) + open the browser.
     Usage: enclave console [--port N] [--no-open]   Env: CONSOLE_TOKEN (optional loopback gate)."""
@@ -867,7 +932,7 @@ COMMANDS = {
     "new": cmd_new, "init": cmd_init, "run": cmd_run, "app": cmd_app, "stop": cmd_stop, "logs": cmd_logs,
     "send": cmd_send, "status": cmd_status, "chat": cmd_chat, "publish": cmd_publish, "brain": cmd_brain,
     "snapshot": cmd_snapshot, "vault-encrypt": cmd_vault_encrypt, "vault-decrypt": cmd_vault_decrypt,
-    "fleet": cmd_fleet, "console": cmd_console,
+    "fleet": cmd_fleet, "console": cmd_console, "update": cmd_update,
 }
 
 def main():
