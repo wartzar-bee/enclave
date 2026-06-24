@@ -902,8 +902,23 @@ def cmd_console(args):
 
 def cmd_fleet(args):
     """Fleet control plane across ALL Enclave deployments on this host (discovers via `docker compose ls`).
-    Usage: enclave fleet [list] [--json]   |   enclave fleet open <agent-id>
-    (P1: read-only list + open the agent's chat. up/down/restart land next via the fleetctl helper.)"""
+    Usage: enclave fleet [list] [--json] | open|up|down|restart|kick|logs <id> | send <id> <text>
+           enclave fleet watch <queue-dir> [--stacks-root D] [--interval S] [--once]
+           enclave fleet control-watch <queue-dir> [--interval S] [--once]
+    `watch` runs the spawn watcher: a host daemon that turns specs dropped in <queue-dir>/incoming into
+    running deployments (the manager-spawns-agents pattern — see docs/SPAWN.md).
+    `control-watch` runs the control watcher: the lifecycle twin — specs request up|down|restart|kick|
+    logs|send against an EXISTING agent (the manager-controls-pods pattern — see docs/CONTROL.md)."""
+    if args and args[0] == "watch":
+        script = REPO / "platform" / "agentd" / "spawn_watcher.py"
+        if not script.exists():
+            sys.exit("spawn_watcher.py not found in this build.")
+        sys.exit(subprocess.run([sys.executable, str(script), *args[1:]]).returncode)
+    if args and args[0] == "control-watch":
+        script = REPO / "platform" / "agentd" / "control_watcher.py"
+        if not script.exists():
+            sys.exit("control_watcher.py not found in this build.")
+        sys.exit(subprocess.run([sys.executable, str(script), *args[1:]]).returncode)
     script = REPO / "platform" / "agentd" / "fleet.py"
     if not script.exists():
         sys.exit("fleet.py not found in this build.")

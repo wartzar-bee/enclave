@@ -204,6 +204,10 @@ def cmd_down(aid):
     a = _resolve(aid); print(f"stopping {aid} …"); _compose(a, "stop")
 def cmd_restart(aid):
     a = _resolve(aid); print(f"restarting {aid} …"); _compose(a, "restart")
+def cmd_kick(aid):
+    """Wake the agent to tick NOW: restart only its `agent` service, leaving web-chat/relay up. Lighter
+    than `restart` (which bounces the whole stack) — the brain re-enters its loop on container boot."""
+    a = _resolve(aid); print(f"kicking {aid} (agent service) …"); _compose(a, "restart", "agent")
 def cmd_logs(aid, tail="80"):
     a = _resolve(aid); _compose(a, "logs", "--tail", str(tail), timeout=30)
 
@@ -311,12 +315,14 @@ def main():
         cmd_down(pos[0])
     elif cmd == "restart" and pos:
         cmd_restart(pos[0])
+    elif cmd == "kick" and pos:
+        cmd_kick(pos[0])
     elif cmd == "logs" and pos:
         cmd_logs(pos[0], _flag(args, "--tail", "80"))
     elif cmd == "send" and len(pos) >= 2:
         cmd_send(pos[0], " ".join(pos[1:]))
     else:
-        sys.exit("usage: fleet.py list [--json] | open|up|down|restart|logs <id> | send <id> <text>")
+        sys.exit("usage: fleet.py list [--json] | open|up|down|restart|kick|logs <id> | send <id> <text>")
 
 
 def _flag(args, name, default=None):

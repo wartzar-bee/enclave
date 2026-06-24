@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.enclave.control — host daemon that drains the pod-control queue.
+  Lifecycle twin of org.enclave.spawn (which drains the graduation/spawn queue).
+
+  Install (operator, on the host — the watcher needs docker, which the manager pod cannot use):
+    1. Edit the four __PLACEHOLDER__ paths below to match this host.
+    2. cp deploy/launchd/org.enclave.control.plist ~/Library/LaunchAgents/
+    3. launchctl load -w ~/Library/LaunchAgents/org.enclave.control.plist
+    4. Tail it:  watch the StandardOutPath .out file below (or use `log stream` for the python3 process)
+  Unload:  launchctl unload -w ~/Library/LaunchAgents/org.enclave.control.plist
+
+  The manager pod (studio) has fleet/_control mounted RW at /control; no other pod mounts it, so only
+  the manager can enqueue lifecycle actions — same mount-topology authorization as the spawn queue.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.enclave.control</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>__ENCLAVE_REPO__/bin/enclave</string>
+        <string>fleet</string>
+        <string>control-watch</string>
+        <string>__FLEET_ROOT__/_control</string>
+        <string>--interval</string>
+        <string>5</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Same stacks roots the spawn watcher + fleet.py use, so lifecycle verbs resolve each pod's
+             compose file and refuse anything outside these roots. -->
+        <key>ENCLAVE_STACKS_ROOTS</key>
+        <string>__FLEET_ROOT__</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/org.enclave.control.out</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/org.enclave.control.err</string>
+</dict>
+</plist>
