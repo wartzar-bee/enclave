@@ -98,7 +98,9 @@ body.railcollapsed #railtoggle{display:inline-flex;align-items:center;justify-co
 .btn:hover{background:var(--sel)}.btn.danger:hover{background:#3a2420;border-color:#c2603f}
 .tabs{display:flex;gap:4px;padding:8px 14px 0}.tab{padding:6px 12px;border-radius:8px 8px 0 0;cursor:pointer;color:var(--mut)}.tab.sel{background:var(--card);color:var(--tx)}
 #pane{flex:1;background:var(--card);margin:0 0 0 0;overflow:auto;min-height:0;display:flex;flex-direction:column}
-iframe{flex:1;border:0;width:100%;background:var(--bg)}
+#frames{flex:1;display:flex;min-height:0}
+.chatframe{flex:1;border:0;width:100%;background:var(--bg)}
+#tabcontent{flex:1;display:flex;flex-direction:column;overflow:auto;min-height:0}
 #status,#logs{padding:16px;white-space:pre-wrap;font:12.5px ui-monospace,Menlo,monospace;color:var(--tx);overflow:auto}
 #dbox{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--bd)}
 #dtext{flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:9px;color:var(--tx);padding:8px 11px;font:inherit}
@@ -117,13 +119,13 @@ iframe{flex:1;border:0;width:100%;background:var(--bg)}
   <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
     <span class="tab" data-t="status" onclick="tab('status')">Status</span>
     <span class="tab" data-t="logs" onclick="tab('logs')">Logs</span></div>
-  <div id="pane"><div class="empty">Select an agent from the rail.</div></div>
+  <div id="pane"><div id="frames"></div><div id="tabcontent"><div class="empty">Select an agent from the rail.</div></div></div>
   <div id="dbox"><input id="dtext" placeholder="Send a directive to this agent (wakes its tick)…"><button class="btn" onclick="sendD()">Send</button></div>
 </main>
 <script>
 const TOK=new URLSearchParams(location.search).get("token")||"";
 const qs=p=>TOK?(p+(p.includes("?")?"&":"?")+"token="+encodeURIComponent(TOK)):p;
-let agents={},sel=null,curtab="chat";
+let agents={},sel=null,curtab="chat",frames={};
 function dotcls(a){return a.tick==="working"?"working":a.tick==="down"?"down":"idle";}
 function render(){
   const f=(search.value||"").toLowerCase();
@@ -142,12 +144,33 @@ function list_el(){return document.getElementById("list");}
 function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 function pick(id){sel=id;render();const a=agents[id];bt.textContent=id;bm.textContent=a?`${a.status} · :${a.port}`:"";tab(curtab);}
 function openChat(){if(sel)window.open("http://127.0.0.1:"+agents[sel].port+"/","_blank");}
+// One CACHED iframe per agent, toggled by visibility — switching agents NEVER destroys/reloads a chat,
+// so each agent keeps its open conversation, scroll, and any in-flight turn across switches.
+function ensureFrame(a){
+  let f=frames[a.id];
+  if(!f){
+    f=document.createElement("iframe");
+    f.className="chatframe";
+    f.src="http://127.0.0.1:"+a.port+"/?theme="+theme();
+    f.setAttribute("allow","microphone; clipboard-write");
+    document.getElementById("frames").appendChild(f);
+    frames[a.id]=f;
+  }
+  return f;
+}
 function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("sel",e.dataset.t===t));
-  const p=document.getElementById("pane");if(!sel){p.innerHTML='<div class="empty">Select an agent.</div>';return;}
+  const fr=document.getElementById("frames"),tc=document.getElementById("tabcontent");
+  if(!sel){fr.style.display="none";tc.style.display="flex";tc.innerHTML='<div class="empty">Select an agent.</div>';return;}
   const a=agents[sel];
-  if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/?theme=${theme()}" allow="microphone; clipboard-write"></iframe>`;}
-  else if(t==="status"){p.innerHTML=`<div id="status">${esc(JSON.stringify({id:a.id,up:a.up,status:a.status,brain:a.brain,model:a.model,port:a.port,manager:a.manager,tick:a.tick,reachable:a.reachable,work_open:a.work_open,headline:a.headline,home:a.home},null,2))}</div>`;}
-  else if(t==="logs"){p.innerHTML='<div id="logs">loading…</div>';fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}`)).then(r=>r.text()).then(x=>{const e=document.getElementById("logs");if(e)e.textContent=x;});}
+  if(t==="chat"){
+    tc.style.display="none";fr.style.display="flex";
+    ensureFrame(a);
+    Object.keys(frames).forEach(id=>{frames[id].style.display=(id===sel)?"":"none";});
+  }else{
+    fr.style.display="none";tc.style.display="flex";
+    if(t==="status"){tc.innerHTML=`<div id="status">${esc(JSON.stringify({id:a.id,up:a.up,status:a.status,brain:a.brain,model:a.model,port:a.port,manager:a.manager,tick:a.tick,reachable:a.reachable,work_open:a.work_open,headline:a.headline,home:a.home},null,2))}</div>`;}
+    else if(t==="logs"){tc.innerHTML='<div id="logs">loading…</div>';fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}`)).then(r=>r.text()).then(x=>{const e=document.getElementById("logs");if(e)e.textContent=x;});}
+  }
 }
 async function act(action){if(!sel)return;if(action==="down"&&!confirm("Stop "+sel+"?"))return;
   await post("/api/action",{action,id:sel});setTimeout(load,800);}
@@ -158,7 +181,7 @@ async function load(){try{const j=await(await fetch(qs("/api/fleet"))).json();ag
 function theme(){return document.body.classList.contains("light")?"light":"dark";}
 function applyThemeBtn(){const b=document.getElementById("themebtn");if(b)b.textContent=theme()==="light"?"🌙":"☀";}
 function toggleTheme(){document.body.classList.toggle("light");try{localStorage.setItem("console_theme",theme());}catch(e){}applyThemeBtn();
-  const f=document.querySelector("#pane iframe");if(f){try{const u=new URL(f.src);u.searchParams.set("theme",theme());f.src=u.toString();}catch(e){}}}
+  Object.keys(frames).forEach(id=>{const f=frames[id];try{const u=new URL(f.src);u.searchParams.set("theme",theme());f.src=u.toString();}catch(e){}});}
 try{if(localStorage.getItem("console_theme")==="light")document.body.classList.add("light");}catch(e){}
 applyThemeBtn();
 function toggleRail(){const c=document.body.classList.toggle("railcollapsed");try{localStorage.setItem("rail_collapsed",c?"1":"");}catch(e){}}
