@@ -99,6 +99,10 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
         if stop_file.exists():
             _kill(); log("chat turn stopped by operator"); return "STOPPED"
         if time.time() > deadline:
+            # preserve the accumulated tool trace so the operator can review what happened (the live
+            # actfile gets cleared on _kill; chat_loop reads this to render a collapsible block).
+            try: (pathlib.Path(cwd) / "state" / "chat-last-trace.md").write_text("\n".join(steps[-40:]))
+            except Exception: pass
             _kill(); log(f"chat turn timed out after {timeout}s ({n_tools} tool calls so far)"); return None
         try:
             rl, _, _ = select.select([p.stdout], [], [], 0.5)
@@ -383,8 +387,19 @@ def chat_loop(agent_dir, log=print):
                             _set_title(agent_dir, conv_id, ti)
                             log(f"chat titled: {ti}")
                 else:
-                    reply_file.write_text("⚠️ No reply — the turn timed out or the agent failed to start. "
-                                          "See `enclave logs`; try again.")
+                    msg = ("⚠️ The turn timed out or the agent failed to start (see `enclave logs`). "
+                           "Tip: long tasks (deep research, big builds) belong on the WORK QUEUE "
+                           "(`enclave send` / inbox), not a single chat turn — they run across ticks.")
+                    tracef = agent_dir / "state" / "chat-last-trace.md"
+                    try:
+                        tr = tracef.read_text().strip()
+                    except OSError:
+                        tr = ""
+                    if tr:
+                        msg += "\n\n```trace\n" + tr + "\n```"   # collapsible block in the UI — review what it did
+                        try: tracef.unlink()
+                        except OSError: pass
+                    reply_file.write_text(msg)
         except Exception as e:
             log(f"chat loop error: {e}")
         time.sleep(POLL_SECS)

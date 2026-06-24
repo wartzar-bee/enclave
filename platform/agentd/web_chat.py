@@ -498,6 +498,9 @@ PAGE = ("""<!DOCTYPE html>
                  color:var(--text); font-weight:550; }
   .bubble a.dl:hover { border-color:var(--accent); color:var(--accent); }
   .bubble hr { border:none; border-top:1px solid var(--border); margin:13px 0; }
+  .bubble details.trace { margin:8px 0; }
+  .bubble details.trace summary { cursor:pointer; color:var(--muted); font-size:13px; user-select:none; padding:3px 0; }
+  .bubble details.trace summary:hover { color:var(--accent); }
   .imgs { display:flex; flex-wrap:wrap; gap:8px; }
   .imgs img { max-width:220px; max-height:220px; border-radius:12px; border:1px solid var(--border); }
   .acts { display:flex; gap:2px; margin-top:6px; opacity:0; transition:opacity .15s; }
@@ -724,7 +727,7 @@ function mdTable(head,body){
 function md(s){
   // 1) pull fenced code blocks OUT first — their content stays literal (never parsed as markdown/html)
   const blocks=[];
-  s=s.replace(/```[a-zA-Z0-9_-]*\\r?\\n?([\\s\\S]*?)```/g,(m,c)=>{ blocks.push(c.replace(/\\n$/,"")); return "\\u0000"+(blocks.length-1)+"\\u0000"; });
+  s=s.replace(/```([a-zA-Z0-9_-]*)\\r?\\n?([\\s\\S]*?)```/g,(m,lang,c)=>{ blocks.push({lang:lang,code:c.replace(/\\n$/,"")}); return "\\u0000"+(blocks.length-1)+"\\u0000"; });
   // 2) block pass: tables + lists need line grouping
   const lines=s.split(/\\r?\\n/), out=[]; let i=0;
   const isSep=l=>/-/.test(l)&&/^\\s*\\|?[\\s:|-]+\\|?\\s*$/.test(l);
@@ -760,8 +763,14 @@ function md(s){
     const u=href+(TOKEN?(href.includes("?")?"&":"?")+"token="+encodeURIComponent(TOKEN):"");
     return '<a class="dl" href="'+u+'" download>⬇ '+label+'</a>';
   });
-  // 5) restore fenced code blocks (escaped, literal)
-  t=t.replace(/\\u0000(\\d+)\\u0000/g,(m,n)=>"<pre><code>"+esc(blocks[n])+"</code></pre>");
+  // 5) restore fenced code blocks (escaped, literal). ```trace → a COLLAPSED <details> the operator can
+  // expand to review what the agent did (e.g. the tool trace preserved when a turn times out).
+  t=t.replace(/\\u0000(\\d+)\\u0000/g,(m,n)=>{
+    const b=blocks[n], pre="<pre><code>"+esc(b.code)+"</code></pre>";
+    return b.lang==="trace"
+      ? "<details class=\\"trace\\"><summary>\\ud83d\\udd27 tool trace (click to expand)</summary>"+pre+"</details>"
+      : pre;
+  });
   return t;
 }
 function imgURL(p){ return "/"+p+(TOKEN?("?token="+encodeURIComponent(TOKEN)):""); }
