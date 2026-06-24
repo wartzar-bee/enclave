@@ -44,7 +44,19 @@ work_dir: /abs/host/path     # optional: project tree mounted rw at /work
 secrets:                     # optional: scoped credential placeholders (operator fills them)
   - { name: example, key: EXAMPLE_API_KEY }
 guardrails: [cloud_readonly] # optional profile knobs
+allow_git: false             # optional: let this agent `git push` (default false). When true, fill its
+                             # secrets/git.env (GIT_USERNAME/GIT_TOKEN) — a credential helper lets it push
+                             # without ever reading the raw token; the guard still blocks direct reads.
 ```
+
+### `allow_git` — letting an agent push
+By default agents are guard-blocked from git (the operator owns commits). `allow_git: true` (or
+`enclave init --allow-git`) flips a per-agent opt-in: it sets `GUARD_ALLOW_GIT=1`, writes a `.gitconfig`
++ credential helper, and creates `secrets/git.env`. The agent can then `git push`, authenticating through
+the helper — but `guard.py` keeps `.secrets/git.env` and the helper on its denylist, so the agent can't
+read or print the token. Fill `secrets/git.env` with a scoped, write-limited token. This is a real trust
+boundary: a prompt-injected agent with git can rewrite/force-push the repos it can reach — enable it only
+for agents you trust (e.g. an orchestrator that owns its own repos).
 
 ## Running the watcher
 On the host (or via launchd/systemd so it survives reboots):

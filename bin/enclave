@@ -32,6 +32,9 @@ Operating a deployment elsewhere (a fleet of shared-image agents from ONE checko
                    creates + runs many agents; rebuild the image once → every deployment inherits.
   --image-only     (new/init) LIGHTWEIGHT deployment: only .env/docker-compose.yml/home/secrets,
                    referencing the shared prebuilt image (ENCLAVE_AGENT_IMAGE/ENCLAVE_CHAT_IMAGE).
+  --allow-git      (new/init) let THIS agent `git push` (default: agents can't). Sets up a credential
+                   helper so it authenticates via secrets/git.env (GIT_USERNAME/GIT_TOKEN) WITHOUT ever
+                   reading the raw token. ⚠ trust boundary — only for an agent you trust to push.
   --spec FILE      (new/init) create from a declarative agent spec (.yaml/.yml/.json): fields
                    name/brain/model/template/work_dir/qmd/codegraph map to flags; mission/kpi append to
                    CLAUDE.md; secrets[] make scoped placeholder env files; interval_seconds + guardrails
@@ -307,6 +310,38 @@ def _apply_spec_extras(spec, home, secrets, envf):
     if upd:
         _set_env_kv(home / "agent.env", upd)
 
+# Credential helper git uses internally so an allow_git agent can `git push` WITHOUT ever reading the
+# raw token (the agent is guard-blocked from .secrets/git.env and from running this helper directly).
+_GIT_HELPER = """#!/bin/sh
+# Git credential helper (enclave allow_git). git invokes this internally to authenticate a push; the
+# agent itself can't read .secrets/git.env or run this helper (guard.py SECRET_DENY) — so it can push
+# but can't exfiltrate the token.
+set -a
+. /workspace/.secrets/git.env 2>/dev/null
+set +a
+echo "username=${GIT_USERNAME}"
+echo "password=${GIT_TOKEN}"
+"""
+
+def _setup_git_push(home, secrets, name):
+    """Wire `allow_git`: the agent may `git push`, authenticating via a credential helper that reads its
+    OWN scoped secrets/git.env — without the agent ever seeing the raw token. Sets GUARD_ALLOW_GIT=1 +
+    GIT_CONFIG_GLOBAL in agent.env, writes .gitconfig + the helper, and a git.env placeholder."""
+    _set_env_kv(home / "agent.env", {"GUARD_ALLOW_GIT": "1", "GIT_CONFIG_GLOBAL": "/agent/.gitconfig"})
+    _write(home / ".gitconfig",
+           f"[user]\n\tname = {name}\n\temail = {name}@enclave.local\n"
+           f"[credential]\n\thelper = \"!sh /agent/.gitcreds-helper.sh\"\n")
+    _write(home / ".gitcreds-helper.sh", _GIT_HELPER)
+    try:
+        os.chmod(home / ".gitcreds-helper.sh", 0o755)
+    except OSError:
+        pass
+    gpath = secrets / "git.env"
+    if not gpath.exists():
+        _write(gpath, "# git push credential for THIS agent (read only by the credential helper; the\n"
+                      "# agent itself is guard-blocked from reading it). Fill both, no quotes.\n"
+                      "GIT_USERNAME=\nGIT_TOKEN=\n", mode=0o600)
+
 def cmd_init(args):
     # --spec <file>: load the declarative agent definition; its simple fields become init flags (an
     # explicit CLI flag still wins), and spec creation is non-interactive by default.
@@ -319,6 +354,9 @@ def cmd_init(args):
     # runtime/Dockerfiles), so a central image rebuild propagates to it. The deployment carries only
     # .env / docker-compose.yml / home / secrets.
     image_only = _has(args, "--image-only")
+    # --allow-git / spec allow_git: let THIS agent `git push` (default agents can't). Sets up a
+    # credential helper so it authenticates without ever reading the raw token. ⚠ trust boundary.
+    allow_git = _has(args, "--allow-git") or bool(spec.get("allow_git"))
     home = DEPLOY / "home"
     secrets = DEPLOY / "secrets"
     envf = DEPLOY / ".env"
@@ -508,6 +546,9 @@ def cmd_init(args):
     # 7b) spec extras (mission/kpi → CLAUDE.md, interval, scoped-secret placeholders, guardrails)
     if spec:
         _apply_spec_extras(spec, home, secrets, envf)
+    # 7c) allow_git: credential-helper push setup (agent pushes without seeing the raw token)
+    if allow_git:
+        _setup_git_push(home, secrets, name)
 
     # 7) make the vault durable BY DEFAULT — its own scan-gated git repo (secrets/ excluded, a
     # fail-closed pre-commit hook blocks any credential). So memory survives a machine wipe safely.

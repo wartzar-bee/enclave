@@ -32,7 +32,10 @@ DEFAULT_PUBLISH_DENY = (
 # limits which .secrets/ files exist; this blocks attempts to reach anything else).
 SECRET_DENY = (".ssh/", "id_rsa", "id_ed25519", ".aws/credentials", "/.netrc",
                ".secrets/launcher-master", ".secrets/comms-bridge", ".secrets/github",
-               ".secrets/anthropic", ".secrets/google.env")
+               ".secrets/anthropic", ".secrets/google.env",
+               # git-push credential (BRAIN/allow_git agents): the agent can `git push` but NOT read the
+               # raw token nor run the helper directly — git invokes the helper internally.
+               ".secrets/git.env", "gitcreds-helper")
 GIT_RE = re.compile(r"(?:^|[;&|]\s*|\s)git(?:\s|$)")
 
 # Loader / interpreter hijack via env injection — block a Bash command that SETS a dynamic-loader
@@ -102,9 +105,13 @@ def decide(tool_name, tool_input, publish_deny=None):
     low_cmd = cmd.lower()
     blob = f"{cmd} {path}".lower()
 
-    # 1) git is disabled for agents — their writes persist on their own; the master owns commits
-    if tool_name == "Bash" and GIT_RE.search(cmd):
-        return False, "git is disabled for agents (your writes persist on their own; the master owns the repo/commits)"
+    # 1) git is disabled for agents BY DEFAULT — their writes persist on their own; the master owns
+    #    commits. Opt-in per agent via env GUARD_ALLOW_GIT=1 (e.g. an orchestrator that owns its repos
+    #    and is trusted to push). ⚠ This relaxes a core safety boundary — only enable for a trusted agent
+    #    with scoped write creds; a prompt-injected agent with git can rewrite/force-push history.
+    if tool_name == "Bash" and GIT_RE.search(cmd) and not os.environ.get("GUARD_ALLOW_GIT"):
+        return False, ("git is disabled for agents (your writes persist on their own; the master owns the "
+                       "repo/commits). Set GUARD_ALLOW_GIT=1 in agent.env to allow git for a trusted agent.")
 
     # 1b) loader / interpreter hijack via env injection (always on — defeats the guard otherwise)
     if tool_name == "Bash" and LOADER_HIJACK_RE.search(cmd):
