@@ -21,6 +21,12 @@
       "model": "anthropic/claude-sonnet-4.6", "cost": "high", "local": false,
       "_doc": "A frontier remote pool for hard work when Claude's cap is exhausted."
     },
+    "nvidia": {
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_key_env": "NVIDIA_API_KEY",
+      "model": "nvidia/nvidia-nemotron-nano-9b-v2", "cost": "low", "local": false,
+      "_doc": "NVIDIA NIM hosted endpoints (build.nvidia.com — OpenAI-compatible, free tier). Put NVIDIA_API_KEY in secrets/nvidia.env. Swap model for any build.nvidia.com id, e.g. nvidia/llama-3.3-nemotron-super-49b-v1 (stronger). Skipped automatically until the key is present."
+    },
     "_example_xai": {
       "base_url": "https://api.x.ai/v1",
       "api_key_env": "XAI_API_KEY",
