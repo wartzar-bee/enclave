@@ -450,6 +450,12 @@ def cmd_init(args):
         if setjson.exists():
             setjson.write_text(setjson.read_text().replace(
                 "/workspace/platform/agentd/hooks/", "/agent/.claude/hooks/"))
+        elif (home / ".claude" / "hooks" / "guard.py").exists():
+            # Template shipped NO settings.json (venture/autonomous/orchestrator) → write the default guard
+            # hook so EVERY pod is guarded, not just templates that happen to include a settings.json.
+            _write(setjson, json.dumps({"hooks": {"PreToolUse": [
+                {"matcher": "Bash|Read|Edit|Write|NotebookEdit",
+                 "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/guard.py"}]}]}}, indent=2) + "\n")
     # 1b) GENERATE .mcp.json from the memory choices — only enabled servers, never a dead entry.
     mcp_servers = {}
     if qmd_url:
