@@ -437,6 +437,19 @@ def cmd_init(args):
     csrc = tdir / ".claude"
     if csrc.exists():
         shutil.copytree(csrc, home / ".claude", dirs_exist_ok=True)
+    # 1a) Co-locate the guard/logging hooks INSIDE the agent home so they ALWAYS resolve. The historical
+    #     /workspace/platform/agentd/hooks/... path depends on a mount that isn't reliably present — and a
+    #     missing-file PreToolUse hook exits 2, which the harness treats as BLOCK, silently killing every
+    #     tool call in the pod. /agent is always mounted (claude reads .claude/settings.json from it), so
+    #     ship the hooks alongside it and rewrite any legacy /workspace ref to the co-located path.
+    hooks_src = REPO / "platform" / "agentd" / "hooks"
+    if hooks_src.exists():
+        shutil.copytree(hooks_src, home / ".claude" / "hooks",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"), dirs_exist_ok=True)
+        setjson = home / ".claude" / "settings.json"
+        if setjson.exists():
+            setjson.write_text(setjson.read_text().replace(
+                "/workspace/platform/agentd/hooks/", "/agent/.claude/hooks/"))
     # 1b) GENERATE .mcp.json from the memory choices — only enabled servers, never a dead entry.
     mcp_servers = {}
     if qmd_url:
