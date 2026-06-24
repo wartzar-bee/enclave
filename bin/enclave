@@ -3,7 +3,7 @@
 enclave — CLI for the Enclave agent runtime.
 
 Commands:
-  enclave new <name> [--dir P]     Scaffold a NEW deployment in its own folder (names the folder + agent + free port)
+  enclave new <name> [--dir P]     Scaffold a NEW deployment in its own folder (names the folder + agent + free port; --image-only = lightweight shared-image)
   enclave init                     Interactive wizard: configure this deployment (home/, secrets/, .env)
   enclave brain <mode>             Switch brain in place (claude|api|local|optimize) + recreate the container (keeps memory)
   enclave fleet [list|open <id>]   Fleet control plane (CLI): list ALL deployments (status/brain/model/port); also up/down/restart/logs/send <id>
@@ -26,6 +26,17 @@ The wizard + run/stop/etc. all operate on the Enclave repo this script lives in
 ./home (the agent's mounted /agent), ./secrets (read-only creds), and ./.env, and
 makes ./home its own scan-gated git vault so memory survives a machine wipe.
 
+Operating a deployment elsewhere (a fleet of shared-image agents from ONE checkout):
+  --dir PATH       any lifecycle/init command operates on the deployment at PATH (its home/secrets/.env/
+                   compose), while templates + runtime come from THIS checkout. So one canonical clone
+                   creates + runs many agents; rebuild the image once → every deployment inherits.
+  --image-only     (new/init) LIGHTWEIGHT deployment: only .env/docker-compose.yml/home/secrets,
+                   referencing the shared prebuilt image (ENCLAVE_AGENT_IMAGE/ENCLAVE_CHAT_IMAGE).
+  --spec FILE      (new/init) create from a declarative agent spec (.yaml/.yml/.json): fields
+                   name/brain/model/template/work_dir/qmd/codegraph map to flags; mission/kpi append to
+                   CLAUDE.md; secrets[] make scoped placeholder env files; interval_seconds + guardrails
+                   set agent.env. The reproducible way for a manager agent to define + graduate one.
+
 Flags for non-interactive init (CI / scripted):
   --name N --brain claude|api|local|optimize --model M --template T
                    (optimize = start on Claude, shift to the cheapest reachable policy.json pool as the cap fills)
@@ -44,6 +55,12 @@ import sys, os, re, json, time, pathlib, subprocess, shutil, getpass, urllib.req
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent  # bin/ -> repo root
+# DEPLOY = the deployment being operated on (its home/secrets/.env/docker-compose.yml live here).
+# Defaults to REPO (the clone IS the deployment). `--dir <path>` points lifecycle + init commands at a
+# LIGHTWEIGHT deployment elsewhere, while SOURCE assets (templates/, platform/, Dockerfiles) still come
+# from REPO. This split is what lets ONE canonical checkout create and operate many shared-image agents
+# under a fleet root — so a runtime improvement (rebuild the image once) reaches every deployment.
+DEPLOY = REPO
 CODEGRAPH_PORT = "18183"  # host port for the codegraph HTTP bridge (twin of qmd's :18182)
 
 # Brain presets: default model + the secret file/key the runtime reads from ./secrets/.
@@ -200,7 +217,7 @@ def _init_vault_git(home):
 def cmd_snapshot(args):
     """Durably save memory (survives a machine wipe) — SCAN-GATED, fail-closed. The agent can't git
     (guard-blocked); the runtime/operator snapshots. Usage: enclave snapshot ["message"]"""
-    home = REPO / "home"
+    home = DEPLOY / "home"
     if not home.exists():
         sys.exit("no home/ — run `enclave init` first")
     msg = " ".join(a for a in args if not a.startswith("--"))
@@ -210,7 +227,7 @@ def cmd_snapshot(args):
 def cmd_vault_encrypt(args):
     """Encrypt the brain to an off-machine-safe archive (CIPHERTEXT at rest — covers a scanner miss).
     Key stays in secrets/vault.key (gitignored). Usage: enclave vault-encrypt [--out blob]"""
-    home = REPO / "home"
+    home = DEPLOY / "home"
     if not home.exists():
         sys.exit("no home/ — run `enclave init` first")
     out = _flag(args, "--out")
@@ -218,18 +235,93 @@ def cmd_vault_encrypt(args):
 
 def cmd_vault_decrypt(args):
     """Restore the brain from an encrypted archive. Usage: enclave vault-decrypt <blob.enc>"""
-    home = REPO / "home"
+    home = DEPLOY / "home"
     blob = next((a for a in args if not a.startswith("--")), None)
     if not blob:
         sys.exit("Usage: enclave vault-decrypt <blob.enc>")
     _vault(home, "decrypt", "--in", blob)
 
+# ── agent spec (the one declarative way to define an agent) ────────────────────
+# A spec (.yaml/.yml/.json) is the canonical agent definition: simple fields map to init flags; richer
+# fields (mission/kpi/secrets/interval_seconds/guardrails) are applied after scaffolding. A manager
+# agent (e.g. the studio) writes a spec to graduate a venture into its own deployment reproducibly.
+SPEC_TO_FLAG = {
+    "name": "--name", "brain": "--brain", "model": "--model", "template": "--template",
+    "role": "--template", "work_dir": "--work-dir", "bind": "--bind", "port": "--port",
+    "token": "--token", "qmd": "--qmd", "codegraph": "--codegraph", "cred": "--cred",
+}
+
+def _load_spec(path):
+    p = pathlib.Path(path).expanduser()
+    if not p.exists():
+        sys.exit(f"--spec file not found: {p}")
+    if p.suffix in (".yaml", ".yml"):
+        try:
+            import yaml
+        except ImportError:
+            sys.exit("--spec is YAML but PyYAML isn't installed (`pip install pyyaml`), or use a .json spec")
+        data = yaml.safe_load(p.read_text())
+    else:
+        data = json.loads(p.read_text())
+    if not isinstance(data, dict):
+        sys.exit("--spec must be a mapping (name/brain/model/template/mission/…)")
+    return data
+
+def _spec_args(spec):
+    """Spec simple fields → init-flag tokens, appended AFTER the user's args so an explicit CLI flag
+    still wins (_flag returns the first match)."""
+    out = []
+    for key, flag in SPEC_TO_FLAG.items():
+        if spec.get(key) not in (None, ""):
+            out += [flag, str(spec[key])]
+    return out
+
+def _apply_spec_extras(spec, home, secrets, envf):
+    """Apply the spec fields that aren't plain init flags to the freshly-scaffolded deployment."""
+    mission = (spec.get("mission") or "").strip()
+    kpi = (spec.get("kpi") or "").strip()
+    if mission or kpi:
+        cl = home / "CLAUDE.md"
+        block = "\n\n## Mission\n" + (mission or "(none)") + (f"\n\n## KPI\n{kpi}" if kpi else "") + "\n"
+        cl.write_text((cl.read_text() if cl.exists() else "") + block)
+    iv = spec.get("interval_seconds")
+    if iv:
+        _set_env_kv(home / "agent.env", {"INTERVAL_SECONDS": str(iv)})
+        _set_env_kv(envf, {"INTERVAL_SECONDS": str(iv)})
+    names = []
+    for s in (spec.get("secrets") or []):
+        if isinstance(s, dict):
+            fname = s.get("file") or (s.get("name", "") + ".env"); key = s.get("key", "")
+        else:
+            fname = str(s) if str(s).endswith(".env") else f"{s}.env"; key = ""
+        if not fname or fname == ".env":
+            continue
+        names.append(fname)
+        sp = secrets / fname
+        if not sp.exists():
+            _write(sp, (f"{key}=\n" if key else f"# {fname} — add this agent's credential(s), no quotes\n"), mode=0o600)
+    if names:
+        _write(home / "secrets.list", "\n".join(names) + "\n")
+    gmap = {"cloud_readonly": ("GUARD_CLOUD_READONLY", "1")}
+    upd = {gmap[g][0]: gmap[g][1] for g in (spec.get("guardrails") or []) if g in gmap}
+    if upd:
+        _set_env_kv(home / "agent.env", upd)
+
 def cmd_init(args):
+    # --spec <file>: load the declarative agent definition; its simple fields become init flags (an
+    # explicit CLI flag still wins), and spec creation is non-interactive by default.
+    spec = _load_spec(_flag(args, "--spec")) if _has(args, "--spec") else {}
+    if spec:
+        args = list(args) + _spec_args(spec) + ([] if _has(args, "--yes") else ["--yes"])
     yes = _has(args, "--yes")
     force = _has(args, "--force")
-    home = REPO / "home"
-    secrets = REPO / "secrets"
-    envf = REPO / ".env"
+    # --image-only: a LIGHTWEIGHT deployment that references the shared prebuilt image (no per-agent
+    # runtime/Dockerfiles), so a central image rebuild propagates to it. The deployment carries only
+    # .env / docker-compose.yml / home / secrets.
+    image_only = _has(args, "--image-only")
+    home = DEPLOY / "home"
+    secrets = DEPLOY / "secrets"
+    envf = DEPLOY / ".env"
 
     populated = home.exists() and any(p.name != ".gitkeep" for p in home.iterdir())
     if populated and not force:
@@ -402,7 +494,20 @@ def cmd_init(args):
         env_lines.append(f"CODE_CORPUS={cg_corpus}")   # `enclave run` brings up the codegraph bridge over this
     # WORK_DIR: blank → compose default (./home/work). A host path makes that tree the working folder.
     env_lines.append(f"WORK_DIR={work_dir}" if work_dir else "# WORK_DIR=/abs/path/to/project   # host working folder (mounted rw at /work); blank = home/work")
+    if image_only:
+        # pin the shared prebuilt images so this deployment never builds its own runtime — improvements
+        # land by rebuilding the image once + `enclave fleet restart`. Override the tags via flags.
+        env_lines.append(f"ENCLAVE_AGENT_IMAGE={_flag(args, '--agent-image', 'enclave-agent:latest')}")
+        env_lines.append(f"ENCLAVE_CHAT_IMAGE={_flag(args, '--chat-image', 'enclave-chat:latest')}")
     _write(envf, "\n".join(env_lines) + "\n")
+    # image-only deployments still need a compose file (they reference the shared image). Copy the
+    # canonical one if the deployment doesn't have its own.
+    if image_only and not (DEPLOY / "docker-compose.yml").exists():
+        shutil.copy2(REPO / "docker-compose.yml", DEPLOY / "docker-compose.yml")
+
+    # 7b) spec extras (mission/kpi → CLAUDE.md, interval, scoped-secret placeholders, guardrails)
+    if spec:
+        _apply_spec_extras(spec, home, secrets, envf)
 
     # 7) make the vault durable BY DEFAULT — its own scan-gated git repo (secrets/ excluded, a
     # fail-closed pre-commit hook blocks any credential). So memory survives a machine wipe safely.
@@ -437,7 +542,7 @@ def cmd_init(args):
 
 # ── run / lifecycle ──────────────────────────────────────────────────────────
 def _read_env(key, default=None):
-    envf = REPO / ".env"
+    envf = DEPLOY / ".env"
     if envf.exists():
         for line in envf.read_text().splitlines():
             line = line.strip()
@@ -544,9 +649,9 @@ def _check_chat_js():
 
 
 def cmd_run(args):
-    if not (REPO / "docker-compose.yml").exists():
-        sys.exit("No docker-compose.yml in the repo — is this an Enclave checkout?")
-    home = REPO / "home"
+    if not (DEPLOY / "docker-compose.yml").exists():
+        sys.exit("No docker-compose.yml in the deployment — is this an Enclave checkout/deployment?")
+    home = DEPLOY / "home"
     if not home.exists() or not any(p.name != ".gitkeep" for p in home.iterdir()):
         sys.exit("./home is not configured — run 'enclave init' first.")
 
@@ -554,7 +659,7 @@ def cmd_run(args):
     # instead of a local build. Otherwise build locally unless --no-build.
     if _has(args, "--pull"):
         print("Pulling prebuilt images…")
-        subprocess.run(["docker", "compose", "pull"], cwd=REPO)
+        subprocess.run(["docker", "compose", "pull"], cwd=DEPLOY)
         build = False
     else:
         build = not _has(args, "--no-build")
@@ -562,7 +667,7 @@ def cmd_run(args):
         _check_chat_js()
     cmd = ["docker", "compose", "up", "-d"] + (["--build"] if build else [])
     print("Starting Enclave (docker compose up)…")
-    r = subprocess.run(cmd, cwd=REPO)
+    r = subprocess.run(cmd, cwd=DEPLOY)
     if r.returncode != 0:
         sys.exit(r.returncode)
 
@@ -590,7 +695,7 @@ def cmd_run(args):
         print("  enclave logs   # to watch startup")
 
 def cmd_stop(args):
-    subprocess.run(["docker", "compose", "down"], cwd=REPO)
+    subprocess.run(["docker", "compose", "down"], cwd=DEPLOY)
 
 def cmd_publish(args):
     """Maintainer: build + push the agent/chat images to a registry so teammates can `run --pull`.
@@ -643,17 +748,17 @@ def cmd_publish(args):
     print(f"  ENCLAVE_CHAT_IMAGE={targets[1][1]}")
 
 def cmd_logs(args):
-    log = REPO / "home" / "logs" / "runner.log"
+    log = DEPLOY / "home" / "logs" / "runner.log"
     if log.exists():
         subprocess.run(["tail", "-f", str(log)])
     else:
-        subprocess.run(["docker", "compose", "logs", "-f", "agent"], cwd=REPO)
+        subprocess.run(["docker", "compose", "logs", "-f", "agent"], cwd=DEPLOY)
 
 def cmd_send(args):
     if not args:
         sys.exit("Usage: enclave send <message>")
     message = " ".join(a for a in args if not a.startswith("--"))
-    inbox = REPO / "home" / "inbox.md"
+    inbox = DEPLOY / "home" / "inbox.md"
     ts = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime())
     inbox.parent.mkdir(parents=True, exist_ok=True)
     with inbox.open("a") as f:
@@ -661,7 +766,7 @@ def cmd_send(args):
     print(f"Delivered to {inbox}")
 
 def cmd_status(args):
-    state = REPO / "home" / "state"
+    state = DEPLOY / "home" / "state"
     rollup = state / "rollup.md"
     if rollup.exists():
         print("=== Status ===")
@@ -675,7 +780,7 @@ def cmd_status(args):
             pass
 
 def cmd_chat(args):
-    data = REPO / "home"
+    data = DEPLOY / "home"
     inbox = data / "inbox.md"
     reply_file = data / "state" / "chat-reply.md"
     print("Terminal chat — type a message, Enter to send. Ctrl-C to exit.\n")
@@ -723,19 +828,34 @@ def cmd_chat(args):
 
 def cmd_new(args):
     """Scaffold a NEW deployment in its OWN folder — you name the folder AND the agent/container.
-    Usage: enclave new <agent-name> [--dir <path>] [init flags…]
+    Usage: enclave new <agent-name> [--dir <path>] [--image-only] [--spec f] [init flags…]
       <agent-name>  becomes AGENT_ID (container names + compose project + a free port chosen for you)
       --dir <path>  where to place it (default: a sibling folder named <agent-name>)
-    Copies this product (minus home/secrets/.env) → the new folder, then runs `init` there."""
+      --image-only  LIGHTWEIGHT deployment: only .env/docker-compose.yml/home/secrets, referencing the
+                    shared prebuilt image (no per-agent runtime copy) so central rebuilds propagate.
+    Default copies this product (minus home/secrets/.env) → the new folder; --image-only copies only the
+    compose file. Either way it runs `init` in the new folder."""
     name = next((a for a in args if not a.startswith("-")), None)
     if not name:
-        sys.exit("Usage: enclave new <agent-name> [--dir <path>]")
+        sys.exit("Usage: enclave new <agent-name> [--dir <path>] [--image-only]")
     rest = [a for a in args if a != name]
     target = pathlib.Path(_flag(args, "--dir") or (REPO.parent / name)).expanduser()
     if "--dir" in rest:
         i = rest.index("--dir"); del rest[i:i+2]
     if target.exists() and any(target.iterdir()):
         sys.exit(f"{target} already exists and is non-empty — pick another --dir or name.")
+
+    if _has(rest, "--image-only"):
+        # Lightweight: no product copy. Source assets (templates/, platform/, Dockerfiles) come from
+        # THIS canonical checkout; init writes home/secrets/.env into the target via DEPLOY.
+        print(f"Scaffolding lightweight (shared-image) deployment '{name}' → {target} …")
+        target.mkdir(parents=True, exist_ok=True)
+        global DEPLOY
+        DEPLOY = target.resolve()
+        cmd_init(["--name", name, *rest])    # rest still carries --image-only (+ any --spec / flags)
+        print(f"\n✓ '{name}' ready at {target} (shared image).  Start:  enclave run --dir {target} --no-build")
+        return
+
     print(f"Scaffolding Enclave deployment '{name}' → {target} …")
     ignore = shutil.ignore_patterns("home", "secrets", ".env", ".git", "__pycache__", "*.pyc",
                                     "outputs", "RESUME.md", "RESUME.md.bak", "deploy", "marketing")
@@ -902,8 +1022,15 @@ def cmd_console(args):
 
 def cmd_fleet(args):
     """Fleet control plane across ALL Enclave deployments on this host (discovers via `docker compose ls`).
-    Usage: enclave fleet [list] [--json]   |   enclave fleet open <agent-id>
-    (P1: read-only list + open the agent's chat. up/down/restart land next via the fleetctl helper.)"""
+    Usage: enclave fleet [list] [--json] | open|up|down|restart|logs <id> | send <id> <text>
+           enclave fleet watch <queue-dir> [--stacks-root D] [--interval S] [--once]
+    `watch` runs the spawn watcher: a host daemon that turns specs dropped in <queue-dir>/incoming into
+    running deployments (the manager-spawns-agents pattern — see docs/SPAWN.md)."""
+    if args and args[0] == "watch":
+        script = REPO / "platform" / "agentd" / "spawn_watcher.py"
+        if not script.exists():
+            sys.exit("spawn_watcher.py not found in this build.")
+        sys.exit(subprocess.run([sys.executable, str(script), *args[1:]]).returncode)
     script = REPO / "platform" / "agentd" / "fleet.py"
     if not script.exists():
         sys.exit("fleet.py not found in this build.")
@@ -919,7 +1046,7 @@ def cmd_brain(args):
       --no-build     recreate the container WITHOUT rebuilding (use when the image already has the mode)
       --no-restart   write the config only; apply later with `enclave run`
     """
-    home = REPO / "home"; secrets = REPO / "secrets"; envf = REPO / ".env"
+    home = DEPLOY / "home"; secrets = DEPLOY / "secrets"; envf = DEPLOY / ".env"
     agent_env = home / "agent.env"
     if not agent_env.exists():
         sys.exit("./home not configured — run 'enclave init' first.")
@@ -973,7 +1100,7 @@ def cmd_brain(args):
         return
     build = not _has(args, "--no-build")
     print(f"Recreating the container to apply brain={brain}" + (" (rebuilding image)…" if build else "…"))
-    r = subprocess.run(["docker", "compose", "up", "-d"] + (["--build"] if build else []), cwd=REPO)
+    r = subprocess.run(["docker", "compose", "up", "-d"] + (["--build"] if build else []), cwd=DEPLOY)
     if r.returncode == 0:
         print("✓ applied.")
 
@@ -992,7 +1119,17 @@ def main():
     cmd = args[0]
     if cmd not in COMMANDS:
         sys.exit(f"Unknown command '{cmd}'. Available: {', '.join(COMMANDS)}")
-    COMMANDS[cmd](args[1:])
+    rest = args[1:]
+    # `--dir <path>` operates on a deployment OUTSIDE this checkout (lifecycle + init). `new` owns its
+    # own --dir (the target folder to scaffold), so it's excluded here and handles DEPLOY itself.
+    # We resolve DEPLOY then STRIP --dir + its value so downstream positional parsing (e.g. send's
+    # message) never sees them.
+    if cmd != "new" and "--dir" in rest:
+        global DEPLOY
+        i = rest.index("--dir")
+        DEPLOY = pathlib.Path(rest[i + 1]).expanduser().resolve() if i + 1 < len(rest) else DEPLOY
+        del rest[i:i + 2]
+    COMMANDS[cmd](rest)
 
 if __name__ == "__main__":
     main()

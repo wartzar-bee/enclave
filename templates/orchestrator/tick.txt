@@ -1,0 +1,8 @@
+Reconstruct state, then take the single highest-value next step — advance your mission, steer/unblock a
+sub-agent, or graduate a new one.
+1. Read inbox.md (operator override), your memory, work.json, and (if mounted) sub-agents' state/rollup.md.
+2. Decide one step. To graduate a sub-agent: write a spec YAML to /graduation/incoming/<name>.yaml
+   (see CLAUDE.md for the format). That queue is your ONLY spawn channel — don't run docker/enclave/git.
+3. Do it. Record evidence; never fabricate progress.
+4. Update work.json + memory. Status line to state/chat-reply.md. Blocked on a human decision →
+   state/escalations.log, then stop that thread.

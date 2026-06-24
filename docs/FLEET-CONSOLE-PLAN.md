@@ -165,7 +165,7 @@ browser ──auth(session)──▶│  ThreadingHTTPServer, 127.0.0.1   │  l
    cached status dot + unread badge, searchable/filterable), right tabbed detail (Chat / Logs / Status /
    Config / Network). The Chat tab loads the proxied per-agent web_chat UI.
 4. **Shared comms bridge** for peer messaging: each agent needs `COMMS_URL` set + `comms-bridge.env`
-   mounted (logan-cross already has it). Document a one-bridge-for-the-fleet setup.
+   mounted (a sub-agent already has it). Document a one-bridge-for-the-fleet setup.
 
 ## Phasing
 - **P1 — CLI control plane** (`enclave fleet` list + up/down/restart/logs/send). Cheap, immediately
@@ -186,5 +186,5 @@ browser ──auth(session)──▶│  ThreadingHTTPServer, 127.0.0.1   │  l
 - **Auth** — loopback+SSH-tunnel enough, or is session-cookie+Origin mandatory for v1 given the console
   can stop containers + send directives to credential-holding agents?
 - **Comms bridge as a shared single point** for 100 agents — contention/throughput?
-- **Container uid vs mounted host dir** writes (logan-cross mount-in-place precedent) at scale.
+- **Container uid vs mounted host dir** writes (the mount-in-place precedent) at scale.
 - **Is the CLI-first phasing right, or does the operator want the web console first?**
