@@ -6,8 +6,8 @@
     "local": {
       "base_url": "http://host.docker.internal:8081/v1",
       "api_key_env": "LOCAL_LLM_KEY", "api_key_default": "x",
-      "model": "", "cost": "free", "local": true,
-      "_doc": "A local OpenAI-compatible server (mlx_lm on :8081, or ollama on :11434/v1). $0, private, no cap. Set `model` to a tag the server serves. Blank base_url/model = no local pool."
+      "model": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit", "cost": "free", "local": true,
+      "_doc": "A local OpenAI-compatible server (mlx_lm on :8081, or ollama on :11434/v1). $0, private, no cap. Default = NVIDIA Nemotron-3 Nano (30B-A3B MoE, agentic tool-calling) on the host MLX bridge. Swap `model` for any tag the server serves; blank base_url/model = no local pool."
     },
     "cheap": {
       "base_url": "https://openrouter.ai/api/v1",
