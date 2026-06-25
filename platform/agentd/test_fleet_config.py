@@ -86,6 +86,29 @@ try:
     fc.apply_preset(h3, "nope", "demo"); ok(False, "should reject unknown preset")
 except ValueError: ok(True, "rejects unknown preset")
 
+# ── dual-homed .env sync (the bug the operator caught) ──
+h4 = fresh(BASE)
+(h4.parent / ".env").write_text("AGENT_ID=demo\nBRAIN=claude\nMODEL=claude-opus-4-8\nWEB_CHAT_BIND=127.0.0.1:8891\n")
+cfg = fc.read_config(h4)
+ok(cfg["env"]["BRAIN"] == "claude", "merged read sees BRAIN")
+ok("AGENT_ID" in cfg["env"] and "AGENT_ID" not in cfg["editable"], "identity key present but NOT editable")
+ok("BRAIN" in cfg["editable"], "BRAIN is editable")
+# .env wins on read (runtime-authoritative): make them differ, expect .env value
+(h4 / "agent.env").write_text(BASE.replace("BRAIN=claude", "BRAIN=local"))
+ok(fc.read_config(h4)["env"]["BRAIN"] == "claude", ".env value wins over agent.env on read")
+# set_brain must sync BOTH files
+fc.set_brain(h4, "optimize", agent="demo")
+ok(fc.parse_env((h4 / "agent.env").read_text())["BRAIN"] == "optimize", "agent.env BRAIN updated")
+ok(fc.parse_env((h4.parent / ".env").read_text())["BRAIN"] == "optimize", ".env BRAIN synced (dual-homed)")
+ok("WEB_CHAT_BIND" in fc.parse_env((h4.parent / ".env").read_text()), ".env other keys preserved")
+# a key NOT already in .env must NOT be added to .env (only agent.env)
+fc.patch_agent_env(h4, {"ROUTER": "on"}, "demo")
+ok("ROUTER" not in fc.parse_env((h4.parent / ".env").read_text()), "non-dual-homed key not added to .env")
+ok(fc.parse_env((h4 / "agent.env").read_text())["ROUTER"] == "on", "non-dual-homed key written to agent.env")
+# history snapshots both files
+hist4 = list((h4 / "state" / "config-history").glob("*"))
+ok(any(f.name.endswith(".dotenv") for f in hist4), "history snapshots .env too")
+
 # audit log written
 ok(pathlib.Path(os.environ["ENCLAVE_FLEET_AUDIT"]).exists(), "audit log written")
 

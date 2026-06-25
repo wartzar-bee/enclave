@@ -520,11 +520,11 @@ async function renderConfig(a){const p=document.getElementById("pane");p.innerHT
   try{cfg=await(await fetch(qs(`/api/config?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">config unavailable (agent has no home dir on this host)</div>';return;}
   if(cfg.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(cfg.error)+'</div>';return;}
   try{meta=await(await fetch(qs("/api/presets"))).json();}catch(e){}
-  const env=cfg;const mode=curMode(env);
+  const env=cfg.env||cfg;const editable=cfg.editable||Object.keys(env).filter(k=>!k.startsWith("_")).sort();const mode=curMode(env);
   const brainOpts=meta.brains.map(b=>`<option ${env.BRAIN===b?"selected":""}>${b}</option>`).join("");
   const presetBtns=meta.presets.map(n=>`<button class="btn" onclick="applyCfg({preset:'${n}'})">${esc(n)}</button>`).join(" ");
   const modeBtns=meta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="setMode('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
-  const rows=Object.keys(env).filter(k=>!k.startsWith("_")).sort().map(k=>`<tr><td class="mono" style="color:var(--mut)">${esc(k)}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(env[k])}"></td></tr>`).join("");
+  const rows=editable.map(k=>`<tr><td class="mono" style="color:var(--mut)">${esc(k)}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(env[k])}"></td></tr>`).join("");
   p.innerHTML=`<div style="padding:16px;overflow:auto">
     <div class="card" style="margin-bottom:12px"><div class="k">brain</div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">

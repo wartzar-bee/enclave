@@ -77,11 +77,49 @@ def parse_env(text):
     return out
 
 
+def _dotenv_path(home):
+    """The deployment .env sits beside the home dir (<dep>/.env; home = <dep>/home). Compose
+    interpolates it AND the fleet Status snapshot reads it — so BRAIN/MODEL/INTERVAL_SECONDS are
+    DUAL-HOMED (also in agent.env) and the container env from .env WINS at runtime. Any edit must
+    keep both in sync or the change won't take effect / Status will show a stale value."""
+    return pathlib.Path(home).parent / ".env"
+
+
+def _write_keys(path, updates, append_new):
+    """Atomically rewrite `path`, updating matching keys in place (comment/order-preserving);
+    append unseen keys only when append_new (used for agent.env, NOT .env)."""
+    lines = path.read_text(errors="ignore").splitlines() if path.exists() else []
+    remaining = dict(updates)
+    out = []
+    for ln in lines:
+        s = ln.strip()
+        if s and not s.startswith("#") and "=" in s:
+            k = s.split("=", 1)[0].strip()
+            if k in remaining:
+                out.append(f"{k}={remaining.pop(k)}")
+                continue
+        out.append(ln)
+    if append_new:
+        for k, v in remaining.items():
+            out.append(f"{k}={v}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(out) + "\n")
+    os.replace(tmp, path)
+
+
 def read_config(home):
-    """Return {env: {K:V}, raw: str, path: str} for an agent's agent.env (env={} if absent)."""
-    p = _env_path(home)
+    """Effective config = agent.env overlaid with the deployment .env for any DUAL-HOMED key
+    (.env wins at runtime), so what the dashboard shows matches the Status snapshot + the running
+    container. `editable` = the allowlisted subset the UI should render as inputs."""
+    p, d = _env_path(home), _dotenv_path(home)
     raw = p.read_text(errors="ignore") if p.exists() else ""
-    return {"env": parse_env(raw), "raw": raw, "path": str(p)}
+    env = parse_env(raw)
+    dotenv = parse_env(d.read_text(errors="ignore")) if d.exists() else {}
+    env.update(dotenv)   # .env is runtime-authoritative
+    editable = sorted(k for k in env if k in ALLOWED_KEYS)
+    return {"env": env, "raw": raw, "path": str(p), "editable": editable}
 
 
 def _validate(updates):
@@ -103,52 +141,40 @@ def _validate(updates):
 
 
 def _snapshot_history(home):
-    """Copy the current agent.env into home/state/config-history/<ts>.env before mutating."""
-    p = _env_path(home)
-    if not p.exists():
-        return None
+    """Snapshot BOTH agent.env and the deployment .env into home/state/config-history/ before
+    mutating, so a revert restores the exact prior pair."""
     hist = pathlib.Path(home) / "state" / "config-history"
     hist.mkdir(parents=True, exist_ok=True)
     # microsecond suffix so rapid back-to-back edits don't overwrite each other's snapshot
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{int(time.time() * 1e6) % 1_000_000:06d}"
-    dst = hist / (stamp + ".env")
-    dst.write_text(p.read_text(errors="ignore"))
-    return str(dst)
+    for src, suffix in ((_env_path(home), ".env"), (_dotenv_path(home), ".dotenv")):
+        if src.exists():
+            (hist / (stamp + suffix)).write_text(src.read_text(errors="ignore"))
+    return stamp
 
 
 def patch_agent_env(home, updates, agent="?"):
-    """Atomically apply {KEY: VALUE} to agent.env. Preserves comments + key order; appends new
-    keys at the end. Snapshots prior state for revert. Returns the diff [(key, old, new)]."""
+    """Apply {KEY: VALUE} to agent.env (append new keys), AND sync any DUAL-HOMED key that already
+    exists in the deployment .env so the change takes effect + the Status snapshot reflects it.
+    Comment/order-preserving, atomic, snapshots both files for revert. Returns diff [(key, old, new)]
+    computed against the EFFECTIVE (merged) prior value."""
     if not updates:
         return []
     _validate(updates)
-    p = _env_path(home)
-    old_env = parse_env(p.read_text(errors="ignore")) if p.exists() else {}
-    diff = [(k, old_env.get(k), str(v)) for k, v in updates.items() if old_env.get(k) != str(v)]
+    p, d = _env_path(home), _dotenv_path(home)
+    old_agent = parse_env(p.read_text(errors="ignore")) if p.exists() else {}
+    old_dot = parse_env(d.read_text(errors="ignore")) if d.exists() else {}
+    effective = {**old_agent, **old_dot}   # .env wins, matches runtime
+    diff = [(k, effective.get(k), str(v)) for k, v in updates.items() if effective.get(k) != str(v)]
     if not diff:
         return []
     _snapshot_history(home)
-
-    lines = p.read_text(errors="ignore").splitlines() if p.exists() else []
-    remaining = dict(updates)
-    out = []
-    for ln in lines:
-        s = ln.strip()
-        if s and not s.startswith("#") and "=" in s:
-            k = s.split("=", 1)[0].strip()
-            if k in remaining:
-                out.append(f"{k}={remaining.pop(k)}")
-                continue
-        out.append(ln)
-    for k, v in remaining.items():   # new keys appended
-        out.append(f"{k}={v}")
-
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        f.write("\n".join(out) + "\n")
-    os.replace(tmp, p)               # atomic
-    _audit("set-config", agent, ", ".join(f"{k}:{a or '∅'}→{b}" for k, a, b in diff))
+    _write_keys(p, updates, append_new=True)                       # agent.env: full set, append new
+    dot_sync = {k: v for k, v in updates.items() if k in old_dot}  # .env: ONLY keys already present
+    if dot_sync:
+        _write_keys(d, dot_sync, append_new=False)
+    synced = (" [.env-synced: " + ",".join(dot_sync) + "]") if dot_sync else ""
+    _audit("set-config", agent, ", ".join(f"{k}:{a or '∅'}→{b}" for k, a, b in diff) + synced)
     return diff
 
 

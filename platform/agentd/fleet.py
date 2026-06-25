@@ -405,10 +405,11 @@ def cmd_config(aid, as_json=False):
         sys.exit(f"{aid} has no home dir on this host — config not editable")
     cfg = fleet_config.read_config(a["home"])
     if as_json:
-        print(json.dumps(cfg["env"], indent=2)); return
-    print(f"{aid}  ({cfg['path']})")
+        print(json.dumps({"env": cfg["env"], "editable": cfg["editable"], "path": cfg["path"]})); return
+    print(f"{aid}  ({cfg['path']})  ★=editable")
     for k in sorted(cfg["env"]):
-        print(f"  {k:<22} {cfg['env'][k]}")
+        star = "★" if k in cfg["editable"] else " "
+        print(f"  {star} {k:<22} {cfg['env'][k]}")
 
 
 def cmd_set_config(aid, kvs):
