@@ -204,6 +204,47 @@ present), `state/api_spending.jsonl` for pool spend. **Backend reuse:** `usage.p
 offline (libs vendored under `platform/agentd/static/`). If the OAuth token is absent the gauges show
 `n/a` but every spend table/chart still works.
 
+## Status model, auto-discovery & hierarchy (implemented 2026-06-25)
+
+A pass to make the console **self-identify the whole fleet** and present status **consistently** across
+every view (the rail, the overview strip + cost table, and the graph all read ONE model).
+
+- **Canonical status (4 states, one source of truth — JS `STATUS`/`statusKey`).** Derived from the
+  snapshot's `up` / `tick` / `reachable`, never re-implemented per view:
+  - **Working** (green `--ok`) — up + mid-tick · **Idle** (amber `--idle`) — up + reachable, between
+    ticks · **Unreachable** (red `--err`) — up but the chat port isn't answering (needs attention) ·
+    **Offline** (grey `--off`) — not running (stopped/paused/exited).
+  - Offline is **grey** (was a brown that read as an error); the old brown is repurposed as the genuine
+    *Unreachable* state so red finally means "problem", not "stopped". Every dot carries a **text label**
+    in the same color (rail, detail bar, cost-table Status column, overview Fleet-status strip).
+  - The up-but-unreachable **alert** now matches this state (the old `up && tick=="down"` condition was
+    dead — `tick` is never `down` while running).
+- **Auto-discovery (no per-dir config).** `docker compose ls --all` finds everything docker knows
+  host-wide; `fleet._scan_deployments()` is the on-disk fallback for deployments docker doesn't track
+  (never-`up`'d, or project removed — e.g. a standalone agent). It is now **recursive (bounded depth 4),
+  marker-gated** (a dir counts as an enclave deployment only if its `.env` has `AGENT_ID` or its compose
+  references `enclave`), **skips** vcs/vendor/`*backup*` dirs, and is **TTL-cached (30s)** so the 4s
+  snapshot loop doesn't re-walk the tree. Default root is `~/Dev` (`ENCLAVE_STACKS_ROOTS`), so the
+  standard `enclave console` launch finds the fleet **and** independent standalone enclaves automatically.
+- **Standalone vs fleet (`kind`, auto-derived in `snapshot()`).** An agent is **fleet** if it has a
+  `manager` or *is* a manager of someone; otherwise **standalone** (its own independent enclave, not in
+  the studio→sub-agents tree). No config — purely the manager hierarchy.
+- **Master/manager visualization.** The rail renders the fleet as a real **tree**: each master (a depth-0
+  manager) leads its group with a **♛ crown + `FLEET ·N` badge** and a highlighted row, its sub-agents
+  **indented with `└` connectors**; standalone agents sit in their own section. The graph marks managers
+  with a **♛ + dashed gold ring + accent label**; the cost table and the detail Status card show the
+  crown / "fleet master · manages N" / "managed by X" / "standalone". `isManager(id)` = manages ≥1 agent,
+  so it generalizes to deeper trees automatically.
+- **Overview layout.** Leads with a **Fleet-status strip** (agents · Working/Idle/Unreachable/Offline
+  counts in the status colors · open-work total) before spend. The 5h/7d gauges stack with a compact
+  credits caption underneath (was a wide bordered pill), and the 4 spend cards are a fixed 4-column row
+  (2 columns < 720px) — they no longer wrap to two rows. **Gauge fix:** colors are resolved to hex via
+  `cssv()` — Chrome does not substitute `var()` inside SVG presentation attributes (`fill=`/`stroke=`).
+- **Deep-linking.** `?view=overview|agents|graph` selects the initial view (over the saved one).
+
+These live entirely in the two host-side control-plane files (`console.py`, `fleet.py`); no agent-image
+rebuild is needed.
+
 ## What reuses vs net-new
 | Reuse as-is | Net-new |
 |---|---|

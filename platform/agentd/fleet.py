@@ -171,7 +171,19 @@ def snapshot():
             "headline": st["headline"], "work_open": st["work_open"],
             "tick": "down", "last_seen": st["last_seen"],
         }
+    # Auto-classify standalone vs fleet from the manager hierarchy (no config): an agent is part of a
+    # FLEET if it has a manager OR is itself a manager of someone; otherwise it runs STANDALONE
+    # (e.g. agent-pas-ops — its own independent enclave, not wired into the studio→sub-agents tree).
+    managers = {a["manager"] for a in agents.values() if a.get("manager")}
+    for aid, a in agents.items():
+        a["kind"] = "fleet" if (a.get("manager") or aid in managers) else "standalone"
     return agents
+
+
+# Dirs the recursive scan never descends into (vcs/vendor/build noise + anything that looks like a
+# backup/archive copy — those hold stale duplicate deployments we must not surface as live agents).
+_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "env", ".cache",
+              "dist", "build", ".next", "site-packages", ".terraform", "vendor"}
 
 
 def _is_deployment(d):
@@ -179,22 +191,56 @@ def _is_deployment(d):
     return (d / "docker-compose.yml").is_file() and (d / ".env").is_file()
 
 
-def _scan_deployments():
-    """Folder-scan the stacks roots for enclave deployments compose-ls misses (down/never-started). A
-    root may be a PARENT of deployments OR a deployment dir itself (a standalone agent). {id: dir}."""
+def _is_enclave_deployment(d):
+    """A compose deployment that is specifically an ENCLAVE agent — has compose + .env AND an enclave
+    marker (AGENT_ID in .env, or `enclave` referenced in the compose file). The marker is what lets us
+    scan a broad root (e.g. ~/Dev) for ANY enclave session without dragging in unrelated compose projects."""
+    d = pathlib.Path(d)
+    if not _is_deployment(d):
+        return False
+    if _env(str(d)).get("AGENT_ID"):
+        return True
+    try:
+        return "enclave" in (d / "docker-compose.yml").read_text(errors="ignore").lower()
+    except Exception:
+        return False
+
+
+_scan_cache = {"ts": 0.0, "data": {}}
+
+
+def _scan_deployments(max_depth=4, ttl=30.0):
+    """Auto-discover enclave deployments on disk under STACKS_ROOTS, at ANY depth (bounded) — so the
+    console finds standalone agents (e.g. agent-pas-ops) AND never-`up`'d fleet members with no per-dir
+    config, just a search root (default ~/Dev). Marker-gated + skips vcs/vendor/backup dirs so a broad
+    root stays clean; de-dupes by AGENT_ID (first match wins). {id: dir}.
+
+    TTL-cached: the snapshot loop runs every few seconds but the on-disk deployment set changes rarely,
+    so a full recursive walk per tick is wasteful — serve a recent scan (default 30s)."""
+    now = time.time()
+    if _scan_cache["data"] and (now - _scan_cache["ts"]) < ttl:
+        return dict(_scan_cache["data"])
     out = {}
-    for root in STACKS_ROOTS:
-        root = pathlib.Path(root)
+
+    def walk(d, depth):
+        if depth > max_depth:
+            return
         try:
-            cands = [root] if _is_deployment(root) else [c for c in root.iterdir() if c.is_dir()]
+            if _is_enclave_deployment(d):
+                aid = _env(str(d)).get("AGENT_ID") or pathlib.Path(d).name
+                if _SAFE.match(aid):
+                    out.setdefault(aid, str(d))
+                return   # a deployment is a leaf — don't descend into its home/state trees
+            for c in sorted(pathlib.Path(d).iterdir()):
+                if c.is_dir() and c.name not in _SKIP_DIRS and not c.name.startswith(".") \
+                        and "backup" not in c.name.lower():
+                    walk(c, depth + 1)
         except Exception:
-            continue
-        for c in cands:
-            if not _is_deployment(c):
-                continue
-            aid = _env(str(c)).get("AGENT_ID") or pathlib.Path(c).name
-            if _SAFE.match(aid):
-                out.setdefault(aid, str(c))
+            return
+
+    for root in STACKS_ROOTS:
+        walk(pathlib.Path(root), 0)
+    _scan_cache.update(ts=now, data=out)
     return out
 
 

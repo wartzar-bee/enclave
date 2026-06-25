@@ -17,6 +17,10 @@ Architecture (per FLEET-CONSOLE-PLAN.md v2, post-critique):
     via subprocess; the web process never calls docker directly.
   • Security: binds 127.0.0.1 ONLY (refused otherwise); optional CONSOLE_TOKEN gate; Origin check +
     session on state-changing POSTs; bounded SSE with heartbeats.
+  • Status + hierarchy (see docs/FLEET-CONSOLE-PLAN.md): every view reads ONE canonical status model
+    (JS `STATUS`/`statusKey` over up/tick/reachable → Working/Idle/Unreachable/Offline, colour+label
+    consistent). Standalone-vs-fleet (`kind`) and the master/manager ♛ tree are auto-derived from the
+    manager hierarchy; the fleet auto-discovers via `docker compose ls` + fleet.py's recursive scan.
 
 Usage: console.py [--port 8700] [--host 127.0.0.1]    Env: CONSOLE_TOKEN (optional), ENCLAVE_STACKS_ROOTS
 """
@@ -111,8 +115,8 @@ def _alerts(snap, wtd, cap):
         if len(agents) >= 2 and a.get("cost_share_pct", 0) >= 60:
             al.append({"level": "warn", "msg": f"{aid} is {a['cost_share_pct']}% of fleet spend (wtd)"})
     for aid, a in snap.items():
-        if a.get("up") and a.get("tick") == "down":
-            al.append({"level": "warn", "msg": f"{aid}: container up but no recent tick"})
+        if a.get("up") and a.get("reachable") is False:
+            al.append({"level": "warn", "msg": f"{aid}: container up but chat port unreachable"})
     return al
 
 
@@ -138,7 +142,9 @@ def _build_graph(snap, paths, wtd_agents):
         nodes.append({
             "id": aid,
             "manager": a.get("manager") or man.get(aid, {}).get("manager", "") or "",
-            "status": a.get("tick") or ("idle" if a else "down"),
+            "up": bool(a.get("up")),
+            "reachable": bool(a.get("reachable")),
+            "tick": a.get("tick") or ("idle" if a else "down"),
             "model": (a.get("model") or "").replace("claude-", ""),
             "cost": round((wtd_agents.get(aid, {}) or {}).get("cost_usd", 0), 2),
             "work_open": a.get("work_open", 0),
@@ -146,7 +152,7 @@ def _build_graph(snap, paths, wtd_agents):
         have.add(aid)
     for n in list(nodes):                      # surface a manager that isn't itself a discovered agent
         if n["manager"] and n["manager"] not in have:
-            nodes.append({"id": n["manager"], "manager": "", "status": "idle", "model": "", "cost": 0, "work_open": 0})
+            nodes.append({"id": n["manager"], "manager": "", "up": False, "reachable": False, "tick": "down", "model": "", "cost": 0, "work_open": 0})
             have.add(n["manager"])
     links = [{"source": n["manager"], "target": n["id"], "kind": "manager", "count": 1}
              for n in nodes if n["manager"]]
@@ -239,8 +245,8 @@ def _fleet_cmd(*args, timeout=60):
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Enclave Fleet</title><script src="/static/chart.umd.min.js"></script><script src="/static/force-graph.min.js"></script><style>
 /* palette matches web_chat exactly so the console frame + the embedded chat are ONE UI */
-:root{--bg:#262624;--card:#30302e;--bd:#3f3f3b;--tx:#ececec;--mut:#9a988f;--accent:#d97757;--hover:#3a3a37;--sel:#403f3b;--ok:#3fbf6f;--idle:#c9a23f;--down:#c2603f}
-body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;--accent:#d97757;--hover:#f3f1ea;--sel:#ece7dc}
+:root{--bg:#262624;--card:#30302e;--bd:#3f3f3b;--tx:#ececec;--mut:#9a988f;--accent:#d97757;--hover:#3a3a37;--sel:#403f3b;--ok:#3fbf6f;--idle:#c9a23f;--err:#c2603f;--off:#6f6e68}
+body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;--accent:#d97757;--hover:#f3f1ea;--sel:#ece7dc;--off:#b4b2a8}
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);height:100vh;display:flex;flex-direction:column}
 #nav{display:flex;align-items:center;gap:6px;padding:9px 14px;background:var(--card);border-bottom:1px solid var(--bd);flex:0 0 auto}
 #nav .brand{font-size:12.5px;font-weight:700;letter-spacing:.05em;color:var(--mut);margin-right:8px}
@@ -269,8 +275,16 @@ body.railcollapsed #railtoggle{display:inline-flex;align-items:center;justify-co
 .grp{font-size:11px;color:var(--mut);padding:8px 10px 3px;text-transform:uppercase;letter-spacing:.05em}
 .row{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:9px;cursor:pointer}
 .row:hover{background:var(--hover)}.row.sel{background:var(--sel)}
-.dot{width:9px;height:9px;border-radius:50%;flex:0 0 9px}.working{background:var(--ok)}.idle{background:var(--idle)}.down{background:var(--down)}
+.dot{width:9px;height:9px;border-radius:50%;flex:0 0 9px;display:inline-block}
+.dot.working{background:var(--ok)}.dot.idle{background:var(--idle)}.dot.unreachable{background:var(--err)}.dot.offline{background:var(--off)}
+.dot.working{box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}
+.slabel{font-weight:600}.slabel.working{color:var(--ok)}.slabel.idle{color:var(--idle)}.slabel.unreachable{color:var(--err)}.slabel.offline{color:var(--off)}
 .rid{font-weight:600}.rmeta{font-size:11.5px;color:var(--mut)}
+/* manager / master hierarchy markers */
+.crown{color:var(--accent);margin-right:5px}
+.mgrbadge{font-size:9px;font-weight:700;color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:0 5px;margin-left:7px;letter-spacing:.04em;vertical-align:middle;white-space:nowrap}
+.row.master{background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 9%,transparent),transparent)}
+.tree{color:var(--bd);font-size:13px;flex:0 0 auto;margin-right:-3px;user-select:none}
 #main{flex:1;display:flex;flex-direction:column;min-width:0}
 #bar{padding:11px 16px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
 #bar .t{font-weight:700;font-size:15px}#bar .m{color:var(--mut);font-size:12.5px}
@@ -286,14 +300,22 @@ iframe{flex:1;border:0;width:100%;background:var(--bg)}
 /* ---- Overview view (compact, width-capped) ---- */
 #view-overview{display:none;overflow:auto;padding:14px}
 .ovwrap{max-width:880px;margin:0 auto}
-.toprow{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap;margin-bottom:12px}
-.gaugewrap{display:flex;gap:8px;align-items:center}
-.creditschip{align-self:center;font-size:9.5px;color:var(--mut);border:1px solid var(--bd);border-radius:7px;padding:3px 7px;white-space:nowrap}
-.gaugecard{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:8px 10px;display:flex;flex-direction:column;align-items:center;min-width:96px}
-.gauge{width:72px;height:72px}.gv{font-size:21px;font-weight:800}
+.fleetstrip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.fchip{background:var(--card);border:1px solid var(--bd);border-radius:11px;padding:8px 12px;display:flex;align-items:center;gap:8px;min-width:90px;cursor:pointer}
+.fchip:hover{background:var(--hover)}.fchip .fn{font-size:19px;font-weight:800;font-variant-numeric:tabular-nums}
+.fchip .fl{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+.fchip.tot{cursor:default}.fchip.tot:hover{background:var(--card)}
+.fchip.zero{opacity:.45}
+.toprow{display:flex;gap:10px;align-items:stretch;margin-bottom:12px}
+.gaugewrap{display:flex;flex-direction:column;gap:5px;flex:0 0 auto}
+.gaugerow{display:flex;gap:8px}
+.creditschip{font-size:9px;color:var(--mut);text-align:center;white-space:nowrap;letter-spacing:.02em}
+.gaugecard{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:8px 10px;display:flex;flex-direction:column;align-items:center;min-width:88px}
+.gauge{width:66px;height:66px}.gv{font-size:20px;font-weight:800}
 .glabel{font-size:10px;color:var(--tx);font-weight:600;margin-top:3px;text-align:center}
 .gsub{font-size:9.5px;color:var(--mut);margin-top:1px;text-align:center}
-.ovgrid{flex:1;min-width:240px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+.ovgrid{flex:1;min-width:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+@media(max-width:720px){.toprow{flex-wrap:wrap}.ovgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:9px 11px}
 .card .k{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em}
 .card .v{font-size:18px;font-weight:700;margin-top:2px}
@@ -333,6 +355,9 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
 <div id="alertbar"></div>
 <div id="body">
 <section id="view-overview" class="view"><div class="ovwrap">
+  <div class="sectit">Fleet status</div>
+  <div class="fleetstrip" id="fleethealth"></div>
+  <div class="sectit">Spend &amp; subscription</div>
   <div class="toprow"><div class="gaugewrap" id="gauges"></div><div class="ovgrid" id="cards"></div></div>
   <div class="sectit">Per-agent consumption</div>
   <table class="cost"><thead id="costhead"></thead><tbody id="costbody"></tbody></table>
@@ -364,7 +389,9 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <div id="glegend"><b>Fleet topology</b> · node size = wtd spend
     <div class="li"><span class="sw" style="background:var(--ok)"></span>working</div>
     <div class="li"><span class="sw" style="background:var(--idle)"></span>idle</div>
-    <div class="li"><span class="sw" style="background:var(--down)"></span>down</div>
+    <div class="li"><span class="sw" style="background:var(--err)"></span>unreachable</div>
+    <div class="li"><span class="sw" style="background:var(--off)"></span>offline</div>
+    <div class="li"><span style="color:var(--accent)">♛</span> manager (runs a fleet of sub-agents)</div>
     <div class="li"><span class="sw" style="background:#c9a23f;border-radius:2px"></span>manager link · <span class="sw" style="background:#56b6c2;border-radius:2px"></span>peer comms</div>
   </div>
 </section>
@@ -389,22 +416,61 @@ function view(v){curview=v;
   try{localStorage.setItem("console_view",v);}catch(e){}
   if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else{render();}
 }
+/* ---------- canonical status model (ONE source of truth — rail, detail, table, graph) ---------- */
+const STATUS={
+  working:{label:"Working",col:"--ok"},      // up + mid-tick
+  idle:{label:"Idle",col:"--idle"},          // up + reachable, between ticks
+  unreachable:{label:"Unreachable",col:"--err"}, // up but chat port not answering — needs attention
+  offline:{label:"Offline",col:"--off"},     // not running (stopped/paused/exited)
+};
+function statusKey(a){
+  if(!a||!a.up)return"offline";
+  if(a.tick==="working")return"working";
+  if(a.reachable===false)return"unreachable";
+  return"idle";
+}
+function statusCol(k){return cssv((STATUS[k]||STATUS.offline).col);}
+function statusPill(a){const k=statusKey(a);return `<span class="dot ${k}"></span><span class="slabel ${k}">${STATUS[k].label}</span>`;}
+function shortModel(m){return (m||"").replace("claude-","")||"?";}
 /* ---------- Agents view ---------- */
-function dotcls(a){return a.tick==="working"?"working":a.tick==="down"?"down":"idle";}
+function byId(x,y){return x.id<y.id?-1:1;}
+function kidsOf(id){return Object.values(agents).filter(a=>a.manager===id);}   // direct sub-agents
+function isManager(id){return kidsOf(id).length>0;}                            // runs a fleet of sub-agents
+function railRow(a,depth){
+  const k=statusKey(a),mgr=isManager(a.id),n=kidsOf(a.id).length;
+  const pad=10+depth*17, master=mgr&&depth===0;          // depth-0 manager = the fleet master (e.g. studio)
+  const tree=depth?`<span class="tree">└ </span>`:"";
+  const crown=mgr?`<span class="crown" title="manager — runs a fleet of sub-agents">♛</span>`:"";
+  const badge=mgr?`<span class="mgrbadge" title="manages ${n} sub-agent(s)">FLEET ·${n}</span>`:"";
+  return `<div class="row${sel===a.id?' sel':''}${master?' master':''}" onclick="pick('${a.id}')" style="padding-left:${pad}px">
+    ${tree}<span class="dot ${k}"></span><div style="min-width:0"><div class="rid">${crown}${esc(a.id)}${badge}</div>
+    <div class="rmeta"><span class="slabel ${k}">${STATUS[k].label}</span> · ${esc(a.brain)}/${esc(shortModel(a.model))} · :${a.port}${a.work_open?" · work "+a.work_open:""}</div></div></div>`;
+}
 function render(){
   const s=document.getElementById("search");const f=(s.value||"").toLowerCase();
-  const list=Object.values(agents).filter(a=>!f||a.id.toLowerCase().includes(f)||(a.model||"").toLowerCase().includes(f));
+  const all=Object.values(agents);
+  const list=all.filter(a=>!f||a.id.toLowerCase().includes(f)||(a.model||"").toLowerCase().includes(f));
   document.getElementById("count").textContent=list.length;
-  const bym={};list.forEach(a=>{(bym[a.manager||""]=bym[a.manager||""]||[]).push(a);});
-  let h="";const grp=(title,arr)=>{if(title)h+=`<div class="grp">▸ ${esc(title)}</div>`;
-    arr.sort((x,y)=>x.id<y.id?-1:1).forEach(a=>{h+=`<div class="row${sel===a.id?' sel':''}" onclick="pick('${a.id}')">
-      <span class="dot ${dotcls(a)}"></span><div><div class="rid">${esc(a.id)}</div>
-      <div class="rmeta">${esc(a.brain)} · ${esc(a.model)} · :${a.port} · work ${a.work_open}</div></div></div>`;});};
-  Object.keys(bym).filter(m=>m).forEach(m=>grp(m+" (manager)",bym[m]));
-  if(bym[""])grp(Object.keys(bym).length>1?"standalone":"",bym[""]);
-  document.getElementById("list").innerHTML=h;
+  let h="";
+  if(f){ /* filtering: flat list (a tree with hidden parents misleads) — badges still mark managers */
+    list.sort(byId).forEach(a=>h+=railRow(a,0));
+  }else{
+    /* FLEET as a real hierarchy: each master (depth-0 manager, e.g. studio) with its sub-agents nested
+       beneath it; STANDALONE (independent enclaves like agent-pas-ops) in their own section. */
+    const ids=new Set(all.map(a=>a.id));
+    const fleet=all.filter(a=>a.kind!=="standalone");
+    const roots=fleet.filter(a=>!a.manager||!ids.has(a.manager)).sort(byId);
+    const seen=new Set();
+    const walk=(a,depth)=>{if(seen.has(a.id))return;seen.add(a.id);h+=railRow(a,depth);
+      kidsOf(a.id).sort(byId).forEach(c=>walk(c,depth+1));};
+    if(roots.length){h+=`<div class="grp">▸ fleet</div>`;roots.forEach(r=>walk(r,0));}
+    const standalone=all.filter(a=>a.kind==="standalone").sort(byId);
+    if(standalone.length){h+=`<div class="grp">▸ standalone</div>`;standalone.forEach(a=>h+=railRow(a,0));}
+  }
+  document.getElementById("list").innerHTML=h||`<div class="grp" style="color:var(--mut)">no agents discovered</div>`;
 }
-function pick(id){sel=id;if(curview!=="agents")view("agents");render();const a=agents[id];bt.textContent=id;bm.textContent=a?`${a.status} · :${a.port}`:"";tab(curtab);}
+function setBar(a){bm.innerHTML=a?`${statusPill(a)} · <span class="mono">${esc(a.status)}</span> · :${a.port}`:"";}
+function pick(id){sel=id;if(curview!=="agents")view("agents");render();const a=agents[id];bt.textContent=id;setBar(a);tab(curtab);}
 function openChat(){if(sel)window.open("http://127.0.0.1:"+agents[sel].port+"/","_blank");}
 function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("sel",e.dataset.t===t));
   const p=document.getElementById("pane");if(!sel){p.innerHTML='<div class="empty">Select an agent.</div>';return;}
@@ -414,9 +480,11 @@ function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classLis
     const lr=(ov.last||{})[sel]||{};const c=(((ov.usage||{}).wtd||{}).agents||{})[sel]||{};
     p.innerHTML=`<div style="padding:16px;overflow:auto">
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div class="card"><div class="k">status</div><div class="v" style="font-size:15px">${statusPill(a)}</div><div class="s"><span class="mono">${esc(a.status)}</span> · ${esc(a.brain)}/${esc(shortModel(a.model))} · :${a.port}<br>${a.kind==="standalone"?"standalone (independent enclave)":(isManager(a.id)?"♛ fleet master · manages "+kidsOf(a.id).length+" sub-agent(s)":"fleet · ↳ managed by "+esc(a.manager||"—"))}</div></div>
         <div class="card"><div class="k">wtd spend</div><div class="v">${usd(c.cost_usd)}</div><div class="s">${num(c.tokens)} tokens · ${c.ticks||0} ticks · ${c.cost_share_pct||0}% of fleet</div></div>
         <div class="card"><div class="k">last tick</div><div class="v">${lr.cost_usd!=null?usd(lr.cost_usd):"—"}</div><div class="s">${esc(lr.reason||"")}${lr.model?(" · "+lr.model.replace("claude-","")):""}${lr.rc!=null&&lr.rc!==0?" · rc "+lr.rc:""}</div></div>
       </div>
+      ${a.headline?`<div class="card" style="margin-bottom:12px"><div class="k">headline</div><div class="s" style="font-size:12.5px;color:var(--tx);margin-top:3px">${esc(a.headline)}</div></div>`:""}
       <div class="chartcard" style="max-width:580px;margin-bottom:12px"><h3>This agent — cost over time (7d, $)</h3><canvas id="miniChart"></canvas></div>
       <div id="status">${esc(JSON.stringify({id:a.id,up:a.up,status:a.status,brain:a.brain,model:a.model,port:a.port,manager:a.manager,tick:a.tick,reachable:a.reachable,work_open:a.work_open,headline:a.headline,home:a.home},null,2))}</div></div>`;
     ensureOv().then(()=>drawMini(sel));
@@ -428,24 +496,39 @@ async function act(action){if(!sel)return;if(action==="down"&&!confirm("Stop "+s
 async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dtext.value="";
   await post("/api/action",{action:"send",id:sel,text:t});}
 async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});}catch(e){}}
-async function load(){try{const j=await(await fetch(qs("/api/fleet"))).json();agents=j.agents||{};renderAlerts(j.alerts||[]);if(curview==="agents"){render();if(sel&&agents[sel]){bm.textContent=agents[sel].status+" · :"+agents[sel].port;}}else{renderOverview();}}catch(e){}}
+async function load(){try{const j=await(await fetch(qs("/api/fleet"))).json();agents=j.agents||{};renderAlerts(j.alerts||[]);if(curview==="agents"){render();if(sel&&agents[sel]){setBar(agents[sel]);}}else{renderOverview();}}catch(e){}}
 /* ---------- alerts ---------- */
 function renderAlerts(al){const b=document.getElementById("alertbar");if(!al||!al.length){b.innerHTML="";return;}
   b.innerHTML=al.map(a=>`<div class="alert ${a.level==="crit"?"crit":"warn"}">${a.level==="crit"?"⛔":"⚠"} ${esc(a.msg)}</div>`).join("");}
 /* ---------- Overview view ---------- */
 async function loadOverview(){try{ov=await(await fetch(qs("/api/overview"))).json();}catch(e){}renderOverview();}
 function gauge(w,label){const pct=w&&w.pct!=null?w.pct:null;const warn=label.indexOf("5h")>=0?70:85;
-  const col=pct==null?"var(--mut)":pct>=90?"var(--down)":pct>=warn?"var(--idle)":"var(--ok)";
+  /* resolve to real hex — Chrome does NOT substitute var() inside SVG presentation attributes
+     (fill=/stroke=), so passing "var(--ok)" there renders black/invisible. */
+  const col=cssv(pct==null?"--mut":pct>=90?"--err":pct>=warn?"--idle":"--ok"),track=cssv("--bd");
   const r=42,c=2*Math.PI*r,off=pct==null?c:c*(1-Math.min(pct,100)/100);
   let eta="resets —";if(w&&w.reset_epoch){const s=Math.max(0,w.reset_epoch-Date.now()/1000);eta="resets "+Math.floor(s/3600)+"h"+String(Math.floor(s%3600/60)).padStart(2,"0")+"m";}
-  return `<div class="gaugecard" title="Claude subscription ${label} usage — defers at 90%"><svg class="gauge" viewBox="0 0 100 100">
-    <circle cx=50 cy=50 r=${r} fill=none stroke="var(--bd)" stroke-width=10/>
+  return `<div class="gaugecard" title="Claude subscription ${label} usage — defers at 90%"><svg class="gauge" width="66" height="66" viewBox="0 0 100 100">
+    <circle cx=50 cy=50 r=${r} fill=none stroke="${track}" stroke-width=10/>
     <circle cx=50 cy=50 r=${r} fill=none stroke="${col}" stroke-width=10 stroke-linecap=round stroke-dasharray="${c}" stroke-dashoffset="${off}" transform="rotate(-90 50 50)"/>
     <text x=50 y=56 text-anchor=middle class=gv fill="${col}">${pct==null?"n/a":pct+"%"}</text></svg>
     <div class="glabel">${label}</div><div class="gsub">${eta}</div></div>`;
 }
+function renderFleetHealth(){
+  /* fleet state at a glance — same status model + colors as the rail/graph. Counts the LIVE snapshot. */
+  const list=Object.values(agents||{});
+  const cnt={working:0,idle:0,unreachable:0,offline:0};
+  let work=0;list.forEach(a=>{cnt[statusKey(a)]++;work+=a.work_open||0;});
+  const order=["working","idle","unreachable","offline"];
+  const chips=[`<div class="fchip tot"><span class="fn">${list.length}</span><span class="fl">agents</span></div>`];
+  order.forEach(k=>{chips.push(`<div class="fchip${cnt[k]?"":" zero"}" onclick="view('agents')" title="${STATUS[k].label} agents">
+    <span class="dot ${k}"></span><span class="fn slabel ${k}">${cnt[k]}</span><span class="fl">${STATUS[k].label}</span></div>`);});
+  chips.push(`<div class="fchip tot"><span class="fn">${work}</span><span class="fl">open work</span></div>`);
+  document.getElementById("fleethealth").innerHTML=chips.join("");
+}
 function renderOverview(){
   if(curview!=="overview")return;
+  renderFleetHealth();
   const win=document.getElementById("win").value;
   const u=((ov.usage||{})[win])||{fleet:{},agents:{}};
   const F=u.fleet||{};const cap=ov.cap||{};
@@ -453,8 +536,8 @@ function renderOverview(){
   const exF=ex.fleet||{usd:0,by_model:{}};
   document.getElementById("stale").textContent=ov.ts?("updated "+Math.max(0,Math.round(Date.now()/1000-ov.ts))+"s ago"):"";
   /* Claude subscription gauges (flat-rate; usage counts against the CAP, not the wallet) */
-  let g=gauge(cap.five_hour,"5h session")+gauge(cap.seven_day,"7d weekly");
-  g+=`<span class="creditschip" title="Claude is a flat subscription: usage counts against the 5h/7d CAP, not your wallet. Pay-as-you-go credits are ${cap.credits_enabled?"ON":"OFF"}. Real money out the door is the External LLM spend →">Claude subscription${cap.credits_enabled===false?" · credits OFF":""}</span>`;
+  let g=`<div class="gaugerow">${gauge(cap.five_hour,"5h session")}${gauge(cap.seven_day,"7d weekly")}</div>`;
+  g+=`<div class="creditschip" title="Claude is a flat subscription: usage counts against the 5h/7d CAP, not your wallet. Pay-as-you-go credits are ${cap.credits_enabled?"ON":"OFF"}. Real money out the door is the External LLM spend →">Claude subscription · credits ${cap.credits_enabled?"ON":"OFF"}</div>`;
   document.getElementById("gauges").innerHTML=g;
   /* projection from 7d daily series (Claude notional) */
   const sa=(ov.series||{}).agent||{buckets:[],series:{}};
@@ -473,25 +556,24 @@ function renderOverview(){
   drawCharts(u,win);
 }
 function renderCostTable(ag,agext){
-  const cols=[["id","Agent"],["brain","Brain"],["status","·"],["claude","Claude $"],["external","Ext $"],["tokens","Tokens"],["last","Last tick"]];
+  const cols=[["id","Agent"],["status","Status"],["brain","Brain"],["claude","Claude $"],["external","Ext $"],["tokens","Tokens"],["last","Last tick"]];
   const ids=new Set([...Object.keys(agents||{}),...Object.keys(ag||{}),...Object.keys(agext||{})]);
   const rows=[...ids].map(id=>{
     const live=agents[id]||{},a=ag[id]||{},e=agext[id]||{},lr=(ov.last||{})[id]||{};
-    return {id,brain:live.brain||"?",tick:live.tick||(live.up?"idle":"down"),
+    return {id,brain:(live.brain||"?")+"/"+shortModel(live.model),status:statusKey(live),
       claude:a.cost_usd||0,external:e.usd||0,tokens:a.tokens||0,
       last:lr.cost_usd!=null?usd(lr.cost_usd)+" "+(lr.reason||""):(lr.reason||"—"),lastrc:lr.rc};
   });
   rows.sort((x,y)=>{const k=sortKey;const xv=k==="total"?x.claude+x.external:x[k],yv=k==="total"?y.claude+y.external:y[k];return (xv>yv?1:xv<yv?-1:0)*sortDir;});
   document.getElementById("costhead").innerHTML="<tr>"+cols.map(c=>`<th onclick="sortBy('${c[0]}')">${esc(c[1])}${sortKey===c[0]?(sortDir<0?" ▾":" ▴"):""}</th>`).join("")+"</tr>";
   document.getElementById("costbody").innerHTML=rows.map(r=>{
-    const dot=r.tick==="working"?"working":r.tick==="down"?"down":"idle";
-    return `<tr onclick="pick('${r.id}')"><td><b>${esc(r.id)}</b></td>
+    return `<tr onclick="pick('${r.id}')"><td>${isManager(r.id)?'<span class="crown" title="manager — runs a fleet of sub-agents">♛</span>':""}<b>${esc(r.id)}</b></td>
+      <td style="text-align:left"><span class="dot ${r.status}"></span> <span class="slabel ${r.status}">${STATUS[r.status].label}</span></td>
       <td class="mono">${esc(r.brain)}</td>
-      <td><span class="dot ${dot}" style="display:inline-block"></span></td>
       <td><b>${r.claude?usd(r.claude):"—"}</b></td>
       <td style="${r.external>0?"color:var(--accent);font-weight:600":""}">${r.external>0?usd(r.external):"—"}</td>
       <td>${r.tokens?num(r.tokens):"—"}</td>
-      <td style="${r.lastrc!=null&&r.lastrc!==0?"color:var(--down)":""}">${esc(r.last)}</td></tr>`;
+      <td style="${r.lastrc!=null&&r.lastrc!==0?"color:var(--err)":""}">${esc(r.last)}</td></tr>`;
   }).join("")||`<tr><td colspan="7" style="text-align:center;color:var(--mut);padding:18px">No agents discovered.</td></tr>`;
 }
 function sortBy(k){if(sortKey===k)sortDir=-sortDir;else{sortKey=k;sortDir=(k==="id"||k==="brain")?1:-1;}renderOverview();}
@@ -533,24 +615,26 @@ function drawMini(id){if(typeof Chart==="undefined")return;
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>"$"+v}},x:{grid:{display:false}}}}});
 }
 /* ---------- Graph view (force-directed topology) ---------- */
-let G=null;
+let G=null,GMGR=new Set();   // GMGR = ids that manage sub-agents (drawn with a crown) — refreshed each render
 async function loadGraph(){let d;try{d=await(await fetch(qs("/api/graph"))).json();}catch(e){return;}renderGraph(d);}
-function statusCol(s){return s==="working"?cssv("--ok"):s==="down"?cssv("--down"):cssv("--idle");}
 function renderGraph(d){
   if(typeof ForceGraph==="undefined"){document.getElementById("graphbox").innerHTML='<div class="empty" style="padding:30px">graph library unavailable</div>';return;}
   const box=document.getElementById("graphbox");
+  GMGR=new Set((d.links||[]).filter(l=>l.kind==="manager").map(l=>typeof l.source==="object"?l.source.id:l.source));
   const REL=4,rad=n=>REL*Math.sqrt(1+Math.sqrt(n.cost||0));   // compressed: $ → radius (sqrt), cap stays small
   if(!G){
     G=ForceGraph()(box).nodeId("id").backgroundColor("rgba(0,0,0,0)")
-      .nodeLabel(n=>`${n.id}${n.model?" · "+n.model:""} · $${(n.cost||0).toFixed(2)} wtd · work ${n.work_open||0}`)
-      .nodeColor(n=>statusCol(n.status)).nodeRelSize(REL).nodeVal(n=>1+Math.sqrt(n.cost||0))
+      .nodeLabel(n=>`${GMGR.has(n.id)?"♛ ":""}${n.id}${GMGR.has(n.id)?" (manager)":""}${n.model?" · "+n.model:""} · $${(n.cost||0).toFixed(2)} wtd · work ${n.work_open||0}`)
+      .nodeColor(n=>statusCol(statusKey(n))).nodeRelSize(REL).nodeVal(n=>1+Math.sqrt(n.cost||0))
       .linkColor(l=>l.kind==="peer"?"#56b6c2":"#c9a23f").linkWidth(l=>Math.min(4,0.6+(l.count||1)*0.3))
       .linkDirectionalParticles(l=>l.kind==="peer"?2:0).linkDirectionalParticleWidth(2)
       .nodeCanvasObjectMode(()=>"after")
       .nodeCanvasObject((n,ctx,scale)=>{
-        const r=rad(n);
+        const r=rad(n),mgr=GMGR.has(n.id);
         if(n.work_open>0){ctx.beginPath();ctx.arc(n.x,n.y,r+2.5,0,2*Math.PI);ctx.strokeStyle=cssv("--accent");ctx.lineWidth=1.4/scale;ctx.stroke();}
-        const fs=10/scale;ctx.font=`${fs}px -apple-system,system-ui,sans-serif`;ctx.fillStyle=cssv("--tx");ctx.textAlign="center";ctx.textBaseline="top";
+        if(mgr){ctx.beginPath();ctx.arc(n.x,n.y,r+(n.work_open>0?4.5:2.5),0,2*Math.PI);ctx.strokeStyle=cssv("--accent");ctx.lineWidth=2/scale;ctx.setLineDash([3/scale,2/scale]);ctx.stroke();ctx.setLineDash([]);
+          const cs=12/scale;ctx.font=`${cs}px system-ui`;ctx.fillStyle=cssv("--accent");ctx.textAlign="center";ctx.textBaseline="bottom";ctx.fillText("♛",n.x,n.y-r-3);}
+        const fs=10/scale;ctx.font=`${mgr?"bold ":""}${fs}px -apple-system,system-ui,sans-serif`;ctx.fillStyle=mgr?cssv("--accent"):cssv("--tx");ctx.textAlign="center";ctx.textBaseline="top";
         ctx.fillText(n.id,n.x,n.y+r+2);
       })
       .onNodeClick(n=>pick(n.id));
@@ -570,7 +654,8 @@ applyThemeBtn();
 function toggleRail(){const c=document.body.classList.toggle("railcollapsed");try{localStorage.setItem("rail_collapsed",c?"1":"");}catch(e){}}
 try{if(localStorage.getItem("rail_collapsed"))document.body.classList.add("railcollapsed");}catch(e){}
 document.getElementById("search").addEventListener("input",render);
-try{view(localStorage.getItem("console_view")||"overview");}catch(e){view("overview");}
+const _urlView=new URLSearchParams(location.search).get("view");
+try{view((["overview","agents","graph"].includes(_urlView)?_urlView:null)||localStorage.getItem("console_view")||"overview");}catch(e){view("overview");}
 load();
 setInterval(()=>{if(curview==="overview")loadOverview();},15000);
 try{const es=new EventSource(qs("/api/stream"));es.onmessage=e=>{try{const j=JSON.parse(e.data);agents=j.agents||agents;if(curview==="agents")render();}catch(_){}};}catch(e){setInterval(load,5000);}
