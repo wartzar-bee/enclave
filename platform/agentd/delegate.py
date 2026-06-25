@@ -24,27 +24,48 @@ import sys, os, re, json, time, argparse, subprocess, pathlib, urllib.request
 HERE = pathlib.Path(__file__).resolve().parent
 LOCAL_AGENT = HERE / "local_agent.py"
 
-# kind → local worker model (env override DELEGATE_MODEL_<KIND>). Defaults = models we verified emit
-# real content as an instruct/coder worker (NOT a reason-only model like Nemotron).
+# kind → worker model (env override DELEGATE_MODEL_<KIND>). Default pool = NVIDIA's FREE OpenAI-compatible
+# API (build.nvidia.com): $0, reliable INSTRUCT models that emit clean content (verified) — unlike the
+# local MLX Nemotron which reasons forever, and unlike paid OpenRouter. Point at local MLX instead by
+# setting DELEGATE_BASE + DELEGATE_MODEL_<KIND> (truly-offline mode).
 KIND_MODEL = {
-    "code":     "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
-    "write":    "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
-    "analyze":  "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
-    "classify": "mlx-community/Qwen3-8B-4bit",
+    "code":     "qwen/qwen3-next-80b-a3b-instruct",   # ~2s, clean code, no reasoning bloat
+    "write":    "qwen/qwen3-next-80b-a3b-instruct",
+    "analyze":  "qwen/qwen3-next-80b-a3b-instruct",
+    "classify": "meta/llama-3.3-70b-instruct",
 }
-LOCAL_BASE = os.environ.get("LOCAL_BRAIN_BASE", "http://host.docker.internal:8081/v1")
+WORKER_BASE = os.environ.get("DELEGATE_BASE") or os.environ.get("NVIDIA_API_BASE") \
+    or "https://integrate.api.nvidia.com/v1"
+
+
+def _worker_key():
+    """Resolve the worker API key (NVIDIA free) from env or the scoped secret mount."""
+    k = os.environ.get("DELEGATE_KEY") or os.environ.get("NVIDIA_API_KEY")
+    if k:
+        return k
+    for r in (os.environ.get("AGENT_DIR", "/agent"), os.environ.get("TOOLS_ROOT", "/workspace")):
+        f = pathlib.Path(r) / ".secrets" / "nvidia.env"
+        try:
+            for ln in f.read_text().splitlines():
+                if ln.startswith("NVIDIA_API_KEY="):
+                    return ln.split("=", 1)[1].strip().strip('"').strip("'")
+        except Exception:
+            pass
+    return ""
 
 
 def _model_for(kind):
     return os.environ.get(f"DELEGATE_MODEL_{kind.upper()}") or KIND_MODEL.get(kind, KIND_MODEL["code"])
 
 
-def _prewarm(model, timeout=200):
-    """One tiny call so a cold model-load doesn't eat the worker's step budget / time out step 1."""
+def _prewarm(model, key, timeout=120):
+    """Tiny call to validate the endpoint/model (and warm a local model if that's the base)."""
     body = json.dumps({"model": model, "messages": [{"role": "user", "content": "hi"}],
                        "max_tokens": 4}).encode()
-    req = urllib.request.Request(LOCAL_BASE.rstrip("/") + "/chat/completions", data=body,
-                                 headers={"Content-Type": "application/json"})
+    hdrs = {"Content-Type": "application/json"}
+    if key:
+        hdrs["Authorization"] = "Bearer " + key
+    req = urllib.request.Request(WORKER_BASE.rstrip("/") + "/chat/completions", data=body, headers=hdrs)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             r.read()
@@ -103,9 +124,10 @@ def _run_worker(task, model, args, trace_path, extra=""):
         "WORKER_MODE": "1",
         "DELEGATE_TASK": task + (("\n\n" + extra) if extra else ""),
         "LOCAL_BRAIN_MODEL": model,
-        "LOCAL_BRAIN_BASE": LOCAL_BASE,
+        "LOCAL_BRAIN_BASE": WORKER_BASE,
+        "LOCAL_BRAIN_KEY": _worker_key(),
         "LOCAL_MAX_STEPS": str(args.max_steps),
-        "LOCAL_REQ_TIMEOUT": str(max(300, args.timeout // 2)),   # slow local 30B: generous per-call
+        "LOCAL_REQ_TIMEOUT": str(max(120, args.timeout // 2)),   # NVIDIA free is fast; generous floor
         "GUARD_HOOK": os.environ.get("GUARD_HOOK", "guard.py"),
         "AGENT_DIR": args.cwd or env.get("AGENT_DIR", "/agent"),
         "DELEGATION_ENFORCE": "off",          # the worker IS the laborer — never gate it
@@ -175,7 +197,7 @@ def main():
     trace_path = state / "delegations" / f"{did}.log"
 
     model = _model_for(args.kind)
-    _prewarm(model)
+    _prewarm(model, _worker_key())
     task = _build_task(args)
     before = _git_porcelain(args.cwd)
 
