@@ -1,0 +1,104 @@
+"""Hermetic tests for diagnostics.compute — no I/O, fixed `now`, synthetic ticks.
+
+Run: python3 test_diagnostics.py   (exits non-zero on any failure)
+"""
+import diagnostics as D
+
+DAY = 86400
+T0 = 1_700_000_000  # fixed anchor; never use wall-clock so trends are deterministic
+
+
+def tick(t, ctx=50_000, out=8_000, cost=0.3, dur=120, turns=20, rc=0, subtype="success",
+         reason="heartbeat", model="claude-sonnet-4-6"):
+    """A usage record. ctx is split input/cache the way real ticks look (tiny input, big cache_read)."""
+    input_, cache_read = 100, max(0, ctx - 100 - 1000)
+    return {"ts": t, "reason": reason, "model": model, "input": input_, "output": out,
+            "cache_read": cache_read, "cache_write": 1000, "cost_usd": cost,
+            "duration_s": dur, "turns": turns, "rc": rc, "subtype": subtype}
+
+
+def keys(d):
+    return {a["key"] for a in d["anomalies"]}
+
+
+def check(name, cond):
+    if not cond:
+        print(f"FAIL: {name}")
+        check.failed += 1
+    else:
+        print(f"ok: {name}")
+check.failed = 0
+
+
+# --- cold start: no data --------------------------------------------------------------------
+d = D.compute([], now=T0)
+check("empty -> cold + unknown health", d["cold"] and d["health"]["level"] == "unknown"
+      and d["ticks_total"] == 0)
+
+# --- too-few ticks: no false anomalies ------------------------------------------------------
+d = D.compute([tick(T0), tick(T0 + 100)], now=T0 + 100)
+check("2 ticks -> no anomalies", d["anomalies"] == [])
+
+# --- healthy steady agent -------------------------------------------------------------------
+recs = [tick(T0 + i * DAY, ctx=60_000, cost=0.3, dur=120) for i in range(16)]
+d = D.compute(recs, now=T0 + 15 * DAY)
+check("steady -> green", d["health"]["level"] == "green")
+check("steady -> no anomalies", d["anomalies"] == [])
+check("steady -> 100% process success", d["honesty"]["process_success_pct"] == 100.0)
+check("steady -> week window", d["window"] == "week")
+
+# --- CONTEXT EXPLOSION: small last week, huge this week (the StoneForge case) ----------------
+last_week = [tick(T0 + i * (DAY // 2), ctx=80_000, cost=0.3) for i in range(8)]   # ~80k
+this_week = [tick(T0 + 8 * DAY + i * (DAY // 4), ctx=3_500_000, cost=2.2) for i in range(8)]  # ~3.5M
+d = D.compute(last_week + this_week, now=T0 + 10 * DAY)
+check("explosion -> context_explosion anomaly", "context_explosion" in keys(d))
+ce = next(a for a in d["anomalies"] if a["key"] == "context_explosion")
+check("explosion -> high severity", ce["severity"] == "high")
+check("explosion -> health orange/red", d["health"]["level"] in ("orange", "red"))
+check("explosion -> trend reported", d["metrics"]["context"]["trend_pct"] and
+      d["metrics"]["context"]["trend_pct"] > 500)
+
+# --- RESOLVED explosion: huge history but latest tick is small -> NOT flagged ----------------
+recovered = last_week + this_week[:-1] + [tick(T0 + 9 * DAY + 5000, ctx=90_000, cost=0.3)]
+d = D.compute(recovered, now=T0 + 10 * DAY)
+check("recovered -> no context_explosion (latest is small)", "context_explosion" not in keys(d))
+
+# --- DURATION + COST spike on the latest tick -----------------------------------------------
+base = [tick(T0 + i * DAY, ctx=60_000, cost=0.3, dur=100) for i in range(12)]
+spike = base + [tick(T0 + 12 * DAY, ctx=60_000, cost=1.6, dur=600)]
+d = D.compute(spike, now=T0 + 12 * DAY)
+check("spike -> duration_spike", "duration_spike" in keys(d))
+check("spike -> cost_spike", "cost_spike" in keys(d))
+
+# --- FAILURES surface + drop health ---------------------------------------------------------
+withfail = [tick(T0 + i * DAY, ctx=60_000) for i in range(8)] + \
+           [tick(T0 + 8 * DAY, rc=1, subtype="error"),
+            tick(T0 + 9 * DAY, rc=1, subtype="error"),
+            tick(T0 + 10 * DAY, rc=1, subtype="error")]
+d = D.compute(withfail, now=T0 + 10 * DAY)
+check("failures -> anomaly", "failures" in keys(d))
+check("failures(3) -> red health", d["health"]["level"] == "red")
+check("failures -> process_success < 100", d["honesty"]["process_success_pct"] < 100)
+
+# --- PROMPT CREEP: monotonic growth each tick (no single 2x jump) ----------------------------
+creep = [tick(T0 + i * (DAY // 4), ctx=int(700_000 * (1.12 ** i)), cost=0.4) for i in range(8)]
+d = D.compute(creep, now=T0 + 2 * DAY)
+check("creep -> prompt_creep or context_explosion present",
+      "prompt_creep" in keys(d) or "context_explosion" in keys(d))
+
+# --- series + inspector shape ---------------------------------------------------------------
+d = D.compute(base, now=T0 + 11 * DAY)
+check("series labels align with context", len(d["series"]["labels"]) == len(d["series"]["context"]))
+check("inspect newest-first", d["inspect"][0]["ts"] >= d["inspect"][-1]["ts"])
+check("pending_telemetry advertised", "model latency" in d["pending_telemetry"])
+
+# --- ts parsing: ISO and epoch both work ----------------------------------------------------
+check("parse ISO Z", abs(D.parse_ts("2026-06-25T20:14:44Z") - 1782418484) < 2)
+check("parse epoch", D.parse_ts(1782418484) == 1782418484.0)
+check("parse junk -> None", D.parse_ts("not-a-date") is None)
+
+print()
+if check.failed:
+    print(f"{check.failed} FAILED")
+    raise SystemExit(1)
+print("ALL PASS")

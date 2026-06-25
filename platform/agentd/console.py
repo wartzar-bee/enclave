@@ -416,6 +416,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
       <button class="btn" onclick="openChat()">↗ Chat tab</button></div>
     <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
       <span class="tab" data-t="status" onclick="tab('status')">Status</span>
+      <span class="tab" data-t="diag" onclick="tab('diag')">Diagnostics</span>
       <span class="tab" data-t="config" onclick="tab('config')">Config</span>
       <span class="tab" data-t="skills" onclick="tab('skills')">Skills</span>
       <span class="tab" data-t="logs" onclick="tab('logs')">Logs</span></div>
@@ -566,6 +567,7 @@ function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);wi
         <div id="docchecks" style="margin-top:8px"></div></div></div>`;
     ensureOv().then(()=>drawMini(sel));
   }
+  else if(t==="diag"){renderDiag(a);}
   else if(t==="config"){renderConfig(a);}
   else if(t==="skills"){renderSkills(a);}
   else if(t==="logs"){
@@ -584,6 +586,98 @@ async function runDoctor(){if(!sel)return;const o=document.getElementById("docou
   if(r.error){if(o){o.style.color="var(--err)";o.textContent=r.error;}return;}
   if(o){o.style.color=r.ok?"var(--ok)":"var(--idle)";o.textContent=r.ok?"all green":"needs attention";}
   if(c)c.innerHTML=(r.checks||[]).map(x=>`<div class="s" style="padding:2px 0"><span style="color:${x.ok?"var(--ok)":"var(--err)"}">${x.ok?"✓":"✗"}</span> ${esc(x.check)}${x.detail?` <span style="color:var(--mut)">— ${esc(x.detail)}</span>`:""}</div>`).join("");}
+/* ---------- Diagnostics tab (Phase A) — the Agent Profiler: answer "why slow/expensive/stuck?" ---------- */
+let _diag=null;
+const HEALTHC={green:"var(--ok)",yellow:"#d4a72c",orange:"#e0883e",red:"var(--err)",unknown:"var(--mut)"};
+const SEVC={high:"var(--err)",med:"#e0883e",low:"var(--mut)"};
+const HEALTHDOT={green:"🟢",yellow:"🟡",orange:"🟠",red:"🔴",unknown:"⚪"};
+/* a trend like ▲+340% / ▼-42%; for context/cost/duration UP is bad (red), for cache%/success UP is good */
+function trendBadge(pct,goodWhenDown){if(pct==null)return '<span class="s" style="color:var(--mut)">no baseline yet</span>';
+  const up=pct>=0,bad=goodWhenDown?up:!up,col=Math.abs(pct)<5?"var(--mut)":(bad?"var(--err)":"var(--ok)");
+  return `<span style="color:${col};font-weight:600">${up?"▲":"▼"}${up?"+":""}${pct}%</span>`;}
+function kpi(label,value,trendHtml,sub){return `<div class="card" style="min-width:128px"><div class="k">${label}</div>
+  <div class="v">${value}</div><div class="s">${trendHtml||""}${sub?(trendHtml?" · ":"")+sub:""}</div></div>`;}
+async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading diagnostics…</div>';
+  let d;try{d=await(await fetch(qs(`/api/diagnostics?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">diagnostics unavailable (agent has no home dir on this host)</div>';return;}
+  if(d.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(d.error)+'</div>';return;}
+  _diag=d;
+  if(!d.ticks_total){p.innerHTML='<div style="padding:16px;color:var(--mut)">No telemetry yet — this agent hasn\'t logged any ticks. The Diagnostics view fills in once it runs.</div>';return;}
+  const h=d.health||{},m=d.metrics||{},ho=d.honesty||{};
+  const ctx=m.context||{},cost=m.cost||{},dur=m.duration||{},cache=m.cache_pct||{},turns=m.turns||{};
+  const winLbl=d.window==="week"?"vs last week":d.window==="split"?"vs earlier ticks":"building history";
+  /* health banner */
+  let html=`<div style="padding:14px 16px;overflow:auto">
+    <div class="card" style="margin-bottom:12px;border-left:4px solid ${HEALTHC[h.level]||"var(--mut)"}">
+      <div style="display:flex;align-items:center;gap:10px"><span style="font-size:20px">${HEALTHDOT[h.level]||"⚪"}</span>
+        <div><div class="v" style="font-size:16px;color:${HEALTHC[h.level]||"var(--tx)"}">${esc(h.label||"")}</div>
+        <div class="s">${esc(h.reason||"")}</div></div>
+        <span style="flex:1"></span><div class="s" style="text-align:right">${d.ticks_total} ticks logged<br>trends ${winLbl}</div></div></div>`;
+  /* anomalies engine — the centerpiece */
+  if((d.anomalies||[]).length){html+=`<div class="k" style="margin:4px 2px 6px">⚠ Anomalies — what to debug</div>`;
+    html+=d.anomalies.map(an=>`<div class="card" style="margin-bottom:8px;border-left:4px solid ${SEVC[an.severity]||"var(--mut)"}">
+      <div style="display:flex;align-items:baseline;gap:8px"><div class="v" style="font-size:13.5px">${esc(an.title)}</div>
+        <span style="flex:1"></span><span class="s" style="text-transform:uppercase;letter-spacing:.04em;color:${SEVC[an.severity]}">${esc(an.severity)}</span>
+        <span class="s" title="how sure we are this reading is real">conf: ${esc(an.confidence||"—")}</span></div>
+      <div class="s" style="margin-top:3px;color:var(--tx)">📊 ${esc(an.evidence||"")}</div>
+      ${an.cause?`<div class="s" style="margin-top:2px">↳ likely cause: ${esc(an.cause)}</div>`:""}
+      ${an.fix?`<div class="s" style="margin-top:2px;color:var(--accent)">→ try: ${esc(an.fix)}</div>`:""}</div>`).join("");}
+  else{html+=`<div class="card" style="margin-bottom:10px"><div class="s">✓ No anomalies in recent telemetry. Charts below show the trends.</div></div>`;}
+  /* KPI strip */
+  html+=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+    ${kpi("context / tick",num(ctx.latest),trendBadge(ctx.trend_pct,false),"input+cache re-sent")}
+    ${kpi("cost / tick (avg)",usd(cost.avg),trendBadge(cost.trend_pct,false),"")}
+    ${kpi("duration (avg)",dur.avg!=null?(dur.avg>=60?(dur.avg/60).toFixed(1)+"m":Math.round(dur.avg)+"s"):"—",trendBadge(dur.trend_pct,false),"")}
+    ${kpi("cache hit",cache.latest!=null?Math.round(cache.latest*100)+"%":"—",trendBadge(cache.trend_pct,false),"of context")}
+    ${kpi("turns (avg)",turns.avg!=null?Math.round(turns.avg):"—","","per tick")}
+    ${kpi("process success",ho.process_success_pct!=null?ho.process_success_pct+"%":"—","",`${ho.ticks_failed||0} failed`)}
+  </div>`;
+  /* charts — Context (the explosion diagnostic) is the hero */
+  html+=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-bottom:12px">
+    <div class="chartcard full"><h3>CONTEXT SIZE per tick — input + cache (the explosion diagnostic)</h3><canvas id="dgCtx"></canvas></div>
+    <div class="chartcard"><h3>Cost per tick ($)</h3><canvas id="dgCost"></canvas></div>
+    <div class="chartcard"><h3>Tick duration (s)</h3><canvas id="dgDur"></canvas></div></div>`;
+  /* honesty panel */
+  html+=`<div class="card" style="margin-bottom:12px"><div class="k">honesty panel</div>
+    <div class="s" style="margin-top:3px">Process success <b style="color:var(--tx)">${ho.process_success_pct!=null?ho.process_success_pct+"%":"—"}</b> (${(d.ticks_total-(ho.ticks_failed||0))}/${d.ticks_total} ticks, rc=0 &amp; subtype=success)
+    · Verification: <b style="color:var(--idle)">${esc(ho.verification||"Unknown")}</b>
+    <br><span style="color:var(--mut)">${esc(ho.verification_note||"")}</span></div></div>`;
+  /* tick inspector */
+  html+=`<div class="k" style="margin:4px 2px 6px">Tick inspector <span class="s" style="font-weight:400">— click a row for raw fields (newest first)</span></div>
+    <table class="cost"><thead><tr><th>when</th><th>reason</th><th>model</th><th>context</th><th>cache%</th><th>cost</th><th>dur</th><th>turns</th><th>rc</th></tr></thead><tbody id="dgInspect"></tbody></table>`;
+  /* Phase C placeholders — be honest about what we don't have yet */
+  html+=`<div class="card" style="margin-top:12px;border-style:dashed"><div class="k">pending telemetry (Phase C — needs in-container runtime instrumentation)</div>
+    <div class="s" style="margin-top:3px">${(d.pending_telemetry||[]).map(x=>esc(x)).join(" · ")}</div>
+    <div class="s" style="margin-top:4px;color:var(--mut)">These need the agent runtime to time individual tool/model calls and emit per-call events → an image rebuild. Not derivable from the per-tick totals, so we don't fake them.</div></div>`;
+  html+=`</div>`;
+  p.innerHTML=html;
+  drawDiagCharts(d);
+  renderInspect(d.inspect||[]);
+}
+function renderInspect(rows){const tb=document.getElementById("dgInspect");if(!tb)return;
+  tb.innerHTML=rows.map((r,i)=>`<tr onclick="toggleInspect(${i})"><td style="text-align:left">${esc((r.ts||"").replace("T"," ").replace("Z",""))}</td>
+    <td style="text-align:left">${esc(r.reason||"")}</td><td style="text-align:left">${esc((r.model||"").replace("claude-",""))}</td>
+    <td>${num(r.context)}</td><td>${r.cache_pct}%</td><td>${usd(r.cost_usd)}</td><td>${r.duration_s}s</td><td>${r.turns}</td>
+    <td style="color:${r.rc?"var(--err)":"var(--mut)"}">${r.rc}</td></tr>
+    <tr id="dgexp${i}" style="display:none"><td colspan="9" style="text-align:left"><pre class="mono" style="white-space:pre-wrap;margin:0;font-size:11px;color:var(--mut)">${esc(JSON.stringify(r,null,1))}</pre></td></tr>`).join("");}
+function toggleInspect(i){const e=document.getElementById("dgexp"+i);if(e)e.style.display=e.style.display==="none"?"table-row":"none";}
+function drawDiagCharts(d){if(typeof Chart==="undefined")return;
+  const s=d.series||{},L=s.labels||[];
+  Chart.defaults.color=cssv("--mut");Chart.defaults.borderColor=cssv("--bd");Chart.defaults.font.family="-apple-system,system-ui,sans-serif";
+  const fmtTok=v=>v>=1e6?(v/1e6).toFixed(1)+"M":v>=1e3?(v/1e3).toFixed(0)+"k":v;
+  /* stacked composition: input (fresh) + cache_read (replayed) + cache_write — reveals WHAT is big */
+  mkChart("dgCtx",{type:"bar",data:{labels:L,datasets:[
+      {label:"input",data:s.input||[],backgroundColor:"#79c0ff"},
+      {label:"cache_read",data:s.cache_read||[],backgroundColor:cssv("--accent")},
+      {label:"cache_write",data:s.cache_write||[],backgroundColor:"#b58cf0"}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{boxWidth:9,font:{size:9}}}},
+      scales:{x:{stacked:true,grid:{display:false},ticks:{maxTicksLimit:8,font:{size:8}}},y:{stacked:true,ticks:{callback:fmtTok}}}}});
+  mkChart("dgCost",{type:"bar",data:{labels:L,datasets:[{data:s.cost||[],backgroundColor:cssv("--accent")}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{grid:{display:false},ticks:{maxTicksLimit:6,font:{size:8}}},y:{ticks:{callback:v=>"$"+v}}}}});
+  mkChart("dgDur",{type:"line",data:{labels:L,datasets:[{data:s.duration||[],borderColor:cssv("--ok"),backgroundColor:"transparent",tension:.25,pointRadius:0}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{grid:{display:false},ticks:{maxTicksLimit:6,font:{size:8}}},y:{ticks:{callback:v=>v+"s"}}}}});
+}
 /* ---------- Config tab (P0/P2) — EDIT LOCALLY, then ONE Save applies + restarts once ---------- */
 const MODE_HELP={autonomous:"continuous — prep→do→continue (SUPERVISE=auto)",chat:"reply-only — wakes on messages (SUPERVISE=off)",scheduled:"heartbeat cadence (SUPERVISE=off + INTERVAL_SECONDS)"};
 let _cfgEnv={},_cfgEditable=[],_cfgMeta={brains:["claude","api","local","optimize"],modes:["autonomous","chat","scheduled"],presets:[],defs:{}},_pending={};
@@ -1036,6 +1130,21 @@ class H(BaseHTTPRequestHandler):
                     pass
             r = _fleet_cmd("logs", aid, "--tail", str(n), timeout=30)
             return self._send(200, "text/plain; charset=utf-8", (r.stdout or "") + (r.stderr or ""))
+        if p == "/api/diagnostics":   # Phase A: the Agent Profiler — context/cost/anomalies from usage.jsonl
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(200, "application/json", json.dumps(
+                    {"error": "no home dir on this host (telemetry lives in the agent's home/state)"}))
+            try:
+                import diagnostics
+                return self._send(200, "application/json", json.dumps(diagnostics.from_home(home)))
+            except Exception as e:
+                return self._send(200, "application/json", json.dumps({"error": str(e)}))
         if p == "/api/config":
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
