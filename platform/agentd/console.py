@@ -375,6 +375,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
 <div id="alertbar"></div>
 <div id="body">
 <section id="view-overview" class="view"><div class="ovwrap">
+  <div id="escbox"></div>
   <div class="sectit">Fleet status</div>
   <div class="fleetstrip" id="fleethealth"></div>
   <div class="sectit">Spend &amp; subscription</div>
@@ -617,7 +618,14 @@ async function load(){try{const j=await(await fetch(qs("/api/fleet"))).json();ag
 function renderAlerts(al){const b=document.getElementById("alertbar");if(!al||!al.length){b.innerHTML="";return;}
   b.innerHTML=al.map(a=>`<div class="alert ${a.level==="crit"?"crit":"warn"}">${a.level==="crit"?"⛔":"⚠"} ${esc(a.msg)}</div>`).join("");}
 /* ---------- Overview view ---------- */
-async function loadOverview(){try{ov=await(await fetch(qs("/api/overview"))).json();}catch(e){}renderOverview();}
+async function loadOverview(){try{ov=await(await fetch(qs("/api/overview"))).json();}catch(e){}renderOverview();loadEscalations();}
+async function loadEscalations(){const b=document.getElementById("escbox");if(!b)return;
+  let items=[];try{items=(await(await fetch(qs("/api/escalations"))).json()).items||[];}catch(e){return;}
+  if(!items.length){b.innerHTML="";return;}
+  b.innerHTML=`<div class="sectit" style="color:var(--idle)">⚠ Needs your decision · ${items.length}</div>`+
+    items.map(it=>`<div class="card" style="margin-bottom:8px;border-left:3px solid var(--idle)">
+      <div class="s"><b style="color:var(--tx)">${esc(it.agent)}</b> · ${esc(it.kind)} · <span class="mono">${esc((it.ts||"").replace("T"," ").replace("Z",""))}</span></div>
+      <div class="s" style="color:var(--tx);margin-top:3px">${esc(it.text)}</div></div>`).join("");}
 async function loadActivity(){const b=document.getElementById("auditbody");if(!b)return;b.innerHTML='<tr><td colspan=5 class="s">loading…</td></tr>';
   try{const j=await(await fetch(qs("/api/audit?n=150"))).json();const es=j.entries||[];
     b.innerHTML=es.length?es.map(e=>{const t=(e.ts||"").replace("T"," ").replace("Z","");
@@ -970,6 +978,42 @@ class H(BaseHTTPRequestHandler):
                     except Exception:
                         pass
             return self._send(200, "application/json", json.dumps({"entries": out[::-1]}))
+        if p == "/api/escalations":   # P3 HITL: the fleet's open "needs a human decision" asks
+            with _lock:
+                agents = dict(_cache.get("agents") or {})
+            items = []
+            for aid, a in agents.items():
+                home = a.get("home")
+                if not home:
+                    continue
+                st = pathlib.Path(home) / "state"
+                # escalations.log: blocks beginning "<ts> ESCALATE :: <text>" (+ indented continuations)
+                ef = st / "escalations.log"
+                if ef.exists():
+                    cur = None
+                    for ln in ef.read_text(errors="ignore").splitlines():
+                        m = re.match(r"^(\d{4}-\d\d-\d\dT[\d:]+Z)\s+(\w+)\s*::\s*(.*)", ln)
+                        if m:
+                            if cur and cur["kind"] == "ESCALATE":
+                                items.append({"agent": aid, "ts": cur["ts"], "kind": "escalation", "text": cur["text"][:400]})
+                            cur = {"ts": m.group(1), "kind": m.group(2), "text": m.group(3)}
+                        elif cur and ln.strip():
+                            cur["text"] += " " + ln.strip()
+                    if cur and cur["kind"] == "ESCALATE":
+                        items.append({"agent": aid, "ts": cur["ts"], "kind": "escalation", "text": cur["text"][:400]})
+                # approvals.json: a non-empty array = pending approval requests
+                aj = st / "approvals.json"
+                if aj.exists():
+                    try:
+                        arr = json.loads(aj.read_text(errors="ignore") or "[]")
+                        for it in (arr if isinstance(arr, list) else []):
+                            txt = it.get("text") or it.get("msg") or json.dumps(it) if isinstance(it, dict) else str(it)
+                            items.append({"agent": aid, "ts": (it.get("ts", "") if isinstance(it, dict) else ""),
+                                          "kind": "approval", "text": str(txt)[:400]})
+                    except Exception:
+                        pass
+            items.sort(key=lambda x: x["ts"], reverse=True)
+            return self._send(200, "application/json", json.dumps({"items": items[:100]}))
         if p == "/api/stream":
             return self._stream()
         return self._send(404, "application/json", '{"error":"not found"}')
