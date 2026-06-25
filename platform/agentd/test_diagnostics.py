@@ -97,6 +97,45 @@ check("parse ISO Z", abs(D.parse_ts("2026-06-25T20:14:44Z") - 1782418484) < 2)
 check("parse epoch", D.parse_ts(1782418484) == 1782418484.0)
 check("parse junk -> None", D.parse_ts("not-a-date") is None)
 
+# --- Phase C: runtime block aggregation -----------------------------------------------------
+def rt_tick(t, calls=4, fails=0, files=1, deleg=0, compacts=0, tools=None, skills=None):
+    r = tick(t)
+    r["runtime"] = {"tool_calls": calls, "tool_failures": fails, "files_modified": files,
+                    "delegations": deleg, "compactions": compacts,
+                    "tools": tools or {"Bash": {"n": calls, "fail": fails, "ms": 800 * calls, "max_ms": 1200}},
+                    "skills": skills or {}}
+    return r
+
+rtrecs = [rt_tick(T0 + i * DAY, calls=4, fails=0, files=1) for i in range(10)]
+d = D.compute(rtrecs, now=T0 + 9 * DAY)
+check("runtime available when blocks present", d["runtime"]["available"] is True)
+check("runtime avg_tool_calls", d["runtime"]["avg_tool_calls"] == 4.0)
+check("runtime per-tool latency computed", d["runtime"]["tools"][0]["avg_ms"] == 800)
+check("pending drops covered items when runtime present", "per-tool latency" not in d["pending_telemetry"])
+check("pending still lists genuinely-missing", "model latency" in d["pending_telemetry"])
+
+# backward compat: no runtime block anywhere
+d2 = D.compute([tick(T0 + i * DAY) for i in range(6)], now=T0 + 5 * DAY)
+check("runtime unavailable on old records", d2["runtime"]["available"] is False)
+check("pending lists per-tool latency when no runtime", "per-tool latency" in d2["pending_telemetry"])
+
+# tool-failure anomaly
+failrecs = [rt_tick(T0 + i * DAY, calls=5, fails=0) for i in range(6)] + \
+           [rt_tick(T0 + 6 * DAY, calls=5, fails=3), rt_tick(T0 + 7 * DAY, calls=4, fails=2)]
+d = D.compute(failrecs, now=T0 + 7 * DAY)
+check("tool_failures anomaly fires", "tool_failures" in keys(d))
+
+# compaction-churn anomaly
+comprecs = [rt_tick(T0 + i * DAY) for i in range(6)] + \
+           [rt_tick(T0 + 6 * DAY, compacts=1), rt_tick(T0 + 7 * DAY, compacts=2)]
+d = D.compute(comprecs, now=T0 + 7 * DAY)
+check("compaction_churn anomaly fires", "compaction_churn" in keys(d))
+
+# mixed old+new records don't crash, runtime still available
+mixed = [tick(T0 + i * DAY) for i in range(4)] + [rt_tick(T0 + (4 + i) * DAY) for i in range(4)]
+d = D.compute(mixed, now=T0 + 7 * DAY)
+check("mixed old+new records -> runtime available", d["runtime"]["available"] is True)
+
 print()
 if check.failed:
     print(f"{check.failed} FAILED")

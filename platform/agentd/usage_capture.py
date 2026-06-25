@@ -60,6 +60,17 @@ def main():
     result_written = False
     started = time.time()
 
+    # Phase C runtime instrumentation — derived from the SAME stream, no extra cost. Latency is the
+    # wall gap between a tool_use and its matching tool_result (≈ tool execution time). Back-compatible:
+    # this rides under a "runtime" key, so older readers and older records are unaffected.
+    rt = {"tool_calls": 0, "tool_failures": 0, "files_modified": 0, "delegations": 0,
+          "compactions": 0, "tools": {}, "skills": {}, "models": {}}
+    _open_tools = {}  # tool_use_id -> (name, t_start)
+    FILE_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit", "str_replace_editor"}
+
+    def _tool(name):
+        return rt["tools"].setdefault(name, {"n": 0, "fail": 0, "ms": 0, "max_ms": 0})
+
     for raw in sys.stdin:
         raw = raw.rstrip("\n")
         if not raw.strip():
@@ -80,12 +91,17 @@ def main():
                 if mdl:
                     seen_model = mdl
                 _emit_text(f"── init · model={mdl or '?'} · tools={len(ev.get('tools', []) or [])}")
+            elif "compact" in (sub or ""):
+                # Claude Code auto-compacted the context this tick (a sign the window filled up).
+                rt["compactions"] += 1
+                _emit_text(f"── context compacted ({sub})")
             continue
 
         if etype == "assistant":
             msg = ev.get("message", {}) or {}
             if msg.get("model"):
                 seen_model = msg["model"]
+            rt["models"][seen_model or "?"] = rt["models"].get(seen_model or "?", 0) + 1
             # Roll up the per-message usage Claude Code attaches (the result event
             # carries the authoritative totals; we keep these only as a fallback).
             u = msg.get("usage") or {}
@@ -101,7 +117,23 @@ def main():
                     if txt.strip():
                         _emit_text(txt)
                 elif bt == "tool_use":
-                    _emit_text(f"  ⏵ {block.get('name', '?')}({_compact(block.get('input', {}))})")
+                    name = block.get("name", "?")
+                    inp = block.get("input", {}) or {}
+                    _emit_text(f"  ⏵ {name}({_compact(inp)})")
+                    _tool(name)["n"] += 1
+                    rt["tool_calls"] += 1
+                    tid = block.get("id")
+                    if tid:
+                        _open_tools[tid] = (name, time.time())
+                    if name in FILE_TOOLS:
+                        rt["files_modified"] += 1
+                    elif name == "Task":
+                        rt["delegations"] += 1
+                    elif name == "Bash" and "delegate.py" in str(inp.get("command", "")):
+                        rt["delegations"] += 1
+                    elif name == "Skill":
+                        sk = inp.get("skill") or inp.get("command") or "skill"
+                        rt["skills"][sk] = rt["skills"].get(sk, 0) + 1
                 elif bt == "thinking":
                     pass  # don't spill reasoning into runner.log
             continue
@@ -116,7 +148,19 @@ def main():
                         content = " ".join(
                             b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
                         )
-                    _emit_text(f"  ⏴ {_compact(content)}")
+                    is_err = bool(block.get("is_error"))
+                    tid = block.get("tool_use_id")
+                    if tid in _open_tools:
+                        name, t0 = _open_tools.pop(tid)
+                        ms = int((time.time() - t0) * 1000)
+                        t = _tool(name)
+                        t["ms"] += ms
+                        t["max_ms"] = max(t["max_ms"], ms)
+                        if is_err:
+                            t["fail"] += 1
+                    if is_err:
+                        rt["tool_failures"] += 1
+                    _emit_text(f"  ⏴ {'⚠ ' if is_err else ''}{_compact(content)}")
             continue
 
         if etype == "result":
@@ -135,6 +179,7 @@ def main():
                 "turns": ev.get("num_turns"),
                 "rc": 1 if ev.get("is_error") else 0,
                 "subtype": ev.get("subtype"),
+                "runtime": _finalize_rt(rt),
             }
             _append_record(args.out, rec)
             result_written = True
@@ -164,8 +209,23 @@ def main():
             "turns": None,
             "rc": None,
             "subtype": "no_result",
+            "runtime": _finalize_rt(rt),
         }
         _append_record(args.out, rec)
+
+
+def _finalize_rt(rt):
+    """Trim the runtime accumulator to a compact record fragment. Empty sub-maps are dropped so a
+    tick with no tools stays small. Returns None when nothing was observed (keeps old-shape parity)."""
+    out = {k: rt[k] for k in ("tool_calls", "tool_failures", "files_modified", "delegations",
+                              "compactions") if rt.get(k)}
+    if rt.get("tools"):
+        out["tools"] = rt["tools"]
+    if rt.get("skills"):
+        out["skills"] = rt["skills"]
+    if rt.get("models"):
+        out["models"] = rt["models"]
+    return out or None
 
 
 def _append_record(path, rec):

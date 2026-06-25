@@ -229,6 +229,27 @@ def _anomalies(records, now, window):
                 f"~{_dur(recent_gap)} between ticks vs ~{_dur(base_gap)} before", "med",
                 fix="check for a tight retry/heartbeat loop or a flood of directives")
 
+    # 8) Tool failures (Phase C — only when runtime telemetry is present). A run of failing tools is
+    #    a concrete "stuck" signal the process-level rc can't see (a tick can exit 0 with failed tools).
+    rt_recent = [r.get("runtime") for r in records[-8:] if isinstance(r.get("runtime"), dict)]
+    if rt_recent:
+        # Failure rate over a TIGHT recent window (last 5 with-runtime ticks) so a fresh burst isn't
+        # diluted by older clean ticks.
+        rt_fail = [r.get("runtime") for r in records[-5:] if isinstance(r.get("runtime"), dict)]
+        fails = sum(int(rt.get("tool_failures") or 0) for rt in rt_fail)
+        calls = sum(int(rt.get("tool_calls") or 0) for rt in rt_fail)
+        if fails >= 3 and calls and fails / calls >= 0.2:
+            add("med", "tool_failures", "Tools are failing repeatedly",
+                f"{fails} tool failures across the last {len(rt_fail)} ticks ({fails * 100 // calls}% of calls)",
+                "high", fix="open Logs (Raw) for the failing tool calls — often a bad path, perm, or arg")
+        # 9) Compaction churn — repeated auto-compaction means the context keeps overflowing the window.
+        compacts = sum(int(rt.get("compactions") or 0) for rt in rt_recent)
+        if compacts >= 2:
+            add("med", "compaction_churn", "Context auto-compacted repeatedly",
+                f"{compacts} compaction events in the last {len(rt_recent)} ticks",
+                "high", cause="the context window keeps filling up",
+                fix="trim auto-loaded files / memory so the prompt fits without compaction")
+
     # 7) Recent failures (process-level: rc!=0 or non-success subtype).
     failed = [r for r in records[-10:] if _i(r, "rc") != 0 or (r.get("subtype") or "success") != "success"]
     if failed:
@@ -259,6 +280,49 @@ def _health(records, anomalies):
     if anomalies:
         return {"level": "yellow", "label": "Watch", "reason": anomalies[0]["title"]}
     return {"level": "green", "label": "Healthy", "reason": "no anomalies in recent telemetry"}
+
+
+def _runtime_summary(records, window_n=20):
+    """Aggregate the Phase-C `runtime` blocks (per-tool latency/failures, files-modified, delegations,
+    compactions, skills) across the recent window. Returns {available: False} when no tick carries a
+    runtime block (older records / older image) so the UI shows 'pending telemetry' honestly."""
+    rts = [(r, r.get("runtime")) for r in records[-window_n:] if isinstance(r.get("runtime"), dict)]
+    if not rts:
+        return {"available": False}
+    n = len(rts)
+    tools = {}
+    skills = {}
+    tot = {"tool_calls": 0, "tool_failures": 0, "files_modified": 0, "delegations": 0, "compactions": 0}
+    for _, rt in rts:
+        for k in tot:
+            tot[k] += int(rt.get(k) or 0)
+        for name, t in (rt.get("tools") or {}).items():
+            d = tools.setdefault(name, {"calls": 0, "fails": 0, "ms": 0, "max_ms": 0, "timed": 0})
+            d["calls"] += int(t.get("n") or 0)
+            d["fails"] += int(t.get("fail") or 0)
+            d["ms"] += int(t.get("ms") or 0)
+            d["max_ms"] = max(d["max_ms"], int(t.get("max_ms") or 0))
+            if t.get("ms"):
+                d["timed"] += int(t.get("n") or 0)
+        for sk, c in (rt.get("skills") or {}).items():
+            skills[sk] = skills.get(sk, 0) + int(c or 0)
+    tool_rows = []
+    for name, d in tools.items():
+        tool_rows.append({"tool": name, "calls": d["calls"], "fails": d["fails"],
+                          "avg_ms": int(d["ms"] / d["timed"]) if d["timed"] else None,
+                          "max_ms": d["max_ms"] or None})
+    tool_rows.sort(key=lambda r: r["calls"], reverse=True)
+    return {
+        "available": True,
+        "ticks_with_data": n,
+        "avg_tool_calls": round(tot["tool_calls"] / n, 1),
+        "avg_tool_failures": round(tot["tool_failures"] / n, 2),
+        "avg_files_modified": round(tot["files_modified"] / n, 1),
+        "total_delegations": tot["delegations"],
+        "total_compactions": tot["compactions"],
+        "tools": tool_rows,
+        "skills": skills,
+    }
 
 
 def _human(n):
@@ -334,6 +398,14 @@ def compute(records, now=None, series_n=60, inspect_n=25):
     }
 
     inspect = [_inspect_row(r) for r in records[-inspect_n:]][::-1]  # newest first
+    runtime = _runtime_summary(records)
+
+    # Whatever the runtime block now provides is no longer "pending". What remains genuinely needs
+    # signals the stream doesn't carry (discrete model/API call timing, queue wait, a work-done verdict).
+    pending = ["model latency", "queue wait", "retry count", "useful-vs-waiting split"]
+    if not runtime.get("available"):
+        pending = ["per-tool latency", "tool failures", "delegation count", "files modified",
+                   "memory-compaction events", "skill usage"] + pending
 
     return {
         "cold": window == "cold",
@@ -345,10 +417,8 @@ def compute(records, now=None, series_n=60, inspect_n=25):
         "series": series,
         "honesty": honesty,
         "inspect": inspect,
-        # Phase C (needs in-container runtime instrumentation → image rebuild):
-        "pending_telemetry": ["model latency", "per-tool latency", "queue wait", "retries",
-                              "tool failures", "delegation count", "files modified",
-                              "memory-compaction events", "useful-vs-waiting split", "skill usage"],
+        "runtime": runtime,
+        "pending_telemetry": pending,
     }
 
 

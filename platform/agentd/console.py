@@ -671,6 +671,8 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
     <div class="chartcard full"><h3>CONTEXT SIZE per tick — input + cache (the explosion diagnostic)</h3><canvas id="dgCtx"></canvas></div>
     <div class="chartcard"><h3>Cost per tick ($)</h3><canvas id="dgCost"></canvas></div>
     <div class="chartcard"><h3>Tick duration (s)</h3><canvas id="dgDur"></canvas></div></div>`;
+  /* behaviour & tools (Phase C — only when the runtime block is present) */
+  html+=runtimeSection(d.runtime||{});
   /* honesty panel */
   html+=`<div class="card" style="margin-bottom:12px"><div class="k">honesty panel</div>
     <div class="s" style="margin-top:3px">Process success <b style="color:var(--tx)">${ho.process_success_pct!=null?ho.process_success_pct+"%":"—"}</b> (${(d.ticks_total-(ho.ticks_failed||0))}/${d.ticks_total} ticks, rc=0 &amp; subtype=success)
@@ -679,15 +681,31 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
   /* tick inspector */
   html+=`<div class="k" style="margin:4px 2px 6px">Tick inspector <span class="s" style="font-weight:400">— click a row for raw fields (newest first)</span></div>
     <table class="cost"><thead><tr><th>when</th><th>reason</th><th>model</th><th>context</th><th>cache%</th><th>cost</th><th>dur</th><th>turns</th><th>rc</th></tr></thead><tbody id="dgInspect"></tbody></table>`;
-  /* Phase C placeholders — be honest about what we don't have yet */
-  html+=`<div class="card" style="margin-top:12px;border-style:dashed"><div class="k">pending telemetry (Phase C — needs in-container runtime instrumentation)</div>
-    <div class="s" style="margin-top:3px">${(d.pending_telemetry||[]).map(x=>esc(x)).join(" · ")}</div>
-    <div class="s" style="margin-top:4px;color:var(--mut)">These need the agent runtime to time individual tool/model calls and emit per-call events → an image rebuild. Not derivable from the per-tick totals, so we don't fake them.</div></div>`;
+  /* pending telemetry — be honest about what's still not measured (shrinks once runtime data lands) */
+  if((d.pending_telemetry||[]).length){
+    html+=`<div class="card" style="margin-top:12px;border-style:dashed"><div class="k">pending telemetry${(d.runtime||{}).available?"":" (needs in-container runtime instrumentation → image rebuild)"}</div>
+      <div class="s" style="margin-top:3px">${(d.pending_telemetry||[]).map(x=>esc(x)).join(" · ")}</div>
+      <div class="s" style="margin-top:4px;color:var(--mut)">${(d.runtime||{}).available?"These genuinely aren't in the event stream (discrete call timing, queue wait, a work-done verdict) — not faked.":"These need the agent runtime to emit per-call events. Not derivable from per-tick totals, so we don't fake them."}</div></div>`;
+  }
   html+=`</div>`;
   p.innerHTML=html;
   drawDiagCharts(d);
   renderInspect(d.inspect||[]);
   loadResources();
+}
+function runtimeSection(rt){
+  if(!rt.available){return `<div class="card" style="margin-bottom:12px"><div class="k">behaviour &amp; tools</div>
+    <div class="s" style="margin-top:3px;color:var(--mut)">No runtime telemetry on these ticks yet. Per-tool latency, failures, files-modified, delegations, compactions &amp; skill-usage appear once the agent runs on an image with Phase-C instrumentation.</div></div>`;}
+  const b=[["tool calls / tick",rt.avg_tool_calls],["tool failures / tick",rt.avg_tool_failures],
+    ["files modified / tick",rt.avg_files_modified],["delegations",rt.total_delegations],["compactions",rt.total_compactions]];
+  const skills=Object.entries(rt.skills||{}).sort((a,b)=>b[1]-a[1]);
+  const trows=(rt.tools||[]).map(t=>`<tr><td style="text-align:left">${esc(t.tool)}</td><td>${t.calls}</td>
+    <td style="color:${t.fails?"var(--err)":"var(--mut)"}">${t.fails||0}</td>
+    <td>${t.avg_ms!=null?t.avg_ms+"ms":"—"}</td><td>${t.max_ms!=null?t.max_ms+"ms":"—"}</td></tr>`).join("");
+  return `<div class="card" style="margin-bottom:12px"><div class="k">behaviour &amp; tools <span class="s" style="font-weight:400">— from runtime instrumentation, last ${rt.ticks_with_data} ticks</span></div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin:6px 0 10px">${b.map(c=>`<div><div class="s" style="color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.03em">${c[0]}</div><div style="font-variant-numeric:tabular-nums;font-size:14px;color:var(--tx)">${c[1]!=null?c[1]:"—"}</div></div>`).join("")}</div>
+    ${trows?`<table class="cost"><thead><tr><th style="text-align:left">tool</th><th>calls</th><th>fails</th><th>avg latency</th><th>max</th></tr></thead><tbody>${trows}</tbody></table>`:""}
+    ${skills.length?`<div class="s" style="margin-top:8px">skills used: ${skills.map(s=>esc(s[0])+" ×"+s[1]).join(" · ")}</div>`:""}</div>`;
 }
 function fmtUptime(s){if(s==null)return"—";s=Math.floor(s);const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
   return d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${m}m`;}
