@@ -453,9 +453,15 @@ def cmd_init(args):
         elif (home / ".claude" / "hooks" / "guard.py").exists():
             # Template shipped NO settings.json (venture/autonomous/orchestrator) → write the default guard
             # hook so EVERY pod is guarded, not just templates that happen to include a settings.json.
-            _write(setjson, json.dumps({"hooks": {"PreToolUse": [
-                {"matcher": "Bash|Read|Edit|Write|NotebookEdit",
-                 "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/guard.py"}]}]}}, indent=2) + "\n")
+            # Also wire delegation_guard (self-gates to BRAIN=claude; no-op for local/api workers) so a
+            # capable manager is forced to delegate bulk code-writing to a cheap/local worker fleet-wide.
+            _dg = [{"type": "command", "command": "python3 /agent/.claude/hooks/delegation_guard.py"}] \
+                if (home / ".claude" / "hooks" / "delegation_guard.py").exists() else []
+            _pre = [{"matcher": "Bash|Read|Edit|Write|NotebookEdit",
+                     "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/guard.py"}]}]
+            if _dg:
+                _pre.append({"matcher": "Write|Edit|MultiEdit", "hooks": _dg})
+            _write(setjson, json.dumps({"hooks": {"PreToolUse": _pre}}, indent=2) + "\n")
     # 1b) GENERATE .mcp.json from the memory choices — only enabled servers, never a dead entry.
     mcp_servers = {}
     if qmd_url:
