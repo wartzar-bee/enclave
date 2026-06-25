@@ -387,6 +387,84 @@ def cmd_list(as_json=False):
     print(f"\n  {len(snap)} agent(s)   ● working  ○ idle  ✗ down")
 
 
+def _restart_after(a, diff):
+    """Print the applied config diff, then restart the stack so the change takes effect."""
+    if not diff:
+        print("no change (already set)"); return
+    for k, old, new in diff:
+        print(f"  {k}: {old or '∅'} → {new}")
+    print(f"restarting {a['id']} to apply …")
+    _compose(a, "restart")
+
+
+def cmd_config(aid, as_json=False):
+    """Show an agent's editable runtime config (agent.env)."""
+    import fleet_config
+    a = _resolve(aid)
+    if not a.get("home"):
+        sys.exit(f"{aid} has no home dir on this host — config not editable")
+    cfg = fleet_config.read_config(a["home"])
+    if as_json:
+        print(json.dumps(cfg["env"], indent=2)); return
+    print(f"{aid}  ({cfg['path']})")
+    for k in sorted(cfg["env"]):
+        print(f"  {k:<22} {cfg['env'][k]}")
+
+
+def cmd_set_config(aid, kvs):
+    """Patch one or more KEY=VALUE pairs in agent.env, then restart."""
+    import fleet_config
+    a = _resolve(aid)
+    if not a.get("home"):
+        sys.exit(f"{aid} has no home dir on this host")
+    updates = {}
+    for kv in kvs:
+        if "=" not in kv:
+            sys.exit(f"expected KEY=VALUE, got '{kv}'")
+        k, v = kv.split("=", 1); updates[k.strip()] = v.strip()
+    try:
+        diff = fleet_config.patch_agent_env(a["home"], updates, aid)
+    except ValueError as e:
+        sys.exit(str(e))
+    _restart_after(a, diff)
+
+
+def cmd_set_brain(aid, brain, model=None):
+    import fleet_config
+    a = _resolve(aid)
+    if not a.get("home"):
+        sys.exit(f"{aid} has no home dir on this host")
+    try:
+        diff = fleet_config.set_brain(a["home"], brain, model, aid)
+    except ValueError as e:
+        sys.exit(str(e))
+    _restart_after(a, diff)
+
+
+def cmd_set_mode(aid, mode, interval=None):
+    import fleet_config
+    a = _resolve(aid)
+    if not a.get("home"):
+        sys.exit(f"{aid} has no home dir on this host")
+    try:
+        diff = fleet_config.set_mode(a["home"], mode, interval, aid)
+    except ValueError as e:
+        sys.exit(str(e))
+    _restart_after(a, diff)
+
+
+def cmd_preset(aid, name):
+    import fleet_config
+    a = _resolve(aid)
+    if not a.get("home"):
+        sys.exit(f"{aid} has no home dir on this host")
+    try:
+        diff = fleet_config.apply_preset(a["home"], name, aid)
+    except ValueError as e:
+        sys.exit(str(e))
+    _restart_after(a, diff)
+
+
 def cmd_open(aid):
     a = snapshot().get(aid)
     if not a:
@@ -419,8 +497,20 @@ def main():
         cmd_logs(pos[0], _flag(args, "--tail", "80"))
     elif cmd == "send" and len(pos) >= 2:
         cmd_send(pos[0], " ".join(pos[1:]))
+    elif cmd == "config" and pos:
+        cmd_config(pos[0], as_json="--json" in args)
+    elif cmd == "set-config" and len(pos) >= 2:
+        cmd_set_config(pos[0], pos[1:])
+    elif cmd == "set-brain" and len(pos) >= 2:
+        cmd_set_brain(pos[0], pos[1], pos[2] if len(pos) > 2 else None)
+    elif cmd == "set-mode" and len(pos) >= 2:
+        cmd_set_mode(pos[0], pos[1], pos[2] if len(pos) > 2 else None)
+    elif cmd == "preset" and len(pos) >= 2:
+        cmd_preset(pos[0], pos[1])
     else:
-        sys.exit("usage: fleet.py list [--json] | open|up|down|restart|kick|logs <id> | send <id> <text>")
+        sys.exit("usage: fleet.py list [--json] | open|up|down|restart|kick|logs <id> | send <id> <text>\n"
+                 "       config <id> [--json] | set-config <id> KEY=VAL… | set-brain <id> <brain> [model]\n"
+                 "       set-mode <id> <autonomous|chat|scheduled> [interval] | preset <id> <name>")
 
 
 def _flag(args, name, default=None):

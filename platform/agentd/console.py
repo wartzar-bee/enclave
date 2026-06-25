@@ -751,6 +751,19 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, "text/plain", "bad id")
             r = _fleet_cmd("logs", aid, "--tail", "150", timeout=30)
             return self._send(200, "text/plain; charset=utf-8", (r.stdout or "") + (r.stderr or ""))
+        if p == "/api/config":
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            r = _fleet_cmd("config", aid, "--json", timeout=15)
+            if r.returncode != 0:
+                return self._send(400, "application/json", json.dumps({"error": (r.stderr or r.stdout)[-300:]}))
+            return self._send(200, "application/json", r.stdout or "{}")
+        if p == "/api/presets":   # the named one-click profiles + allowed brains/modes for the UI
+            import fleet_config
+            return self._send(200, "application/json", json.dumps({
+                "presets": sorted(fleet_config.PRESETS), "brains": sorted(fleet_config.BRAINS),
+                "modes": sorted(fleet_config.MODES)}))
         if p == "/api/stream":
             return self._stream()
         return self._send(404, "application/json", '{"error":"not found"}')
@@ -799,6 +812,30 @@ class H(BaseHTTPRequestHandler):
             try:
                 r = _fleet_cmd(*args, timeout=190)
                 return self._send(200, "application/json", json.dumps({"ok": r.returncode == 0, "out": (r.stdout or r.stderr)[-400:]}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/config":   # apply a config change, then restart (P0 writable-config plane)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            aid = d.get("id", "")
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            # one of: preset | brain(+model) | mode(+interval) | updates{K:V}
+            if d.get("preset"):
+                args = ["preset", aid, str(d["preset"])]
+            elif d.get("brain"):
+                args = ["set-brain", aid, str(d["brain"])] + ([str(d["model"])] if d.get("model") else [])
+            elif d.get("mode"):
+                args = ["set-mode", aid, str(d["mode"])] + ([str(d["interval"])] if d.get("interval") else [])
+            elif isinstance(d.get("updates"), dict) and d["updates"]:
+                args = ["set-config", aid] + [f"{k}={v}" for k, v in d["updates"].items()]
+            else:
+                return self._send(400, "application/json", '{"error":"need preset|brain|mode|updates"}')
+            try:
+                r = _fleet_cmd(*args, timeout=190)
+                return self._send(200, "application/json", json.dumps({"ok": r.returncode == 0, "out": (r.stdout or r.stderr)[-500:]}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))
         return self._send(404, "application/json", '{"error":"not found"}')

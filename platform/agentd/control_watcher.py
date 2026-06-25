@@ -19,9 +19,14 @@ Usage:
 
 Spec (YAML or JSON; one action per file dropped in incoming/):
     agent: data-worker       # target agent id (or omit and name the file <id>.yaml)
-    action: restart          # up | down | restart | kick | logs | send
-    text: "resume the swap"  # required only for action: send
+    action: restart          # lifecycle: up|down|restart|kick|logs|send · config: set-config|set-brain|set-mode|preset
+    text: "resume the swap"  # required for action: send
     requested_by: master     # optional provenance, recorded in the audit log
+  Config actions (P0 dashboard control-plane; pass through to `enclave fleet`, which re-validates + restarts):
+    action: set-brain · brain: local · model: qwen/qwen3-next-80b-a3b-instruct   # switch BRAIN
+    action: set-mode  · mode: autonomous|chat|scheduled · interval: 3600          # run mode
+    action: set-config · config: { ROUTER: on, INTERVAL_SECONDS: 600 }           # arbitrary allowlisted keys
+    action: preset    · preset: claude-managed                                    # named profile
 
 Safe by construction: agent id must match ^[a-z0-9][a-z0-9_-]*$, action must be in the allowlist, and
 the underlying `enclave fleet` verb re-validates the agent exists + its compose file is under an
@@ -33,7 +38,10 @@ import os, sys, re, json, time, pathlib, subprocess
 REPO = pathlib.Path(__file__).resolve().parents[2]     # platform/agentd/ -> repo root
 ENCLAVE = REPO / "bin" / "enclave"
 SAFE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-ACTIONS = {"up", "down", "restart", "kick", "logs", "send"}
+# lifecycle + (P0 dashboard) configuration actions. Config verbs pass through to the
+# `enclave fleet` CLI, which re-validates brain/mode/key-allowlist before writing + restarting.
+ACTIONS = {"up", "down", "restart", "kick", "logs", "send",
+           "set-config", "set-brain", "set-mode", "preset"}
 AUDIT = pathlib.Path.home() / ".config" / "enclave" / "fleet-audit.log"
 
 
@@ -62,11 +70,48 @@ def _load_spec(spec_path):
         data = {}
     agent = str(data.get("agent") or spec_path.stem).strip()
     action = str(data.get("action") or "").strip().lower()
-    return agent, action, data.get("text", ""), str(data.get("requested_by") or "").strip()
+    return agent, action, data
+
+
+def _build_verb(action, agent, data):
+    """Map a control spec to `enclave fleet` CLI args. Returns (argv, error). The CLI re-validates."""
+    if action == "send":
+        text = str(data.get("text", "")).strip()
+        if not text:
+            return None, "action 'send' requires a non-empty 'text'"
+        return [action, agent, text], None
+    if action == "set-config":
+        cfg = data.get("config")
+        if not isinstance(cfg, dict) or not cfg:
+            return None, "action 'set-config' requires a non-empty 'config' mapping"
+        return ["set-config", agent, *[f"{k}={v}" for k, v in cfg.items()]], None
+    if action == "set-brain":
+        brain = str(data.get("brain", "")).strip()
+        if not brain:
+            return None, "action 'set-brain' requires 'brain'"
+        argv = ["set-brain", agent, brain]
+        if data.get("model"):
+            argv.append(str(data["model"]))
+        return argv, None
+    if action == "set-mode":
+        mode = str(data.get("mode", "")).strip()
+        if not mode:
+            return None, "action 'set-mode' requires 'mode'"
+        argv = ["set-mode", agent, mode]
+        if data.get("interval"):
+            argv.append(str(data["interval"]))
+        return argv, None
+    if action == "preset":
+        name = str(data.get("preset", "")).strip()
+        if not name:
+            return None, "action 'preset' requires 'preset'"
+        return ["preset", agent, name], None
+    return [action, agent], None   # up/down/restart/kick/logs
 
 
 def _process(spec_path, queue):
-    agent, action, text, who = _load_spec(spec_path)
+    agent, action, data = _load_spec(spec_path)
+    who = str(data.get("requested_by") or "").strip()
     proc, fail = queue / "processed", queue / "failed"
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
 
@@ -81,11 +126,11 @@ def _process(spec_path, queue):
         return _fail(f"invalid agent id {agent!r} (must match {SAFE.pattern})")
     if action not in ACTIONS:
         return _fail(f"invalid action {action!r} (must be one of {sorted(ACTIONS)})")
-    if action == "send" and not str(text).strip():
-        return _fail("action 'send' requires a non-empty 'text'")
+    verb, err = _build_verb(action, agent, data)
+    if err:
+        return _fail(err)
 
     print(f"  → {agent}: {action}" + (f" ({who})" if who else ""))
-    verb = [action, agent] + ([str(text)] if action == "send" else [])
     r = subprocess.run([sys.executable, str(ENCLAVE), "fleet", *verb],
                        capture_output=True, text=True)
     if r.returncode != 0:
