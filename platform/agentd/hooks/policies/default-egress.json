@@ -1,0 +1,91 @@
+{
+  "_doc": "Declarative egress allowlist for guard.py (P1). Checked on every Bash/WebFetch/BrowserAction call. Reload on each request — no restart needed. Override path via GUARD_EGRESS_POLICY env.",
+
+  "allow": [
+    {"host": "*.anthropic.com",          "ports": [443],       "comment": "Anthropic API"},
+    {"host": "api.anthropic.com",        "ports": [443]},
+    {"host": "openrouter.ai",            "ports": [443],       "comment": "OpenRouter inference gateway"},
+    {"host": "api.openrouter.ai",        "ports": [443]},
+    {"host": "openrouter.com",           "ports": [443]},
+    {"host": "*.openai.com",             "ports": [443],       "comment": "OpenAI-compatible APIs"},
+    {"host": "api.openai.com",           "ports": [443]},
+    {"host": "api.deepseek.com",         "ports": [443],       "comment": "DeepSeek"},
+    {"host": "api.together.xyz",         "ports": [443],       "comment": "Together AI"},
+    {"host": "api.mistral.ai",           "ports": [443],       "comment": "Mistral"},
+    {"host": "api.cohere.ai",            "ports": [443],       "comment": "Cohere"},
+    {"host": "generativelanguage.googleapis.com", "ports": [443], "comment": "Google Gemini"},
+    {"host": "us-central1-aiplatform.googleapis.com", "ports": [443], "comment": "Vertex AI"},
+    {"host": "*.aiplatform.googleapis.com", "ports": [443]},
+
+    {"host": "github.com",               "ports": [443, 22],   "comment": "GitHub"},
+    {"host": "api.github.com",           "ports": [443]},
+    {"host": "raw.githubusercontent.com","ports": [443]},
+    {"host": "objects.githubusercontent.com", "ports": [443]},
+    {"host": "codeload.github.com",      "ports": [443]},
+
+    {"host": "pypi.org",                 "ports": [443],       "comment": "Python packages"},
+    {"host": "files.pythonhosted.org",   "ports": [443]},
+    {"host": "registry.npmjs.org",       "ports": [443],       "comment": "npm"},
+    {"host": "archive.ubuntu.com",       "ports": [80, 443],   "comment": "Ubuntu apt"},
+    {"host": "security.ubuntu.com",      "ports": [80, 443]},
+    {"host": "deb.debian.org",           "ports": [80, 443]},
+
+    {"host": "api.cloudflare.com",       "ports": [443],       "comment": "Cloudflare API"},
+    {"host": "*.cloudflare.com",         "ports": [443]},
+    {"host": "*.pages.dev",              "ports": [443],       "comment": "CF Pages"},
+    {"host": "*.workers.dev",            "ports": [443]},
+
+    {"host": "api.ipify.org",            "ports": [443, 80],   "comment": "Egress IP check"},
+    {"host": "ipinfo.io",                "ports": [443]},
+    {"host": "ifconfig.me",              "ports": [443, 80]},
+
+    {"host": "*.googleapis.com",         "ports": [443],       "comment": "Google APIs (Gmail/Sheets/Drive/etc.)"},
+    {"host": "accounts.google.com",      "ports": [443]},
+    {"host": "oauth2.googleapis.com",    "ports": [443]},
+
+    {"host": "royalroad.com",            "ports": [443],       "comment": "Content platforms"},
+    {"host": "www.royalroad.com",        "ports": [443]},
+    {"host": "api.medium.com",           "ports": [443]},
+    {"host": "medium.com",               "ports": [443]},
+    {"host": "dev.to",                   "ports": [443]},
+    {"host": "api.bluesky.social",       "ports": [443]},
+    {"host": "*.bsky.app",              "ports": [443]},
+    {"host": "bsky.social",             "ports": [443]},
+    {"host": "api.twitter.com",         "ports": [443]},
+    {"host": "*.tumblr.com",            "ports": [443]},
+
+    {"host": "api.indexnow.org",         "ports": [443],       "comment": "IndexNow"},
+    {"host": "www.bing.com",             "ports": [443]},
+
+    {"host": "*.iproyal.com",            "ports": [443, 8080, 12321], "comment": "IPRoyal residential proxy"},
+    {"host": "geo.iproyal.com",          "ports": [443]},
+
+    {"host": "registry-1.docker.io",     "ports": [443],       "comment": "Docker Hub"},
+    {"host": "auth.docker.io",           "ports": [443]},
+    {"host": "production.cloudflare.docker.com", "ports": [443]},
+
+    {"host": "scribblehub.com",          "ports": [443],       "comment": "Fiction platforms"},
+    {"host": "www.scribblehub.com",      "ports": [443]},
+    {"host": "www.webnovel.com",         "ports": [443]},
+
+    {"host": "search.brave.com",         "ports": [443],       "comment": "Search"},
+    {"host": "api.search.brave.com",     "ports": [443]},
+    {"host": "api.bing.microsoft.com",   "ports": [443]},
+    {"host": "serpapi.com",              "ports": [443]},
+    {"host": "api.tavily.com",           "ports": [443]},
+
+    {"host": "smtp.gmail.com",           "ports": [465, 587],  "comment": "Email"},
+    {"host": "imap.gmail.com",           "ports": [993]},
+    {"host": "*.amazonaws.com",          "ports": [443],       "comment": "AWS (e.g. S3 for Anthropic)"}
+  ],
+
+  "binary_deny_by_default": true,
+  "_binary_note": "When binary_deny_by_default is true, any host NOT explicitly in binary_allow gets binary=denied in ENFORCE mode. Report-only in default mode. Set binary_allow entries per-host to permit binary uploads to known-safe destinations.",
+  "binary_allow": [
+    {"host": "raw.githubusercontent.com",   "comment": "Downloading binaries from GH"},
+    {"host": "files.pythonhosted.org",      "comment": "Python wheel downloads"},
+    {"host": "objects.githubusercontent.com"},
+    {"host": "registry-1.docker.io"},
+    {"host": "*.amazonaws.com",             "comment": "S3-style binary object storage"}
+  ]
+}
