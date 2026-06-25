@@ -253,6 +253,9 @@ body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;-
 #newmodal .nl{display:block;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:11px 0 3px}
 #newmodal input,#newmodal select,#newmodal textarea{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit}
 .cfgi{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 7px;font-size:12px}
+.info{display:inline-block;width:15px;height:15px;line-height:14px;text-align:center;border-radius:50%;border:1px solid var(--mut);color:var(--mut);font-size:10px;font-style:normal;cursor:pointer;margin-left:6px;font-weight:700;vertical-align:middle;user-select:none}
+.info:hover{color:var(--tx);border-color:var(--tx)}
+.infopop{position:fixed;z-index:100;max-width:300px;background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:9px 11px;font-size:12px;line-height:1.5;box-shadow:0 8px 26px rgba(0,0,0,.45)}
 .navtab{padding:6px 13px;border-radius:9px;cursor:pointer;color:var(--mut);font-weight:600;font-size:13px}
 .navtab:hover{background:var(--hover);color:var(--tx)}.navtab.sel{background:var(--sel);color:var(--tx)}
 #nav select,#nav .btn{background:var(--hover);border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:6px 10px;cursor:pointer;font:inherit;font-size:12.5px}
@@ -430,6 +433,33 @@ const qs=p=>TOK?(p+(p.includes("?")?"&":"?")+"token="+encodeURIComponent(TOK)):p
 const PAL=["#d97757","#79c0ff","#3fbf6f","#c9a23f","#b58cf0","#e06c9f","#56b6c2","#d0a35c","#8fbf6f","#f08a8a"];
 let agents={},sel=null,curtab="chat",curview="overview",ov={},sortKey="claude",sortDir=-1;
 function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+/* ---------- click (i) -> explanation popover ---------- */
+function showInfo(ev,text){ev.stopPropagation();const old=document.getElementById("infopop");if(old)old.remove();
+  const p=document.createElement("div");p.id="infopop";p.className="infopop";p.textContent=text;document.body.appendChild(p);
+  const r=ev.target.getBoundingClientRect();
+  p.style.left=Math.max(8,Math.min(r.left,window.innerWidth-p.offsetWidth-12))+"px";
+  p.style.top=(r.bottom+window.innerHeight-r.bottom>p.offsetHeight+10?r.bottom+6:r.top-p.offsetHeight-6)+"px";
+  setTimeout(()=>document.addEventListener("click",()=>{const e=document.getElementById("infopop");if(e)e.remove();},{once:true}),0);}
+function ic(text){return `<span class="info" onclick="showInfo(event,'${esc(text).replace(/'/g,"\\'")}')">i</span>`;}
+const KEY_HELP={
+  BRAIN:"Model tier that runs the agent: claude | api (OpenAI-compatible, e.g. NVIDIA free) | local (MLX/Ollama on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).",
+  MODEL:"The top model id for this brain — e.g. claude-opus-4-8, or an NVIDIA model id for api.",
+  MODEL_ROUTINE:"Cheaper model used for routine/heartbeat & mechanical ticks when ROUTER=on (e.g. claude-sonnet-4-6).",
+  ROUTER:"on = route judgment ticks to MODEL (top) and mechanical ticks to MODEL_ROUTINE (cheap). off = always MODEL.",
+  INTERVAL_SECONDS:"Heartbeat: max idle seconds between ticks when there's no message. 10800 = 3h.",
+  SUPERVISE:"auto = continuous work loop (prep→do→continue). off = only ticks on a message or the heartbeat.",
+  CONTINUOUS_COOLDOWN:"Minimum seconds between back-to-back ticks in auto mode — guards against runaway token burn.",
+  TICK_TIMEOUT:"Hard limit (seconds) for a single tick before it's killed.",
+  DELEGATION_ENFORCE:"on = a BRAIN=claude manager must hand bulk code to a worker (delegate.py) instead of writing it itself.",
+  DELEGATION_MAX_CHARS:"Size threshold (chars) above which the delegation guard blocks manager-written code.",
+  PERMISSION:"Claude Code permission mode. 'dangerous' skips per-tool prompts — required for unattended autonomy.",
+  WORKDIR:"Subfolder under the agent's home it treats as its working directory.",
+  LOCAL_BRAIN_MODEL:"For BRAIN=local: the model name served by the local MLX/Ollama endpoint.",
+  LOCAL_BRAIN_BASE:"For BRAIN=local: the base URL of the local OpenAI-compatible server.",
+  LOCAL_REQ_TIMEOUT:"For BRAIN=local: request timeout in seconds.",
+  GUARD_ALLOW_GIT:"1 = allow the agent to git push via its scoped deploy key (off by default).",
+  GUARD_EGRESS_ENFORCE:"1 = enforce the egress allowlist (block outbound to non-allowlisted hosts)."
+};
 function theme(){return document.body.classList.contains("light")?"light":"dark";}
 function cssv(n){return getComputedStyle(document.body).getPropertyValue(n).trim();}
 function usd(n){if(n==null)return"—";return"$"+(n<10?n.toFixed(2):n<1000?n.toFixed(1):Math.round(n).toLocaleString());}
@@ -561,7 +591,7 @@ async function renderConfig(a){const p=document.getElementById("pane");p.innerHT
   drawConfig();drawGoal();
 }
 function drawGoal(){const g=document.getElementById("cfggoal");if(!g)return;
-  g.innerHTML=`<div class="card" style="margin-top:12px"><div class="k">phase goal — autonomous steering</div>
+  g.innerHTML=`<div class="card" style="margin-top:12px"><div class="k">phase goal — autonomous steering${ic("The work goal the off-Opus supervisor reads each cycle to fill the agent's task queue. Only BRAIN=local/optimize agents use it. Saving writes the goal; it does NOT restart the agent.")}</div>
     <div class="s" style="margin:3px 0 7px">The off-Opus supervisor (BRAIN=local/optimize agents) reads this each cycle to set the work queue. Saving does NOT restart the agent.</div>
     <textarea id="goalIn" rows="3" style="width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px;font-family:inherit;font-size:13px">${esc(window._cfgGoal||"")}</textarea>
     <div style="margin-top:8px"><button class="btn" onclick="saveGoal()">Save goal</button><span class="s" id="goalmsg" style="margin-left:10px"></span></div></div>`;}
@@ -575,19 +605,19 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
   const modelOpts=[...new Set([...(curM?[curM]:[]),...known])].map(m=>`<option ${m===curM?"selected":""}>${esc(m)}</option>`).join("")+(curM?"":`<option value="" selected>(none)</option>`)+`<option value="__custom__">✏️ custom…</option>`;
   const presetBtns=(_cfgMeta.presets||[]).map(n=>`<button class="btn" onclick="presetLocal('${n}')">${esc(n)}</button>`).join(" ");
   const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
-  const rows=_cfgEditable.map(k=>{const ch=_pending[k]!==undefined;return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(effV(k))}" oninput="pend(this.dataset.k,this.value)"></td></tr>`;}).join("");
+  const rows=_cfgEditable.map(k=>{const ch=_pending[k]!==undefined;return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}${KEY_HELP[k]?ic(KEY_HELP[k]):""}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(effV(k))}" oninput="pend(this.dataset.k,this.value)"></td></tr>`;}).join("");
   p.innerHTML=`
-    <div class="card" style="margin-bottom:12px"><div class="k">brain</div>
+    <div class="card" style="margin-bottom:12px"><div class="k">brain${ic(KEY_HELP.BRAIN)}</div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
         <select id="brainSel" onchange="pend('BRAIN',this.value);drawConfig()">${brainOpts}</select>
         <select id="modelSel" onchange="modelPick(this.value)" style="flex:1">${modelOpts}</select></div>
       <div class="s" style="margin-top:5px">brain sets the pool; model is the list for that brain (pick ✏️ custom… to type one)</div></div>
-    <div class="card" style="margin-bottom:12px"><div class="k">run mode</div>
+    <div class="card" style="margin-bottom:12px"><div class="k">run mode${ic("How the agent runs. Autonomous = continuous work loop (SUPERVISE=auto). Chat = only wakes when you message it. Scheduled = wakes on a fixed heartbeat interval.")}</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${modeBtns}</div>
       <div class="s" style="margin-top:5px">${esc(MODE_HELP[mode]||"")}</div></div>
-    <div class="card" style="margin-bottom:12px"><div class="k">presets (fills the fields below — review, then Save)</div>
+    <div class="card" style="margin-bottom:12px"><div class="k">presets${ic("One-click config profiles. Clicking one FILLS the fields below (brain/mode/etc.) for you to review — nothing is applied until you Save.")}</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${presetBtns||"<span class='s'>none</span>"}</div></div>
-    <div class="card"><div class="k">agent.env (editable keys · • = changed)</div>
+    <div class="card"><div class="k">agent.env (editable keys · • = changed)${ic("The agent's runtime settings file. Only safe-to-edit keys are shown; identity/wiring keys (AGENT_ID, ports, secrets) are hidden. Click the i next to a key for what it does.")}</div>
       <table class="cost" style="margin-top:8px"><tbody>${rows}</tbody></table></div>
     <div style="display:flex;gap:10px;align-items:center;padding:12px 2px">
       <button class="btn danger" id="saveBtn" onclick="saveCfg()" disabled>Save &amp; apply</button>
