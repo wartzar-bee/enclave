@@ -51,7 +51,7 @@ waits on events. Two rules:
 - **The agent declares its own pace.** Each tick writes `state/tick-status.json`
   `{"status":"continue"}` if real work remains, else `{"status":"idle"}`. Idle parks it on the
   heartbeat (still instant-wake on events). This is "tick yourself only when there's work."
-- **A manager/orchestrator agent (the studio) should be event-driven only** — always `idle`, never a
+- **A manager/orchestrator agent (e.g. a fleet master) should be event-driven only** — always `idle`, never a
   continuous Opus loop. Its heavy/continuous work is delegated to off-Opus worker agents.
 
 ## Anti-patterns (do not reintroduce)

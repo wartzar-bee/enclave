@@ -2,7 +2,7 @@
 
 > **v2 supersedes v1 (below).** Three critiques (external GPT-5.5, internal adversarial-on-code,
 > operator) converged: v1 over-claimed reuse and under-weighted security, scale, and a missing
-> port-allocation layer. The studio dashboard is **NOT proven** (operator: untested/weak) — we reuse the
+> port-allocation layer. The reference dashboard is **NOT proven** (operator: untested/weak) — we reuse the
 > *working substrate* (comms bridge, web_chat JSON API, agentloop, state files) and **build the console
 > fresh**, NOT port the dashboard UI.
 
@@ -71,8 +71,8 @@ and makes backpressure trivial (one producer, many cheap consumers).
   identity, disk rotation, polish.**
 
 ## Operator decisions — RESOLVED (2026-06-18)
-1. **Trust boundary → NOT one door.** There's a **management hierarchy**: a *manager* agent (studio-agent
-   pattern) steers a few sub-agents, so agents must be reachable by the human console AND their manager
+1. **Trust boundary → NOT one door.** There's a **management hierarchy**: a *manager* agent (the
+   manager-agent pattern) steers a few sub-agents, so agents must be reachable by the human console AND their manager
    agent. Keep the **comms bridge as the multi-party steering plane** (human + manager agents → agents;
    agent↔agent); do NOT unpublish ports to force a single door. Console binds 127.0.0.1 (enforced),
    loopback-trusted. The console must **represent the hierarchy** (manager → its sub-agents as a group/
@@ -100,8 +100,8 @@ and makes backpressure trivial (one producer, many cheap consumers).
 click one to chat / give a directive; agents run autonomously toward their objectives otherwise;
 they can message each other. Start/stop/monitor from the same surface.
 
-**Verdict from research (don't relitigate):** ~80–90% already exists. The studio dashboard
-(`platform/dashboard/server.py`, pure stdlib `http.server`+SSE), the **comms bridge** (`:18193`:
+**Verdict from research (don't relitigate):** ~80–90% already exists. A reference dashboard prototype
+(pure stdlib `http.server`+SSE), the **comms bridge** (`:18193`:
 `/send /inbox /events /emit /roster`), the **agentloop** (event-driven drain+emit), and the per-agent
 **web_chat** plane all port to Enclave. **No framework** (D-052; ruflo/LangGraph already rejected). The
 net-new work is: discovery, the reverse-proxy aggregator, the rail UX, compose lifecycle, scale/auth.
@@ -138,8 +138,8 @@ browser ──auth(session)──▶│  ThreadingHTTPServer, 127.0.0.1   │  l
      ∪ optional folder-scan of a stacks dir (surfaces never-`up`'d deployments). Re-derive every load —
      **no parallel registry to desync** (Dockge's lesson). Per agent, read its `.env` (`WEB_CHAT_BIND`
      port, `BRAIN`, `MODEL`) → an in-memory metadata map.
-   - **State:** reuse the studio `_agent_state`/`_thread`/`_comms_events` logic verbatim, repath from
-     `platform/agents/<id>` → `<deployment>/home` (mounted at `/agent`; **identical state layout** —
+   - **State:** reuse the existing `_agent_state`/`_thread`/`_comms_events` logic verbatim, repath from
+     `<deployment>/home` (mounted at `/agent`; **identical state layout** —
      `state/rollup.md`, `work.json`, `state/events.jsonl`, `logs/runner.log`). Cache per-agent 10–30s.
    - **Reverse proxy:** `_forward()` for all verbs — strip hop-by-hop headers (RFC 7230 §6.1), treat
      `urllib HTTPError` as the response (proxy backend 4xx/5xx transparently), per-event `wfile.flush()`
@@ -228,7 +228,7 @@ every view (the rail, the overview strip + cost table, and the graph all read ON
   standard `enclave console` launch finds the fleet **and** independent standalone enclaves automatically.
 - **Standalone vs fleet (`kind`, auto-derived in `snapshot()`).** An agent is **fleet** if it has a
   `manager` or *is* a manager of someone; otherwise **standalone** (its own independent enclave, not in
-  the studio→sub-agents tree). No config — purely the manager hierarchy.
+  any master→sub-agents tree). No config — purely the manager hierarchy.
 - **Master/manager visualization.** The rail renders the fleet as a real **tree**: each master (a depth-0
   manager) leads its group with a **♛ crown + `FLEET ·N` badge** and a highlighted row, its sub-agents
   **indented with `└` connectors**; standalone agents sit in their own section. The graph marks managers

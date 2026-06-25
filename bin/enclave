@@ -247,7 +247,7 @@ def cmd_vault_decrypt(args):
 # ── agent spec (the one declarative way to define an agent) ────────────────────
 # A spec (.yaml/.yml/.json) is the canonical agent definition: simple fields map to init flags; richer
 # fields (mission/kpi/secrets/interval_seconds/guardrails) are applied after scaffolding. A manager
-# agent (e.g. the studio) writes a spec to graduate a venture into its own deployment reproducibly.
+# agent (e.g. a fleet master) writes a spec to graduate a sub-agent into its own deployment reproducibly.
 SPEC_TO_FLAG = {
     "name": "--name", "brain": "--brain", "model": "--model", "template": "--template",
     "role": "--template", "work_dir": "--work-dir", "bind": "--bind", "port": "--port",

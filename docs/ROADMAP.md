@@ -22,8 +22,8 @@ indexing; `docs/WORK-DIR.md`).
 ## ✅ #2 — publish prebuilt images to ghcr  (DONE 2026-06-16)
 `enclave publish --registry ghcr.io/wartzar-bee` builds + pushes both images. The block was a
 token *type*: ghcr only accepts a **classic** PAT with `write:packages` (fine-grained PATs can't
-push packages at all). Operator minted the `studio-3rdparty` classic token (scopes `repo,
-write:packages`); stored at `.secrets/ghcr.env` (in the studio, gitignored). Live:
+push packages at all). Operator minted a classic PAT (scopes `repo,
+write:packages`); stored at `.secrets/ghcr.env` (gitignored). Live:
 - `ghcr.io/wartzar-bee/enclave-agent:latest` · `ghcr.io/wartzar-bee/enclave-chat:latest` (private).
 - Teammates: set `ENCLAVE_AGENT_IMAGE`/`ENCLAVE_CHAT_IMAGE` in `.env`, then `enclave run --pull`
   (needs `read:packages`, or flip the packages public on their GitHub pages).

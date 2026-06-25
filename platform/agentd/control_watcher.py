@@ -18,10 +18,10 @@ Usage:
     --once          process the current incoming specs once and exit (no loop)
 
 Spec (YAML or JSON; one action per file dropped in incoming/):
-    agent: stoneforge        # target agent id (or omit and name the file <id>.yaml)
+    agent: data-worker       # target agent id (or omit and name the file <id>.yaml)
     action: restart          # up | down | restart | kick | logs | send
     text: "resume the swap"  # required only for action: send
-    requested_by: studio     # optional provenance, recorded in the audit log
+    requested_by: master     # optional provenance, recorded in the audit log
 
 Safe by construction: agent id must match ^[a-z0-9][a-z0-9_-]*$, action must be in the allowlist, and
 the underlying `enclave fleet` verb re-validates the agent exists + its compose file is under an

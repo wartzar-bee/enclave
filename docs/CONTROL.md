@@ -45,13 +45,13 @@ whole stack recreated.
 
 ## Spec format
 ```yaml
-agent: stoneforge          # target agent id (or omit and name the file <id>.yaml)
+agent: data-worker         # target agent id (or omit and name the file <id>.yaml)
 action: kick               # up | down | restart | kick | logs | send
 text: "resume the swap"    # required ONLY for action: send
-requested_by: studio       # optional provenance, recorded in the audit log
+requested_by: master       # optional provenance, recorded in the audit log
 ```
-Drop **one action per file**. Minimal example — wake stoneforge by filename alone:
-`incoming/stoneforge.yaml` containing just `action: kick`.
+Drop **one action per file**. Minimal example — wake data-worker by filename alone:
+`incoming/data-worker.yaml` containing just `action: kick`.
 
 ## Why it's safe
 - The manager can't run docker/`enclave` (guard-blocked inside its container). Its ONLY control channel is

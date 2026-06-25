@@ -11,7 +11,7 @@
     4. Tail it:  watch the StandardOutPath .out file below (or use `log stream` for the python3 process)
   Unload:  launchctl unload -w ~/Library/LaunchAgents/org.enclave.control.plist
 
-  The manager pod (studio) has fleet/_control mounted RW at /control; no other pod mounts it, so only
+  The manager pod has fleet/_control mounted RW at /control; no other pod mounts it, so only
   the manager can enqueue lifecycle actions — same mount-topology authorization as the spawn queue.
 -->
 <plist version="1.0">

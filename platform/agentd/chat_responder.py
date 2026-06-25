@@ -178,7 +178,7 @@ CHAT_PREAMBLE = (
     "  • confidence=plausible — consistent with what you already know but not independently confirmed.\n"
     "  • confidence=verified — confirmed against ONE reliable source (cite it).\n"
     "  • confidence=strongly-verified — confirmed against MULTIPLE independent or authoritative sources "
-    "(cite them); the 'beyond doubt' tier. (Maps to the studio's evidence grades D→C→B→A.)\n"
+    "(cite them); the 'beyond doubt' tier. (Maps to evidence grades D→C→B→A.)\n"
     "Saved facts can be RE-GRADED later as evidence arrives — promote an unverified note to verified once "
     "you confirm it, demote/strike one the operator overrides. If a correction CONTRADICTS what you hold, "
     "the operator wins for their own domain: save it as the new truth and note what it supersedes (don't "
