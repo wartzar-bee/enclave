@@ -179,7 +179,7 @@ class Memory:
         for f, _ in picks:
             m = lc.setdefault(str(f.relative_to(self.mem)), {}); m["acc"] = m.get("acc", 0) + 1; m["used"] = now
         self._ls_save(lc)
-        return [f"[{f.parent.name}/{f.stem}] {b[:200]}" for f, b in picks]
+        return [f"[{f.parent.name}/{f.stem}] {b[:160]}" for f, b in picks]
 
     # ── COMPACTION (P3.6): scheduled lean-up so continuous ticks don't bloat the store / qmd index.
     def _llm_summarize(self, raw, target="a compact bulleted digest of what was done (keep dates, "
@@ -294,7 +294,16 @@ class Memory:
     # ── WORK QUEUE (continuity across ticks — the "what am I in the middle of") ──
     def _workf(self): return self.base / "work.json"
     def work_list(self):
-        return json.loads(self._workf().read_text()) if self._workf().exists() else []
+        # Tolerate a non-conforming work.json: only a LIST of dict items is a queue. An agent that
+        # tracks work its own way (e.g. a free-form dict) yields an empty queue here instead of
+        # crashing the digest (which would leave the tick with NO recall.md and force a full re-read).
+        if not self._workf().exists():
+            return []
+        try:
+            d = json.loads(self._workf().read_text())
+        except Exception:
+            return []
+        return [i for i in d if isinstance(i, dict) and "status" in i] if isinstance(d, list) else []
     def work_add(self, text, verify=""):
         w = self.work_list(); wid = max([i["id"] for i in w], default=0) + 1
         w.append({"id": wid, "text": text, "status": "todo", "ts": self._now(), "evidence": "", "verify": verify})
@@ -336,7 +345,7 @@ class Memory:
             if body: parts.append(body[0])
         return " ".join(parts)[:500]
 
-    def _qmd_query(self, query, k=6, timeout=12):
+    def _qmd_query(self, query, k=4, timeout=12):
         """PASSIVE SEMANTIC recall via the host qmd MCP (vector search — embeddings, $0, fast).
         Returns [(pct, filename, snippet)] filtered to THIS agent's memory + shared knowledge/.
         [] on any failure (caller keeps keyword recall). This is the embeddings-backed upgrade to
@@ -373,31 +382,49 @@ class Memory:
             # KNOWLEDGE-type files only (lessons/skills/shared knowledge) from ANY source — surfaces
             # peers' learnings too (network compounding). Excludes operational state/content/tmp/reports.
             if ("/memory/" in path) or ("/skills/" in path) or ("/knowledge/" in path):
-                hits.append((pct, path.split("/")[-1], snip[:140]))
+                hits.append((pct, path.split("/")[-1], snip[:120]))
         return hits[:k]
 
-    def digest(self, query=None, k=5):
+    def digest(self, query=None, k=3):
         """Pre-tick recall digest (P3): the agent's OPEN WORK + the most relevant past memory for
         the current focus, so a context-wiped tick doesn't re-derive the world. Keyword-ranked over
-        own memory + PASSIVE SEMANTIC recall via qmd (relevant memory + shared knowledge by meaning)."""
+        own memory + PASSIVE SEMANTIC recall via qmd (relevant memory + shared knowledge by meaning).
+        Kept deliberately LEAN — it's built + read EVERY tick, so size is a recurring token cost
+        (see docs/CONTEXT-AND-TICKS.md). The agent recalls more on demand via qmd only if needed."""
         work = [i for i in self.work_list() if i["status"] not in ("done", "dropped")]
         q = query if query is not None else self._auto_query()
         hits = self.recall(q, k=k, semantic=False) if q else []
         # Unacked BOARD directives OVERRIDE the work queue — surface them at the very top so the loop's
         # momentum (a 'doing' work item) can't bury a board pause/redirect. (Governance: directives win.)
-        directives = []
+        directives = []; _seen = set()
         ib = self.base / "inbox.md"
         if ib.exists():
             for ln in ib.read_text().splitlines():
                 s = ln.strip()
                 if s.startswith("- [ ]") and re.search(r"\bboard\b|via comms|BOARD", s):
-                    directives.append(s[5:].strip()[:280])
+                    d = s[5:].strip()[:280]
+                    # dedup by the directive BODY (drop the leading "<ts> via comms (src): " prefix) so a
+                    # recurring cadence directive fired on many days collapses to one line.
+                    body = d.split("): ", 1)[-1]
+                    key = re.sub(r"\s+", " ", body.lower())[:80]
+                    if key in _seen: continue
+                    _seen.add(key); directives.append(d)
         out = ["# Recall — auto-loaded for this tick (read FIRST, alongside inbox.md)\n"]
         if directives:
             out.append("## ⚠ BOARD DIRECTIVES — ACT ON THESE FIRST (they OVERRIDE your work queue)\n" +
                        "\n".join(f"- {d}" for d in directives[:5]) + "\n")
+        # Open work: show 'doing' first (in full-ish), then todos as truncated one-liners, capped — the
+        # full verbose queue is the bulk of the digest and is re-read every tick. The agent can `work
+        # list` for the complete queue if it needs it; this is the at-a-glance focus set.
+        WORK_CAP = 12
+        doing_items = [i for i in work if i.get("status") == "doing"]
+        todo_items = [i for i in work if i.get("status") != "doing"]
+        ordered = doing_items + todo_items
+        work_lines = [f"- #{i['id']} [{i['status']}] {i['text'][:140]}" for i in ordered[:WORK_CAP]]
+        if len(ordered) > WORK_CAP:
+            work_lines.append(f"- …+{len(ordered)-WORK_CAP} more open (run `memory.py work list` for the full queue)")
         out.append("## Open work (continue 'doing' before starting new)\n" +
-                   ("\n".join(f"- #{i['id']} [{i['status']}] {i['text']}" for i in work) if work else "- (none)"))
+                   ("\n".join(work_lines) if work_lines else "- (none)"))
         out.append("\n## Relevant past memory (keyword)\n" +
                    ("\n".join(f"- {h}" for h in hits) if hits else "- (none yet)"))
         # query qmd on the single FOCUS task (top 'doing', else top item) — a focused vector matches
@@ -435,7 +462,7 @@ def main():
     c = sub.add_parser("recall"); c.add_argument("query"); c.add_argument("-k", type=int, default=5); c.add_argument("--semantic", action="store_true")
     l = sub.add_parser("learn"); l.add_argument("slug"); l.add_argument("title"); l.add_argument("--body", default=""); l.add_argument("--body-file")
     i = sub.add_parser("index"); i.add_argument("which", nargs="?", default="memory")
-    dg = sub.add_parser("digest"); dg.add_argument("--query", default=None); dg.add_argument("-k", type=int, default=5)
+    dg = sub.add_parser("digest"); dg.add_argument("--query", default=None); dg.add_argument("-k", type=int, default=3)
     fg = sub.add_parser("forget"); fg.add_argument("rel")
     un = sub.add_parser("user-note"); un.add_argument("uid"); un.add_argument("note")
     ug = sub.add_parser("user-get"); ug.add_argument("uid")

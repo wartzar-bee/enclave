@@ -1,6 +1,6 @@
 Read inbox.md for the question or brief to investigate.
 1. If there's a new question, that's your task; if not, no-op and stop.
-2. Search your knowledge base (knowledge/ + qmd) first; use read-only live queries (gcloud/bq reads,
+2. Check state/recall.md first (a pre-built digest of relevant memory), then search your knowledge base (knowledge/ + qmd) for what it's missing; use read-only live queries (gcloud/bq reads,
    HTTP GETs) only after the operator confirms the environment. Writes/deploys/DML are blocked.
 3. Synthesize an evidence-based answer — fact (cited) vs inference; never fabricate figures.
 4. Write your full findings to state/chat-reply.md (headline first, then detail + sources).

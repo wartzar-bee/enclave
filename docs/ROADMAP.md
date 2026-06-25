@@ -79,9 +79,11 @@ deployment-policy override, decision-line parse, `init --yes` defaults. See `doc
 - **Multi-arch publish** — `enclave publish --platform linux/amd64,linux/arm64` does a buildx
   build+push (auto-creates a QEMU builder); single-arch stays the default. README multi-arch overclaim
   corrected (was "published multi-arch"; reality was arm64-only).
-- **`autonomous` template** — the 4th starter: a self-driving daemon that each tick reconstructs state
-  from memory + `work.json` and executes the next step toward an operator `{MISSION}` (3h heartbeat,
-  `SUPERVISE=auto`).
+- **`autonomous` template** — the 4th starter: a self-driving daemon that each tick reads its
+  pre-assembled digest (`state/recall.md`: open `work.json` + relevant memory) and executes the next
+  step toward an operator `{MISSION}` (3h heartbeat, `SUPERVISE=auto`). It does NOT re-derive its whole
+  state from the vault each tick, and its continuous backlog grind runs OFF-Opus (`BRAIN=optimize` +
+  `ROUTER=on`) — see `docs/CONTEXT-AND-TICKS.md` (the lean-fresh-tick + off-Opus-continuous laws).
 - **Chat polish** — `/export` (+ "…" menu) downloads a conversation as markdown; `/retry` resends the
   last message; ⌘/Ctrl-K new chat + Esc stop; mobile sidebar overlay + full-width chat. Surfaced model
   errors (no more silent "couldn't generate a reply"); init/brain reject unknown Claude model ids.

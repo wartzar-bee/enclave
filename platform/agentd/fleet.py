@@ -121,7 +121,9 @@ def _state(home):
 
 
 def snapshot():
-    """The single source of truth: one dict {id: {...}} from disk reads. No backend HTTP calls."""
+    """The single source of truth: one dict {id: {...}} from disk reads. No backend HTTP calls.
+    Sources: `docker compose ls` (running/known projects) + a folder-scan of the stacks roots, so
+    DOWN / never-started deployments (e.g. a standalone agent that isn't up) still appear, marked down."""
     man = _manifest()
     agents = {}
     for row in _compose_ls():
@@ -151,7 +153,51 @@ def snapshot():
             "tick": (st["tick"] or "idle") if running else "down",
             "last_seen": st["last_seen"],
         }
+    # Folder-scan: surface DOWN / never-`up`'d deployments compose-ls can't see (marked down).
+    for aid, dep in _scan_deployments().items():
+        if aid in agents:
+            continue
+        env = _env(dep)
+        home = pathlib.Path(dep) / "home"
+        home = home if home.is_dir() else None
+        st = _state(home)
+        m = man.get(aid, {})
+        agents[aid] = {
+            "id": aid, "up": False, "status": "stopped",
+            "brain": env.get("BRAIN", "?"), "model": env.get("MODEL") or env.get("BRAIN_MODEL", "?"),
+            "port": _port(env), "dir": dep,
+            "configfile": str(pathlib.Path(dep) / "docker-compose.yml"),
+            "home": str(home) if home else "",
+            "manager": m.get("manager", ""), "tags": m.get("tags", []),
+            "headline": st["headline"], "work_open": st["work_open"],
+            "tick": "down", "last_seen": st["last_seen"],
+        }
     return agents
+
+
+def _is_deployment(d):
+    d = pathlib.Path(d)
+    return (d / "docker-compose.yml").is_file() and (d / ".env").is_file()
+
+
+def _scan_deployments():
+    """Folder-scan the stacks roots for enclave deployments `docker compose ls` misses (down or never
+    started). A root may be a PARENT of deployments, or a deployment dir itself (a standalone agent).
+    Returns {agent_id: dir}."""
+    out = {}
+    for root in STACKS_ROOTS:
+        root = pathlib.Path(root)
+        try:
+            cands = [root] if _is_deployment(root) else [c for c in root.iterdir() if c.is_dir()]
+        except Exception:
+            continue
+        for c in cands:
+            if not _is_deployment(c):
+                continue
+            aid = _env(str(c)).get("AGENT_ID") or pathlib.Path(c).name
+            if _SAFE.match(aid):
+                out.setdefault(aid, str(c))
+    return out
 
 
 AUDIT = pathlib.Path(os.environ.get("ENCLAVE_FLEET_AUDIT",
@@ -297,6 +343,73 @@ def cmd_open(aid):
         pass
 
 
+def _parse_req(path):
+    """Tiny stdlib parser for a control request file (`key: value` per line — a YAML/JSON subset).
+    Handles both `agent: x` lines and a flat JSON object. No yaml dependency (enclave is stdlib-only)."""
+    try:
+        txt = pathlib.Path(path).read_text()
+    except Exception:
+        return {}
+    s = txt.strip()
+    if s.startswith("{"):
+        try:
+            d = json.loads(s)
+            return {k: str(v) for k, v in d.items()}
+        except Exception:
+            pass
+    d = {}
+    for ln in txt.splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#") or ":" not in ln:
+            continue
+        k, v = ln.split(":", 1)
+        d[k.strip()] = v.strip().strip('"').strip("'")
+    return d
+
+
+_CONTROL_ACTIONS = {"up": cmd_up, "start": cmd_up, "down": cmd_down, "stop": cmd_down,
+                    "restart": cmd_restart}
+
+
+def cmd_control_watch(control_dir, poll=5):
+    """Host-side LIFECYCLE watcher — how the studio (guard-blocked from docker) actually kickstarts
+    agents. It drops a request into <control_dir>/incoming/<name>.yaml ({agent, action: up|down|restart|
+    kick, requested_by}); this loop executes it via the SAME validated + audited helpers as the CLI and
+    moves the file to processed/ or failed/. Authorization is mount topology: only the studio has this
+    dir mounted rw. Runs on the host (needs docker); the agent never touches docker."""
+    base = pathlib.Path(control_dir)
+    inc, done, fail = base / "incoming", base / "processed", base / "failed"
+    for d in (inc, done, fail):
+        d.mkdir(parents=True, exist_ok=True)
+    print(f"[control-watch] watching {inc} (poll {poll}s) — actions: {', '.join(sorted(_CONTROL_ACTIONS))}", flush=True)
+    while True:
+        files = sorted(inc.glob("*.yml")) + sorted(inc.glob("*.yaml")) + sorted(inc.glob("*.json"))
+        for f in files:
+            req = _parse_req(f)
+            aid = req.get("agent", "")
+            action = (req.get("action", "") or "").lower()
+            ok, msg = False, ""
+            try:
+                if action not in _CONTROL_ACTIONS:
+                    raise ValueError(f"unknown action '{action}' (allowed: {', '.join(sorted(_CONTROL_ACTIONS))})")
+                if not _SAFE.match(aid):
+                    raise ValueError(f"bad agent id '{aid}'")
+                _CONTROL_ACTIONS[action](aid)        # validated (_resolve/_allowed_stack) + audited inside
+                ok = True
+            except SystemExit as e:                  # cmd_* sys.exit on a bad target — capture, never die
+                msg = str(e)
+            except Exception as e:
+                msg = str(e)
+            try:
+                f.rename((done if ok else fail) / f.name)
+            except Exception:
+                pass
+            _audit("control:" + (action or "?"), aid or "?",
+                   ("ok" if ok else "FAIL " + msg) + f" by={req.get('requested_by', '?')}")
+            print(f"[control-watch] {action} {aid} -> {'OK' if ok else 'FAIL: ' + msg}", flush=True)
+        time.sleep(poll)
+
+
 def main():
     args = sys.argv[1:]
     cmd = args[0] if args else "list"
@@ -315,8 +428,11 @@ def main():
         cmd_logs(pos[0], _flag(args, "--tail", "80"))
     elif cmd == "send" and len(pos) >= 2:
         cmd_send(pos[0], " ".join(pos[1:]))
+    elif cmd in ("control-watch", "watch"):
+        d = pos[0] if pos else (str(STACKS_ROOTS[0] / "_control") if STACKS_ROOTS else "_control")
+        cmd_control_watch(d, int(_flag(args, "--poll", "5") or 5))
     else:
-        sys.exit("usage: fleet.py list [--json] | open|up|down|restart|logs <id> | send <id> <text>")
+        sys.exit("usage: fleet.py list [--json] | open|up|down|restart|kick|logs <id> | send <id> <text> | control-watch [dir]")
 
 
 def _flag(args, name, default=None):

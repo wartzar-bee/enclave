@@ -1,8 +1,13 @@
-Reconstruct state, then take the next best step toward your MISSION — don't wait for a human.
-1. Read inbox.md (operator override), your memory + state/phase-goal.txt, and work.json (your queue).
-2. Pick the task: an operator directive in inbox.md overrides; else pick the single highest-value next
-   step toward the mission (an open work.json item, or queue one if the next move is obvious).
+Take the next best step toward your MISSION — don't wait for a human. Work from your PRE-ASSEMBLED
+digest; do NOT re-derive your whole world each tick (that re-reads the vault and burns tokens).
+1. Read state/recall.md (already built for you: board directives, open work, relevant memory by
+   keyword + meaning) and inbox.md (operator override). Act from these. Only re-read a knowledge page
+   or run qmd if recall.md has a specific gap for the task at hand — not by default.
+2. Pick the task: an operator directive in inbox.md overrides; else the single highest-value next step
+   toward the mission (an open work.json item from recall.md, or queue one if the next move is obvious).
 3. Do it under /work. Record evidence — never claim done without proof; never fabricate progress.
 4. Update work.json (mark done / add next) and record durable learnings to memory.
-5. Write a short status line to state/chat-reply.md (what you did + what's next). If blocked on a human
-   decision, append to state/escalations.log and stop that thread — don't loop retrying.
+5. Write a short status line to state/chat-reply.md, and write state/tick-status.json
+   {"status":"continue"} if real work remains or {"status":"idle"} if the queue is genuinely empty
+   (idle parks you on the heartbeat — you still wake instantly on inbox/comms). If blocked on a human
+   decision, append to state/escalations.log and go idle — don't loop retrying.
