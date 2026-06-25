@@ -34,6 +34,27 @@ import fleet   # the control-plane helper (snapshot + lifecycle); read-only here
 import usage as _usage          # cost rollups (in-process; reuse aggregate/series/last_record)
 import claude_usage as _capusage  # subscription cap % (5h / 7d), cached
 
+def _uptime_s(started):
+    """Seconds since a docker StartedAt (RFC3339, e.g. '2026-06-25T19:00:00.123456789Z'). None on
+    failure. Docker emits nanoseconds; Python's fromisoformat wants ≤6 fractional digits."""
+    try:
+        from datetime import datetime as _dt
+        s = (started or "").strip().replace("Z", "+00:00")
+        if "." in s:
+            head, rest = s.split(".", 1)
+            digits = ""
+            for ch in rest:
+                if ch.isdigit():
+                    digits += ch
+                else:
+                    break
+            tz = rest[len(digits):]
+            s = head + "." + digits[:6] + tz
+        return max(0, int(time.time() - _dt.fromisoformat(s).timestamp()))
+    except Exception:
+        return None
+
+
 TOKEN = os.environ.get("CONSOLE_TOKEN", "")
 PROBE_SECS = 4.0
 COST_SECS = float(os.environ.get("CONSOLE_COST_SECS", "45"))  # cost changes per-tick (minutes), not per-4s
@@ -631,6 +652,8 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
     ${kpi("turns (avg)",turns.avg!=null?Math.round(turns.avg):"—","","per tick")}
     ${kpi("process success",ho.process_success_pct!=null?ho.process_success_pct+"%":"—","",`${ho.ticks_failed||0} failed`)}
   </div>`;
+  /* runtime & resources (live docker stats — Phase B, host-side) */
+  html+=`<div id="dgRes" class="card" style="margin-bottom:12px"><div class="k">runtime &amp; resources</div><div class="s" style="margin-top:3px;color:var(--mut)">loading…</div></div>`;
   /* charts — Context (the explosion diagnostic) is the hero */
   html+=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-bottom:12px">
     <div class="chartcard full"><h3>CONTEXT SIZE per tick — input + cache (the explosion diagnostic)</h3><canvas id="dgCtx"></canvas></div>
@@ -652,7 +675,18 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
   p.innerHTML=html;
   drawDiagCharts(d);
   renderInspect(d.inspect||[]);
+  loadResources();
 }
+function fmtUptime(s){if(s==null)return"—";s=Math.floor(s);const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  return d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${m}m`;}
+async function loadResources(){const e=document.getElementById("dgRes");if(!e||!sel)return;
+  let r;try{r=await(await fetch(qs(`/api/resources?id=${encodeURIComponent(sel)}`))).json();}catch(_){e.innerHTML='<div class="k">runtime &amp; resources</div><div class="s" style="color:var(--mut)">unavailable</div>';return;}
+  if(!r.running){e.innerHTML=`<div class="k">runtime &amp; resources</div><div class="s" style="margin-top:3px">container <b style="color:var(--idle)">${esc(r.status||"not running")}</b>${r.uptime_s!=null?` · was up ${fmtUptime(r.uptime_s)}`:""}${r.restart_count&&r.restart_count!=="0"?` · ${esc(r.restart_count)} restarts`:""}<br><span style="color:var(--mut)">live CPU/memory show when the agent is running</span></div>`;return;}
+  const cells=[["CPU",esc(r.cpu_pct||"—")],["memory",esc(r.mem||"—")+(r.mem_pct?` (${esc(r.mem_pct)})`:"")],
+    ["uptime",fmtUptime(r.uptime_s)],["restarts",esc(r.restart_count||"0")],["PIDs",esc(r.pids||"—")],
+    ["net I/O",esc(r.net_io||"—")],["disk I/O",esc(r.block_io||"—")],["health",esc(r.health&&r.health!=="-"?r.health:"n/a")]];
+  e.innerHTML=`<div class="k">runtime &amp; resources <span class="s" style="font-weight:400">— live (docker stats)</span></div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px">${cells.map(c=>`<div><div class="s" style="color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.03em">${c[0]}</div><div style="font-variant-numeric:tabular-nums;font-size:13px;color:var(--tx)">${c[1]}</div></div>`).join("")}</div>`;}
 function renderInspect(rows){const tb=document.getElementById("dgInspect");if(!tb)return;
   tb.innerHTML=rows.map((r,i)=>`<tr onclick="toggleInspect(${i})"><td style="text-align:left">${esc((r.ts||"").replace("T"," ").replace("Z",""))}</td>
     <td style="text-align:left">${esc(r.reason||"")}</td><td style="text-align:left">${esc((r.model||"").replace("claude-",""))}</td>
@@ -1043,6 +1077,10 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # The SPA shell (and API JSON) must never be cached, or a console restart with new code keeps
+        # serving the operator's browser the OLD page on reload. Vendored /static/* assets still cache.
+        if ctype.startswith("text/html") or ctype.startswith("application/json"):
+            self.send_header("Cache-Control", "no-store, must-revalidate")
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -1243,6 +1281,42 @@ class H(BaseHTTPRequestHandler):
                 chk("chat port reachable", reach, f":{port}")
             return self._send(200, "application/json", json.dumps(
                 {"ok": all(c["ok"] for c in checks), "checks": checks}))
+        if p == "/api/resources":   # Phase B: live container resources (docker stats/inspect; host-side)
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            if not a:
+                return self._send(404, "application/json", '{"error":"unknown agent"}')
+            # The agent container is named exactly <aid> (its web-chat sibling is <aid>-chat). aid is
+            # _SAFE-validated, so it's safe to hand to docker. Empty output = not running / no docker.
+            out = {"running": False}
+            insp = fleet._docker("inspect", aid, "--format",
+                                 "{{.State.Status}}|{{.State.StartedAt}}|{{.RestartCount}}|"
+                                 "{{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}}")
+            if insp.strip():
+                parts = (insp.strip().split("|") + ["", "", "", ""])[:4]
+                status, started, restarts, health = parts
+                out["status"] = status
+                out["restart_count"] = restarts
+                out["health"] = health
+                out["running"] = status == "running"
+                out["started_at"] = started
+                out["uptime_s"] = _uptime_s(started)
+            if out["running"]:
+                stats = fleet._docker("stats", "--no-stream", "--format", "{{json .}}", aid)
+                try:
+                    st = json.loads(stats.strip().splitlines()[0])
+                    out["cpu_pct"] = st.get("CPUPerc")
+                    out["mem"] = st.get("MemUsage")
+                    out["mem_pct"] = st.get("MemPerc")
+                    out["net_io"] = st.get("NetIO")
+                    out["block_io"] = st.get("BlockIO")
+                    out["pids"] = st.get("PIDs")
+                except Exception:
+                    pass
+            return self._send(200, "application/json", json.dumps(out))
         if p == "/api/audit":   # P3: recent control-plane actions (who did what, when)
             n = parse_qs(urlparse(self.path).query).get("n", ["80"])[0]
             try:
