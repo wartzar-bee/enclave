@@ -405,6 +405,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
       <span class="tab" data-t="status" onclick="tab('status')">Status</span>
       <span class="tab" data-t="config" onclick="tab('config')">Config</span>
+      <span class="tab" data-t="skills" onclick="tab('skills')">Skills</span>
       <span class="tab" data-t="logs" onclick="tab('logs')">Logs</span></div>
     <div id="pane"><div class="empty">Select an agent from the rail.</div></div>
     <div id="dbox"><input id="dtext" placeholder="Send a directive to this agent (wakes its tick)…"><button class="btn" onclick="sendD()">Send</button></div>
@@ -554,6 +555,7 @@ function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);wi
     ensureOv().then(()=>drawMini(sel));
   }
   else if(t==="config"){renderConfig(a);}
+  else if(t==="skills"){renderSkills(a);}
   else if(t==="logs"){
     p.innerHTML=`<div style="display:flex;align-items:center;gap:10px;padding:6px 12px"><label class="s"><input type="checkbox" id="logfollow" checked> live tail</label><span class="s" id="logstamp"></span></div><div id="logs">loading…</div>`;
     loadLogs(true);window._logTimer=setInterval(()=>{if(curtab==="logs"&&document.getElementById("logfollow")&&document.getElementById("logfollow").checked)loadLogs(false);},2000);
@@ -696,6 +698,21 @@ async function loadModels(){const b=document.getElementById("modelsbox");if(!b)r
       (info.ranked||[]).map(s=>`<tr><td style="text-align:left" class="mono">${esc(s.model)}${s.model===info.recommend?' <span style="color:var(--ok)">★</span>':""}</td><td>${s.score}</td><td>${s.p50}s</td><td style="text-align:left" class="s">${Object.keys(s.cats||{}).map(c=>c+":"+Math.round(s.cats[c])).join("  ")}</td></tr>`).join("")+
       `</tbody></table></div>`;}
   b.innerHTML=h;}
+/* ---------- Skills tab (P5: learned-memory vault) ---------- */
+async function renderSkills(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading…</div>';
+  let d={};try{d=await(await fetch(qs(`/api/skills?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">skills unavailable (agent has no home on this host)</div>';return;}
+  if(d.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(d.error)+'</div>';return;}
+  const sk=d.skills||[];
+  p.innerHTML=`<div style="padding:16px;overflow:auto;height:100%">
+    <div class="sectit">Learned skills · ${sk.length}${ic("Reusable procedures the agent wrote from its own successful runs (its skills/ vault). Click one to read it.")}</div>
+    ${sk.length?sk.map(s=>`<div class="card" style="margin-bottom:6px"><div style="cursor:pointer" onclick="viewSkill('${esc(s.name)}',this)"><b class="s" style="color:var(--tx)">${esc(s.name.replace(/\\.md$/,""))}</b><div class="s">${esc(s.desc)}</div></div><div class="skbody"></div></div>`).join(""):'<div class="card"><div class="s">no skills learned yet</div></div>'}
+    ${d.memory_index?`<div class="sectit" style="margin-top:16px">Memory index${ic("The agent's learned facts and lessons (memory/INDEX.md) — recalled when relevant on future ticks.")}</div><div class="card"><pre class="s" style="white-space:pre-wrap;margin:0;font-family:inherit">${esc(d.memory_index)}</pre></div>`:""}
+  </div>`;}
+async function viewSkill(name,head){const b=head.parentElement.querySelector(".skbody");if(!b)return;
+  if(b.dataset.open){b.innerHTML="";delete b.dataset.open;return;}
+  b.innerHTML='<div class="s">loading…</div>';
+  try{const t=await(await fetch(qs(`/api/skillfile?id=${encodeURIComponent(sel)}&name=${encodeURIComponent(name)}`))).text();
+    b.innerHTML=`<pre class="s" style="white-space:pre-wrap;margin:8px 0 0;border-top:1px solid var(--bd);padding-top:8px;font-family:inherit">${esc(t)}</pre>`;b.dataset.open="1";}catch(e){b.innerHTML='<div class="s" style="color:var(--err)">failed to load</div>';}}
 function gauge(w,label){const pct=w&&w.pct!=null?w.pct:null;const warn=label.indexOf("5h")>=0?70:85;
   /* resolve to real hex — Chrome does NOT substitute var() inside SVG presentation attributes
      (fill=/stroke=), so passing "var(--ok)" there renders black/invisible. */
@@ -1118,6 +1135,56 @@ class H(BaseHTTPRequestHandler):
             gf = pathlib.Path(home) / "state" / "phase-goal.txt" if home else None
             txt = gf.read_text(errors="ignore") if (gf and gf.exists()) else ""
             return self._send(200, "application/json", json.dumps({"goal": txt}))
+        if p == "/api/skills":   # P5: the agent's learned-memory vault (skills/ + memory index)
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(400, "application/json", '{"error":"no home"}')
+            skills = []
+            sk = pathlib.Path(home) / "skills"
+            if sk.is_dir():
+                for f in sorted(sk.glob("*.md")):
+                    if f.name == "INDEX.md":
+                        continue
+                    desc = ""
+                    try:
+                        lines = f.read_text(errors="ignore").splitlines()
+                        start = 0
+                        if lines and lines[0].strip() == "---":   # skip a YAML frontmatter block
+                            for j in range(1, len(lines)):
+                                if lines[j].strip() == "---":
+                                    start = j + 1; break
+                        for ln in lines[start:]:
+                            s = ln.strip()
+                            if s.startswith("# "):
+                                desc = s[2:][:140]; break
+                            if s and not s.startswith("#"):
+                                desc = s[:140]; break
+                    except Exception:
+                        pass
+                    skills.append({"name": f.name, "desc": desc})
+            mi = pathlib.Path(home) / "memory" / "INDEX.md"
+            memidx = mi.read_text(errors="ignore")[:8000] if mi.exists() else ""
+            return self._send(200, "application/json", json.dumps({"skills": skills, "memory_index": memidx}))
+        if p == "/api/skillfile":   # P5: read one skill file (path-traversal-guarded)
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            name = parse_qs(urlparse(self.path).query).get("name", [""])[0]
+            if not fleet._SAFE.match(aid or "") or not re.match(r"^[A-Za-z0-9._-]+\.md$", name or ""):
+                return self._send(400, "text/plain", "bad request")
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(404, "text/plain", "no home")
+            skdir = (pathlib.Path(home) / "skills").resolve()
+            f = (skdir / name).resolve()
+            if not str(f).startswith(str(skdir) + os.sep) or not f.is_file():
+                return self._send(404, "text/plain", "not found")
+            return self._send(200, "text/plain; charset=utf-8", f.read_text(errors="ignore")[:20000])
         if p == "/api/stream":
             return self._stream()
         return self._send(404, "application/json", '{"error":"not found"}')
