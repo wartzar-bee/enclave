@@ -20,3 +20,4 @@ __pycache__/
 *.log
 .DS_Store
 platform/agentd/state/
+RESUME-DELEGATION.md
