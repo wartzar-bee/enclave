@@ -552,14 +552,26 @@ async function renderConfig(a){const p=document.getElementById("pane");p.innerHT
   if(cfg.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(cfg.error)+'</div>';return;}
   try{_cfgMeta=await(await fetch(qs("/api/presets"))).json();}catch(e){}
   _cfgEnv=cfg.env||cfg;_cfgEditable=cfg.editable||Object.keys(_cfgEnv).filter(k=>!k.startsWith("_")).sort();_pending={};
-  drawConfig();
+  let goal="";try{goal=((await(await fetch(qs(`/api/goal?id=${encodeURIComponent(sel)}`))).json()).goal)||"";}catch(e){}
+  window._cfgGoal=goal;
+  p.innerHTML='<div style="padding:16px;overflow:auto;height:100%"><div id="cfgmain"></div><div id="cfggoal"></div></div>';
+  drawConfig();drawGoal();
 }
-function drawConfig(){const p=document.getElementById("pane");if(!p)return;const mode=effMode();
+function drawGoal(){const g=document.getElementById("cfggoal");if(!g)return;
+  g.innerHTML=`<div class="card" style="margin-top:12px"><div class="k">phase goal — autonomous steering</div>
+    <div class="s" style="margin:3px 0 7px">The off-Opus supervisor (BRAIN=local/optimize agents) reads this each cycle to set the work queue. Saving does NOT restart the agent.</div>
+    <textarea id="goalIn" rows="3" style="width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px;font-family:inherit;font-size:13px">${esc(window._cfgGoal||"")}</textarea>
+    <div style="margin-top:8px"><button class="btn" onclick="saveGoal()">Save goal</button><span class="s" id="goalmsg" style="margin-left:10px"></span></div></div>`;}
+async function saveGoal(){if(!sel)return;const t=document.getElementById("goalIn").value;const m=document.getElementById("goalmsg");
+  if(m){m.style.color="var(--mut)";m.textContent="saving…";}
+  const r=await postR("/api/goal",{id:sel,text:t});
+  if(m){if(r&&r.ok){m.style.color="var(--ok)";m.textContent="✓ goal saved (applies next supervisor cycle)";window._cfgGoal=t;}else{m.style.color="var(--err)";m.textContent="error: "+esc((r&&r.error)||"failed");}}}
+function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;const mode=effMode();
   const brainOpts=_cfgMeta.brains.map(b=>`<option ${effV("BRAIN")===b?"selected":""}>${b}</option>`).join("");
   const presetBtns=(_cfgMeta.presets||[]).map(n=>`<button class="btn" onclick="presetLocal('${n}')">${esc(n)}</button>`).join(" ");
   const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
   const rows=_cfgEditable.map(k=>{const ch=_pending[k]!==undefined;return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(effV(k))}" oninput="pend(this.dataset.k,this.value)"></td></tr>`;}).join("");
-  p.innerHTML=`<div style="padding:16px;overflow:auto">
+  p.innerHTML=`
     <div class="card" style="margin-bottom:12px"><div class="k">brain</div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
         <select id="brainSel" onchange="pend('BRAIN',this.value)">${brainOpts}</select>
@@ -572,11 +584,10 @@ function drawConfig(){const p=document.getElementById("pane");if(!p)return;const
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${presetBtns||"<span class='s'>none</span>"}</div></div>
     <div class="card"><div class="k">agent.env (editable keys · • = changed)</div>
       <table class="cost" style="margin-top:8px"><tbody>${rows}</tbody></table></div>
-    <div style="position:sticky;bottom:0;display:flex;gap:10px;align-items:center;padding:12px 2px;background:var(--bg)">
+    <div style="display:flex;gap:10px;align-items:center;padding:12px 2px">
       <button class="btn danger" id="saveBtn" onclick="saveCfg()" disabled>Save &amp; apply</button>
       <button class="btn" id="discardBtn" onclick="discardCfg()" disabled>Discard</button>
-      <span class="s" id="dirty">no unsaved changes</span><span class="s" id="cfgmsg" style="margin-left:auto"></span></div>
-  </div>`;
+      <span class="s" id="dirty">no unsaved changes</span><span class="s" id="cfgmsg" style="margin-left:auto"></span></div>`;
   updateDirty();
 }
 function modeLocal(m){if(m==="scheduled"){const iv=prompt("Heartbeat interval seconds:",effV("INTERVAL_SECONDS")||"10800");if(!iv)return;pend("SUPERVISE","off");pend("INTERVAL_SECONDS",iv);}
@@ -619,13 +630,17 @@ function renderAlerts(al){const b=document.getElementById("alertbar");if(!al||!a
   b.innerHTML=al.map(a=>`<div class="alert ${a.level==="crit"?"crit":"warn"}">${a.level==="crit"?"⛔":"⚠"} ${esc(a.msg)}</div>`).join("");}
 /* ---------- Overview view ---------- */
 async function loadOverview(){try{ov=await(await fetch(qs("/api/overview"))).json();}catch(e){}renderOverview();loadEscalations();}
+let _escOpen=false;
 async function loadEscalations(){const b=document.getElementById("escbox");if(!b)return;
   let items=[];try{items=(await(await fetch(qs("/api/escalations"))).json()).items||[];}catch(e){return;}
   if(!items.length){b.innerHTML="";return;}
-  b.innerHTML=`<div class="sectit" style="color:var(--idle)">⚠ Needs your decision · ${items.length}</div>`+
-    items.map(it=>`<div class="card" style="margin-bottom:8px;border-left:3px solid var(--idle)">
-      <div class="s"><b style="color:var(--tx)">${esc(it.agent)}</b> · ${esc(it.kind)} · <span class="mono">${esc((it.ts||"").replace("T"," ").replace("Z",""))}</span></div>
-      <div class="s" style="color:var(--tx);margin-top:3px">${esc(it.text)}</div></div>`).join("");}
+  const show=_escOpen?items:items.slice(0,4);
+  b.innerHTML=`<div class="sectit" style="color:var(--idle);cursor:pointer" onclick="_escOpen=!_escOpen;loadEscalations()">⚠ Needs your decision · ${items.length} <span class="s" style="font-weight:400">(${_escOpen?"collapse":"expand"})</span></div>
+    <div style="max-height:${_escOpen?"50vh":"auto"};overflow:auto;margin-bottom:10px">`+
+    show.map(it=>`<div class="s" style="padding:5px 9px;border-left:2px solid var(--idle);margin-bottom:4px;background:var(--card);border-radius:0 6px 6px 0">
+      <b style="color:var(--tx)">${esc(it.agent)}</b> <span class="mono" style="color:var(--mut)">${esc((it.ts||"").slice(0,10))}</span> — ${esc(it.text.slice(0,150))}</div>`).join("")+
+    (!_escOpen&&items.length>show.length?`<div class="s" style="color:var(--mut);padding:3px 9px;cursor:pointer" onclick="_escOpen=true;loadEscalations()">+${items.length-show.length} more…</div>`:"")+
+    `</div>`;}
 async function loadActivity(){const b=document.getElementById("auditbody");if(!b)return;b.innerHTML='<tr><td colspan=5 class="s">loading…</td></tr>';
   try{const j=await(await fetch(qs("/api/audit?n=150"))).json();const es=j.entries||[];
     b.innerHTML=es.length?es.map(e=>{const t=(e.ts||"").replace("T"," ").replace("Z","");
@@ -1014,6 +1029,16 @@ class H(BaseHTTPRequestHandler):
                         pass
             items.sort(key=lambda x: x["ts"], reverse=True)
             return self._send(200, "application/json", json.dumps({"items": items[:100]}))
+        if p == "/api/goal":   # P3 steering: the autonomous-supervisor goal (state/phase-goal.txt)
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            gf = pathlib.Path(home) / "state" / "phase-goal.txt" if home else None
+            txt = gf.read_text(errors="ignore") if (gf and gf.exists()) else ""
+            return self._send(200, "application/json", json.dumps({"goal": txt}))
         if p == "/api/stream":
             return self._stream()
         return self._send(404, "application/json", '{"error":"not found"}')
@@ -1086,6 +1111,27 @@ class H(BaseHTTPRequestHandler):
             try:
                 r = _fleet_cmd(*args, timeout=190)
                 return self._send(200, "application/json", json.dumps({"ok": r.returncode == 0, "out": (r.stdout or r.stderr)[-500:]}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/goal":   # P3 steering: write the autonomous-supervisor goal (no restart needed)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            aid = d.get("id", "")
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(400, "application/json", '{"error":"agent has no home on this host"}')
+            try:
+                gf = pathlib.Path(home) / "state" / "phase-goal.txt"
+                gf.parent.mkdir(parents=True, exist_ok=True)
+                gf.write_text((d.get("text") or "").strip() + "\n")
+                fleet._audit("set-goal", aid, (d.get("text") or "")[:80])
+                return self._send(200, "application/json", json.dumps({"ok": True}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))
         if p == "/api/create":   # enqueue a new-agent spec for the spawn watcher (P1 create-agent)
