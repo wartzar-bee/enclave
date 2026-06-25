@@ -60,6 +60,11 @@ enclave run         # rebuilds both images (docker compose up -d --build) and re
 into the image. If a rebuild ever serves stale code, force it:
 `docker compose build --no-cache agent chat && docker compose up -d`.
 
+## Cost discipline (run a fleet without burning the model cap)
+A persistent fleet on a frontier model burns the subscription/API cap fast — at fleet scale that's the binding constraint. Two layers keep cost down without losing judgment quality, both on by env flag:
+- **Model-tier routing** (`platform/agentd/route_tier.py`, `ROUTER=on`) — routine maintenance heartbeats and purely mechanical directives (post / measure / narrate / commit) run on a cheaper model (`MODEL_ROUTINE`, e.g. `claude-sonnet-4-6`), reserving the top `MODEL` (e.g. `claude-opus`) for judgment (decide / design / review / adjudicate). **Safe-by-default:** anything ambiguous — or any upstream error — resolves to the top model. A directive tagged `[tier:top]`/`[tier:cheap]` overrides per-message; a completed `- [ ]` inbox item (one carrying a `done:` sub-line) is no longer counted as pending, so stale directives can't pin the top model.
+- **Delegation** (`platform/agentd/delegate.py` + the `delegation_guard` PreToolUse hook) — when `BRAIN=claude`, a capable manager is *forced* to hand bulk code-writing to a cheap/local worker (`local_agent.py` in WORKER_MODE) instead of spending frontier tokens on the keystrokes: the worker writes the code under a verify-gate (and off-task edits are reverted) and returns only a JSON summary. The manager plans + reviews; the worker does the labor. The guard self-gates to `BRAIN=claude` — a no-op for `api`/`local` brains, which already *are* the cheap worker. See `docs/DELEGATION.md`.
+
 ## Managing a fleet (many agents)
 Every deployment is independent, but you manage them all from one place — no per-agent babysitting.
 
@@ -158,13 +163,15 @@ Dockerfile.chat/.relay    web-chat + telegram sidecars (stdlib, tiny)
 Dockerfile.qmd/.codegraph optional memory-accelerator images (off by default — compose profiles)
 docker-compose.yml        the stack (+ opt-in `qmd` / `codegraph` / `telegram` profiles)
 bin/enclave               CLI: new / init / brain / run / publish / snapshot / vault-encrypt|decrypt / send / chat / status / stop / logs
-platform/agentd/          the runtime: agentloop, runtime.sh, guard hooks, memory (memory.py + wiki.py),
-                          vault_snapshot.py, web_chat, chat_responder, qmd + codegraph gateways, rlm.py
+platform/agentd/          the runtime: agentloop, runtime.sh, guard + delegation_guard hooks, route_tier
+                          (model-tier router), delegate.py + local_agent.py (manager→worker delegation),
+                          memory (memory.py + wiki.py), vault_snapshot.py, web_chat, chat_responder,
+                          qmd + codegraph gateways, rlm.py
 tools/gcloud/             optional multi-tenant, read-only gcloud bridge (per-agent credential isolation)
-templates/                starter agent homes (ops, support, analyst)
-docs/                     design notes — WORK-DIR (working folder + indexing), WIKI-LAYER,
-                          MEMORY-PROVIDERS, MEMORY-MODES, CODE-MEMORY, WASM-SANDBOX,
-                          VETTING (dependency security passes), ROADMAP
+templates/                starter agent homes (ops, support, analyst) — all wired with guard + delegation_guard
+docs/                     design notes — DELEGATION (manager→worker), OPTIMIZE-BRAIN, WORK-DIR (working
+                          folder + indexing), WIKI-LAYER, MEMORY-PROVIDERS, MEMORY-MODES, CODE-MEMORY,
+                          WASM-SANDBOX, VETTING (dependency security passes), ROADMAP
 ```
 
 ## Memory — one linked, durable, secret-safe brain
