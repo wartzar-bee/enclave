@@ -251,6 +251,14 @@ body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;-
 #nav{display:flex;align-items:center;gap:6px;padding:9px 14px;background:var(--card);border-bottom:1px solid var(--bd);flex:0 0 auto}
 #nav .brand{font-size:12.5px;font-weight:700;letter-spacing:.05em;color:var(--mut);margin-right:8px}
 #newmodal .nl{display:block;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:11px 0 3px}
+.newsecrow input{background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:5px 7px;font-size:12px}
+.secdrop{position:absolute;left:0;right:0;top:calc(100% + 2px);z-index:60;max-height:190px;overflow:auto;border:1px solid var(--bd);border-radius:8px;background:var(--card);box-shadow:0 8px 26px rgba(0,0,0,.45);display:none}
+.secdrop.open{display:block}
+.secdrop .opt{padding:7px 11px;cursor:pointer;font-size:12.5px;color:var(--tx);font-family:var(--mono,monospace)}
+.secdrop .opt:hover{background:var(--hover)}
+.secchips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{display:inline-flex;align-items:center;gap:7px;background:var(--sel);border:1px solid var(--bd);border-radius:14px;padding:3px 7px 3px 11px;font-size:12px;color:var(--tx)}
+.chip .x{cursor:pointer;color:var(--mut);font-weight:700;font-size:14px;line-height:1}.chip .x:hover{color:var(--err)}
 #newmodal input,#newmodal select,#newmodal textarea{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit}
 .cfgi{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 7px;font-size:12px}
 .info{display:inline-block;width:15px;height:15px;line-height:14px;text-align:center;border-radius:50%;border:1px solid var(--mut);color:var(--mut);font-size:10px;font-style:normal;cursor:pointer;margin-left:6px;font-weight:700;vertical-align:middle;user-select:none}
@@ -366,11 +374,15 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <h2 style="margin:0 0 12px">Create agent</h2>
     <label class="nl">name (kebab-case)<span class="info" onclick="showInfo(event,'Becomes the agent id, folder, and container name. Lowercase letters, digits and dashes only.')">i</span></label><input id="n_name" placeholder="my-new-agent">
     <label class="nl">template<span class="info" onclick="showInfo(event,'Starter brain + skills: venture (builds products), autonomous (self-driving), orchestrator (manages sub-agents), ops / analyst / support (focused task agents).')">i</span></label><select id="n_template"><option>venture</option><option>autonomous</option><option>orchestrator</option><option>ops</option><option>analyst</option><option>support</option></select>
-    <label class="nl">brain<span class="info" onclick="showInfo(event,'Model tier: claude (Anthropic) | api (OpenAI-compatible provider) | local (model on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).')">i</span></label><select id="n_brain"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
-    <label class="nl">model (optional)<span class="info" onclick="showInfo(event,'Top model id for the chosen brain. Leave blank to use the template default.')">i</span></label><input id="n_model" placeholder="claude-sonnet-4-6">
+    <label class="nl">brain<span class="info" onclick="showInfo(event,'Model tier: claude (Anthropic) | api (OpenAI-compatible provider) | local (model on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).')">i</span></label><select id="n_brain" onchange="fillNewModels()"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
+    <label class="nl">model (optional)<span class="info" onclick="showInfo(event,'Pick from the models for the chosen brain, or ✏️ custom… to type one. Leave on (template default) to use the template model.')">i</span></label><select id="n_model" onchange="newModelPick()"></select>
     <label class="nl">heartbeat interval seconds (optional)<span class="info" onclick="showInfo(event,'Max idle seconds between ticks when there is no message. 10800 = 3h. Blank = template default.')">i</span></label><input id="n_interval" placeholder="10800">
     <label class="nl">mission (appended to CLAUDE.md)<span class="info" onclick="showInfo(event,'Plain-English description of what this agent does and how it should behave. Appended to its CLAUDE.md system prompt.')">i</span></label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
-    <label class="nl">secrets (comma-separated env files, optional)<span class="info" onclick="showInfo(event,'Scoped credential files to mount from .secrets (you fill in the values after). e.g. anthropic.env, comms-bridge.env.')">i</span></label><input id="n_secrets" placeholder="anthropic.env, comms-bridge.env">
+    <label class="nl">secrets — scoped credentials<span class="info" onclick="showInfo(event,'Credential env files the agent mounts read-only. Search + click to grant existing ones from your library, and/or add a new one (filename + KEY=VALUE). They are written into the agent at creation, so it runs immediately — nothing to fill in later.')">i</span></label>
+    <div style="position:relative"><input id="n_secsearch" placeholder="search credentials to add…" autocomplete="off" oninput="secSearch()" onfocus="secSearch()"><div id="n_secdrop" class="secdrop"></div></div>
+    <div id="n_secchips" class="secchips"></div>
+    <div id="n_newsec"></div>
+    <button type="button" class="btn" onclick="addNewSecret()" style="margin-top:7px">➕ new secret</button>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
       <button class="btn" onclick="closeNew()">Cancel</button>
       <button class="btn danger" onclick="submitNew()">Queue create</button></div>
@@ -405,6 +417,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
       <span class="tab" data-t="status" onclick="tab('status')">Status</span>
       <span class="tab" data-t="config" onclick="tab('config')">Config</span>
+      <span class="tab" data-t="skills" onclick="tab('skills')">Skills</span>
       <span class="tab" data-t="logs" onclick="tab('logs')">Logs</span></div>
     <div id="pane"><div class="empty">Select an agent from the rail.</div></div>
     <div id="dbox"><input id="dtext" placeholder="Send a directive to this agent (wakes its tick)…"><button class="btn" onclick="sendD()">Send</button></div>
@@ -554,6 +567,7 @@ function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);wi
     ensureOv().then(()=>drawMini(sel));
   }
   else if(t==="config"){renderConfig(a);}
+  else if(t==="skills"){renderSkills(a);}
   else if(t==="logs"){
     p.innerHTML=`<div style="display:flex;align-items:center;gap:10px;padding:6px 12px"><label class="s"><input type="checkbox" id="logfollow" checked> live tail</label><span class="s" id="logstamp"></span></div><div id="logs">loading…</div>`;
     loadLogs(true);window._logTimer=setInterval(()=>{if(curtab==="logs"&&document.getElementById("logfollow")&&document.getElementById("logfollow").checked)loadLogs(false);},2000);
@@ -605,7 +619,15 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
   const modelOpts=[...new Set([...(curM?[curM]:[]),...known])].map(m=>`<option ${m===curM?"selected":""}>${esc(m)}</option>`).join("")+(curM?"":`<option value="" selected>(none)</option>`)+`<option value="__custom__">✏️ custom…</option>`;
   const presetBtns=(_cfgMeta.presets||[]).map(n=>`<button class="btn" onclick="presetLocal('${n}')">${esc(n)}</button>`).join(" ");
   const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
-  const rows=_cfgEditable.map(k=>{const ch=_pending[k]!==undefined;return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}${KEY_HELP[k]?ic(KEY_HELP[k]):""}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(effV(k))}" oninput="pend(this.dataset.k,this.value)"></td></tr>`;}).join("");
+  /* BRAIN/MODEL/SUPERVISE are set by the cards above (dropdowns/buttons) — don't repeat them as free
+     text here. Model-valued keys (MODEL_ROUTINE→claude tier, LOCAL_BRAIN_MODEL→local) render as dropdowns. */
+  const HIDE=["BRAIN","MODEL","SUPERVISE"],MODELKEYS={MODEL_ROUTINE:"claude",LOCAL_BRAIN_MODEL:"local"};
+  const rows=_cfgEditable.filter(k=>!HIDE.includes(k)).map(k=>{const ch=_pending[k]!==undefined;const cur=effV(k);let field;
+    if(MODELKEYS[k]!==undefined){const lst=(_cfgMeta.models&&_cfgMeta.models[MODELKEYS[k]])||[];
+      const opts=[...new Set([...(cur?[cur]:[]),...lst])].map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("")+(cur?"":'<option value="" selected>(none)</option>')+'<option value="__custom__">✏️ custom…</option>';
+      field=`<select class="cfgi" data-k="${esc(k)}" onchange="cfgModelPick(this)">${opts}</select>`;}
+    else field=`<input class="cfgi" data-k="${esc(k)}" value="${esc(cur)}" oninput="pend(this.dataset.k,this.value)">`;
+    return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}${KEY_HELP[k]?ic(KEY_HELP[k]):""}</td><td>${field}</td></tr>`;}).join("");
   p.innerHTML=`
     <div class="card" style="margin-bottom:12px"><div class="k">brain${ic(KEY_HELP.BRAIN)}</div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
@@ -626,6 +648,7 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
   updateDirty();
 }
 function modelPick(v){if(v==="__custom__"){const c=prompt("Model id:",effV("MODEL")||"");if(c!==null)pend("MODEL",c.trim());drawConfig();}else{pend("MODEL",v);}}
+function cfgModelPick(el){const k=el.dataset.k;if(el.value==="__custom__"){const c=prompt("Model id:",effV(k)||"");if(c!==null)pend(k,c.trim());drawConfig();}else{pend(k,el.value);}}
 function modeLocal(m){if(m==="scheduled"){const iv=prompt("Heartbeat interval seconds:",effV("INTERVAL_SECONDS")||"10800");if(!iv)return;pend("SUPERVISE","off");pend("INTERVAL_SECONDS",iv);}
   else if(m==="autonomous"){pend("SUPERVISE","auto");}
   else{pend("SUPERVISE","off");pend("INTERVAL_SECONDS","10800");}
@@ -646,16 +669,49 @@ async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dt
 async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});}catch(e){}}
 async function postR(path,body){try{const r=await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});return await r.json();}catch(e){return{error:String(e)};}}
 /* ---------- New-agent modal (P1 create) ---------- */
-function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";}
+let _newModels={};
+async function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";document.getElementById("n_newsec").innerHTML="";await fillNewModels();loadSecretsAvail();}
+let _secAvail=[],_secSel=new Set(),_secLib=false;
+async function loadSecretsAvail(){_secSel=new Set();
+  try{const d=await(await fetch(qs("/api/secrets-available"))).json();_secAvail=d.available||[];_secLib=!!d.lib_configured;}catch(e){_secAvail=[];_secLib=false;}
+  const s=document.getElementById("n_secsearch");if(s){s.value="";s.placeholder=_secLib?"search credentials to add…":"credential library not set — use ➕ new secret";s.disabled=!_secLib;}
+  secDrop([]);renderSecChips();}
+function secSearch(){const q=(document.getElementById("n_secsearch").value||"").toLowerCase();
+  if(!_secLib)return secDrop([]);
+  const m=_secAvail.filter(n=>!_secSel.has(n)&&n.toLowerCase().includes(q)).slice(0,12);secDrop(m);}
+function secDrop(list){const d=document.getElementById("n_secdrop");if(!d)return;
+  if(!list.length){d.className="secdrop";d.innerHTML="";return;}
+  d.className="secdrop open";d.innerHTML=list.map(n=>`<div class="opt" onclick="secAdd('${esc(n)}')">${esc(n)}</div>`).join("");}
+function secAdd(n){_secSel.add(n);document.getElementById("n_secsearch").value="";secDrop([]);renderSecChips();}
+function secDel(n){_secSel.delete(n);renderSecChips();secSearch();}
+function renderSecChips(){const c=document.getElementById("n_secchips");if(!c)return;
+  c.innerHTML=[..._secSel].map(n=>`<span class="chip">${esc(n)}<span class="x" onclick="secDel('${esc(n)}')">×</span></span>`).join("");}
+function addNewSecret(){const box=document.getElementById("n_newsec");const row=document.createElement("div");
+  row.className="newsecrow";row.style.cssText="display:flex;gap:6px;margin-top:6px;align-items:center";
+  row.innerHTML=`<input class="ns_name" placeholder="name.env" style="flex:0 0 130px"><input class="ns_val" placeholder="KEY=value" style="flex:1"><span class="info" onclick="this.parentElement.remove()" style="border-color:var(--err);color:var(--err)" title="remove">×</span>`;
+  box.appendChild(row);}
+function addNewSecret(){const box=document.getElementById("n_newsec");const row=document.createElement("div");
+  row.className="newsecrow";row.style.cssText="display:flex;gap:6px;margin-top:6px;align-items:center";
+  row.innerHTML=`<input class="ns_name" placeholder="name.env" style="flex:0 0 130px"><input class="ns_val" placeholder="KEY=value" style="flex:1"><span class="info" onclick="this.parentElement.remove()" style="border-color:var(--err);color:var(--err)" title="remove">×</span>`;
+  box.appendChild(row);}
+async function fillNewModels(){const sel=document.getElementById("n_model");if(!sel)return;
+  if(!Object.keys(_newModels).length){try{_newModels=(await(await fetch(qs("/api/presets"))).json()).models||{};}catch(e){}}
+  const brain=document.getElementById("n_brain").value;const list=_newModels[brain]||[];const cur=sel.value;
+  sel.innerHTML='<option value="">(template default)</option>'+list.map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("")+'<option value="__custom__">✏️ custom…</option>';}
+function newModelPick(){const sel=document.getElementById("n_model");if(sel.value==="__custom__"){const c=prompt("Model id:","");if(c&&c.trim()){const o=document.createElement("option");o.textContent=c.trim();o.selected=true;sel.insertBefore(o,sel.lastElementChild);}else{sel.value="";}}}
 function closeNew(){document.getElementById("newmodal").style.display="none";}
 async function submitNew(){const g=id=>document.getElementById(id).value.trim();
   const name=g("n_name");const msg=document.getElementById("n_msg");
   if(!/^[a-z0-9][a-z0-9_-]*$/.test(name)){msg.style.color="var(--err)";msg.textContent="name must be kebab-case [a-z0-9][a-z0-9_-]*";return;}
   const body={name,template:g("n_template"),brain:g("n_brain")};
-  if(g("n_model"))body.model=g("n_model");
+  const mdl=g("n_model");if(mdl&&mdl!=="__custom__")body.model=mdl;
   if(g("n_interval"))body.interval_seconds=g("n_interval");
   if(g("n_mission"))body.mission=g("n_mission");
-  const sec=g("n_secrets");if(sec)body.secrets=sec.split(",").map(s=>s.trim()).filter(Boolean);
+  // (A) chosen existing credentials (chips)
+  if(_secSel.size)body.secrets=[..._secSel];
+  // (B) new name/value secret files
+  const ns=[...document.querySelectorAll("#n_newsec .newsecrow")].map(r=>({name:r.querySelector(".ns_name").value.trim(),content:r.querySelector(".ns_val").value})).filter(x=>x.name&&x.content);
+  if(ns.length)body.new_secrets=ns;
   msg.style.color="var(--mut)";msg.textContent="queuing…";
   const r=await postR("/api/create",body);
   if(r&&r.ok){msg.style.color="var(--ok)";msg.textContent=r.note||"queued";setTimeout(()=>{closeNew();load();},2500);}
@@ -696,6 +752,21 @@ async function loadModels(){const b=document.getElementById("modelsbox");if(!b)r
       (info.ranked||[]).map(s=>`<tr><td style="text-align:left" class="mono">${esc(s.model)}${s.model===info.recommend?' <span style="color:var(--ok)">★</span>':""}</td><td>${s.score}</td><td>${s.p50}s</td><td style="text-align:left" class="s">${Object.keys(s.cats||{}).map(c=>c+":"+Math.round(s.cats[c])).join("  ")}</td></tr>`).join("")+
       `</tbody></table></div>`;}
   b.innerHTML=h;}
+/* ---------- Skills tab (P5: learned-memory vault) ---------- */
+async function renderSkills(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading…</div>';
+  let d={};try{d=await(await fetch(qs(`/api/skills?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">skills unavailable (agent has no home on this host)</div>';return;}
+  if(d.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(d.error)+'</div>';return;}
+  const sk=d.skills||[];
+  p.innerHTML=`<div style="padding:16px;overflow:auto;height:100%">
+    <div class="sectit">Learned skills · ${sk.length}${ic("Reusable procedures the agent wrote from its own successful runs (its skills/ vault). Click one to read it.")}</div>
+    ${sk.length?sk.map(s=>`<div class="card" style="margin-bottom:6px"><div style="cursor:pointer" onclick="viewSkill('${esc(s.name)}',this)"><b class="s" style="color:var(--tx)">${esc(s.name.replace(/\\.md$/,""))}</b><div class="s">${esc(s.desc)}</div></div><div class="skbody"></div></div>`).join(""):'<div class="card"><div class="s">no skills learned yet</div></div>'}
+    ${d.memory_index?`<div class="sectit" style="margin-top:16px">Memory index${ic("The agent's learned facts and lessons (memory/INDEX.md) — recalled when relevant on future ticks.")}</div><div class="card"><pre class="s" style="white-space:pre-wrap;margin:0;font-family:inherit">${esc(d.memory_index)}</pre></div>`:""}
+  </div>`;}
+async function viewSkill(name,head){const b=head.parentElement.querySelector(".skbody");if(!b)return;
+  if(b.dataset.open){b.innerHTML="";delete b.dataset.open;return;}
+  b.innerHTML='<div class="s">loading…</div>';
+  try{const t=await(await fetch(qs(`/api/skillfile?id=${encodeURIComponent(sel)}&name=${encodeURIComponent(name)}`))).text();
+    b.innerHTML=`<pre class="s" style="white-space:pre-wrap;margin:8px 0 0;border-top:1px solid var(--bd);padding-top:8px;font-family:inherit">${esc(t)}</pre>`;b.dataset.open="1";}catch(e){b.innerHTML='<div class="s" style="color:var(--err)">failed to load</div>';}}
 function gauge(w,label){const pct=w&&w.pct!=null?w.pct:null;const warn=label.indexOf("5h")>=0?70:85;
   /* resolve to real hex — Chrome does NOT substitute var() inside SVG presentation attributes
      (fill=/stroke=), so passing "var(--ok)" there renders black/invisible. */
@@ -1021,6 +1092,13 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, "application/json", json.dumps(
                 {"archetypes": {}, "note": "No recommendations configured. Point ENCLAVE_MODEL_RECS "
                  "at a model-eval recommendations JSON (e.g. produced by recommend_setup.py --json)."}))
+        if p == "/api/secrets-available":   # NAMES of the scoped-credential library (no values) for create
+            lib = os.environ.get("ENCLAVE_SECRETS_LIB", "")
+            names = []
+            if lib and os.path.isdir(lib):
+                names = sorted(f.name for f in pathlib.Path(lib).glob("*.env"))
+            return self._send(200, "application/json", json.dumps(
+                {"available": names, "lib_configured": bool(lib)}))
         if p == "/api/doctor":   # P3: per-agent wiring health check (in-process, no docker)
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
@@ -1118,6 +1196,56 @@ class H(BaseHTTPRequestHandler):
             gf = pathlib.Path(home) / "state" / "phase-goal.txt" if home else None
             txt = gf.read_text(errors="ignore") if (gf and gf.exists()) else ""
             return self._send(200, "application/json", json.dumps({"goal": txt}))
+        if p == "/api/skills":   # P5: the agent's learned-memory vault (skills/ + memory index)
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(400, "application/json", '{"error":"no home"}')
+            skills = []
+            sk = pathlib.Path(home) / "skills"
+            if sk.is_dir():
+                for f in sorted(sk.glob("*.md")):
+                    if f.name == "INDEX.md":
+                        continue
+                    desc = ""
+                    try:
+                        lines = f.read_text(errors="ignore").splitlines()
+                        start = 0
+                        if lines and lines[0].strip() == "---":   # skip a YAML frontmatter block
+                            for j in range(1, len(lines)):
+                                if lines[j].strip() == "---":
+                                    start = j + 1; break
+                        for ln in lines[start:]:
+                            s = ln.strip()
+                            if s.startswith("# "):
+                                desc = s[2:][:140]; break
+                            if s and not s.startswith("#"):
+                                desc = s[:140]; break
+                    except Exception:
+                        pass
+                    skills.append({"name": f.name, "desc": desc})
+            mi = pathlib.Path(home) / "memory" / "INDEX.md"
+            memidx = mi.read_text(errors="ignore")[:8000] if mi.exists() else ""
+            return self._send(200, "application/json", json.dumps({"skills": skills, "memory_index": memidx}))
+        if p == "/api/skillfile":   # P5: read one skill file (path-traversal-guarded)
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            name = parse_qs(urlparse(self.path).query).get("name", [""])[0]
+            if not fleet._SAFE.match(aid or "") or not re.match(r"^[A-Za-z0-9._-]+\.md$", name or ""):
+                return self._send(400, "text/plain", "bad request")
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(404, "text/plain", "no home")
+            skdir = (pathlib.Path(home) / "skills").resolve()
+            f = (skdir / name).resolve()
+            if not str(f).startswith(str(skdir) + os.sep) or not f.is_file():
+                return self._send(404, "text/plain", "not found")
+            return self._send(200, "text/plain; charset=utf-8", f.read_text(errors="ignore")[:20000])
         if p == "/api/stream":
             return self._stream()
         return self._send(404, "application/json", '{"error":"not found"}')
@@ -1231,8 +1359,29 @@ class H(BaseHTTPRequestHandler):
                     spec["interval_seconds"] = int(d["interval_seconds"])
                 except (TypeError, ValueError):
                     return self._send(400, "application/json", '{"error":"interval_seconds must be an integer"}')
-            if isinstance(d.get("secrets"), list) and d["secrets"]:
-                spec["secrets"] = [str(s).strip() for s in d["secrets"] if str(s).strip()]
+            # Secrets: (A) existing files chosen from the library + (B) new name/value files. Both are
+            # STAGED as real env files next to the spec; the spawn watcher copies them into the new
+            # agent's secrets/ and removes the staging (so values don't linger). Spec carries only names.
+            import shutil
+            SECNAME = re.compile(r"^[A-Za-z0-9._-]+\.env$")
+            lib = os.environ.get("ENCLAVE_SECRETS_LIB", "")
+            existing = [str(s).strip() for s in (d.get("secrets") or []) if str(s).strip()]
+            for s in existing:
+                if not SECNAME.match(s):
+                    return self._send(400, "application/json", json.dumps({"error": f"bad secret name: {s}"}))
+                if not (lib and os.path.isfile(os.path.join(lib, s))):
+                    return self._send(400, "application/json", json.dumps({"error": f"secret not in library: {s}"}))
+            new_files = {}
+            for ns in (d.get("new_secrets") or []):
+                nm = str((ns or {}).get("name", "")).strip()
+                if nm and not nm.endswith(".env"):
+                    nm += ".env"
+                if not SECNAME.match(nm):
+                    return self._send(400, "application/json", json.dumps({"error": f"bad new-secret filename: {nm}"}))
+                new_files[nm] = str((ns or {}).get("content", ""))
+            all_names = sorted(set(existing) | set(new_files))
+            if all_names:
+                spec["secrets"] = all_names
             qroot = pathlib.Path(os.environ.get("ENCLAVE_SPAWN_QUEUE",
                                  str(fleet.STACKS_ROOTS[0] / "_queue") if fleet.STACKS_ROOTS else "/tmp/enclave-queue"))
             incoming = qroot / "incoming"
@@ -1241,6 +1390,19 @@ class H(BaseHTTPRequestHandler):
                 dest = incoming / f"{name}.json"
                 if dest.exists():
                     return self._send(409, "application/json", json.dumps({"error": f"spec {name}.json already queued"}))
+                if all_names:   # stage the real secret files (chmod 600) for the watcher to apply
+                    staging = qroot / "secrets-staging" / name
+                    staging.mkdir(parents=True, exist_ok=True)
+                    try: os.chmod(staging, 0o700)
+                    except OSError: pass
+                    for s in existing:
+                        shutil.copy2(os.path.join(lib, s), staging / s)
+                        try: os.chmod(staging / s, 0o600)
+                        except OSError: pass
+                    for nm, content in new_files.items():
+                        (staging / nm).write_text(content if content.endswith("\n") else content + "\n")
+                        try: os.chmod(staging / nm, 0o600)
+                        except OSError: pass
                 dest.write_text(json.dumps(spec, indent=2))
                 fleet._audit("create-queued", name, str(dest))
                 watching = (qroot / "processed").exists() or (qroot / "failed").exists()
