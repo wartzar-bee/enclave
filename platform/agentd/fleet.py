@@ -284,7 +284,14 @@ def _compose(a, *verb, timeout=180):
     cfg = a.get("configfile", "")
     if not cfg or not _allowed_stack(cfg):
         sys.exit(f"refusing: {a['id']}'s compose file is missing or outside ENCLAVE_STACKS_ROOTS")
-    cmd = ["docker", "compose", "-f", cfg, "--project-directory", a["dir"], *verb]
+    # Passing an explicit `-f` disables Compose's automatic merge of docker-compose.override.yml, so
+    # include it ourselves when present (standard Compose convention) — otherwise a CLI/dashboard
+    # up/restart silently drops override-only mounts (e.g. studio host-mounted tools/knowledge).
+    cmd = ["docker", "compose", "-f", cfg]
+    override = pathlib.Path(cfg).with_name("docker-compose.override.yml")
+    if override.is_file():
+        cmd += ["-f", str(override)]
+    cmd += ["--project-directory", a["dir"], *verb]
     _audit(verb[0], a["id"], " ".join(verb[1:]))
     return subprocess.run(cmd, timeout=timeout)
 
