@@ -637,7 +637,7 @@ let _escOpen=false;
 async function loadEscalations(){const b=document.getElementById("escbox");if(!b)return;
   let items=[];try{items=(await(await fetch(qs("/api/escalations"))).json()).items||[];}catch(e){return;}
   if(!items.length){b.innerHTML="";return;}
-  const show=_escOpen?items:items.slice(0,4);
+  const show=_escOpen?items:items.slice(0,1);
   b.innerHTML=`<div class="sectit" style="color:var(--idle);cursor:pointer" onclick="_escOpen=!_escOpen;loadEscalations()">⚠ Needs your decision · ${items.length} <span class="s" style="font-weight:400">(${_escOpen?"collapse":"expand"})</span></div>
     <div style="max-height:${_escOpen?"50vh":"auto"};overflow:auto;margin-bottom:10px">`+
     show.map(it=>`<div class="s" style="padding:5px 9px;border-left:2px solid var(--idle);margin-bottom:4px;background:var(--card);border-radius:0 6px 6px 0">
