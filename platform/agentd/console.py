@@ -506,7 +506,8 @@ function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classLis
       </div>
       ${a.headline?`<div class="card" style="margin-bottom:12px"><div class="k">headline</div><div class="s" style="font-size:12.5px;color:var(--tx);margin-top:3px">${esc(a.headline)}</div></div>`:""}
       <div class="chartcard" style="max-width:580px;margin-bottom:12px"><h3>This agent — cost over time (7d, $)</h3><canvas id="miniChart"></canvas></div>
-      <div id="status">${esc(JSON.stringify({id:a.id,up:a.up,status:a.status,brain:a.brain,model:a.model,port:a.port,manager:a.manager,tick:a.tick,reachable:a.reachable,work_open:a.work_open,headline:a.headline,home:a.home},null,2))}</div></div>`;
+      <div class="card"><div class="k">runtime</div><div class="s" style="margin-top:4px">
+        chat ${a.reachable?"reachable":"<span style='color:var(--err)'>unreachable</span>"} · open work ${a.work_open||0} · home <span class="mono">${esc(a.home||"—")}</span></div></div></div>`;
     ensureOv().then(()=>drawMini(sel));
   }
   else if(t==="config"){renderConfig(a);}
@@ -750,7 +751,10 @@ const _urlView=new URLSearchParams(location.search).get("view");
 try{view((["overview","agents","graph"].includes(_urlView)?_urlView:null)||localStorage.getItem("console_view")||"overview");}catch(e){view("overview");}
 load();
 setInterval(()=>{if(curview==="overview")loadOverview();},15000);
-try{const es=new EventSource(qs("/api/stream"));es.onmessage=e=>{try{const j=JSON.parse(e.data);agents=j.agents||agents;if(curview==="agents"){render();if(sel&&agents[sel])setBar(agents[sel]);}else if(curview==="overview")renderOverview();}catch(_){}};}catch(e){setInterval(load,5000);}
+let _lastA="";
+try{const es=new EventSource(qs("/api/stream"));es.onmessage=e=>{try{const j=JSON.parse(e.data);const na=j.agents||agents;const k=JSON.stringify(na);
+  if(k===_lastA)return;                       /* skip no-op pushes — the rail rebuilt every ~4s and flickered ("page reloads") even when nothing changed */
+  _lastA=k;agents=na;if(curview==="agents"){render();if(sel&&agents[sel])setBar(agents[sel]);}else if(curview==="overview")renderOverview();}catch(_){}};}catch(e){setInterval(load,5000);}
 </script></body></html>"""
 
 
@@ -847,6 +851,20 @@ class H(BaseHTTPRequestHandler):
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
                 return self._send(400, "application/json", '{"error":"bad id"}')
+            # Read straight from the cached snapshot + files IN-PROCESS — no `enclave fleet` subprocess
+            # and no docker call, so opening the Config tab is instant (the slow CLI path re-snapshotted
+            # the whole fleet every time). Fall back to the CLI only on a cold cache.
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if home:
+                try:
+                    import fleet_config
+                    cfg = fleet_config.read_config(home)
+                    return self._send(200, "application/json", json.dumps(
+                        {"env": cfg["env"], "editable": cfg["editable"], "path": cfg["path"]}))
+                except Exception as e:
+                    return self._send(400, "application/json", json.dumps({"error": str(e)}))
             r = _fleet_cmd("config", aid, "--json", timeout=15)
             if r.returncode != 0:
                 return self._send(400, "application/json", json.dumps({"error": (r.stderr or r.stdout)[-300:]}))
