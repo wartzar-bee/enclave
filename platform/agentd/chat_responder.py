@@ -272,10 +272,30 @@ def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
     return (result or "").strip() or None
 
 
+def _openrouter_key():
+    """Resolve the OpenRouter key from env, else from the scoped secret mount. BRAIN=local agents
+    never get OPENROUTER_API_KEY exported into the loop env (only runtime.sh's BRAIN=api branch
+    sources it), so the env-only path left the chat completion unauthenticated → 401. Mirror the
+    file fallback runtime.sh/local_agent use."""
+    k = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("LOCAL_BRAIN_KEY")
+    if k:
+        return k
+    roots = [os.environ.get("AGENT_DIR", "/agent"), os.environ.get("TOOLS_ROOT", "/workspace")]
+    for r in roots:
+        f = pathlib.Path(r) / ".secrets" / "openrouter.env"
+        try:
+            for ln in f.read_text().splitlines():
+                if ln.startswith("OPENROUTER_API_KEY="):
+                    return ln.split("=", 1)[1].strip().strip('"').strip("'")
+        except Exception:
+            pass
+    return ""
+
+
 def _answer_api(prompt, model, timeout, log):
     """Single-shot completion for BRAIN=api/local (no tools)."""
     base = os.environ.get("BRAIN_API_BASE") or "https://openrouter.ai/api/v1"
-    key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("LOCAL_BRAIN_KEY") or ""
+    key = _openrouter_key()
     body = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}],
                        "max_tokens": int(os.environ.get("CHAT_MAX_TOKENS", "1024"))}).encode()
     req = urllib.request.Request(base.rstrip("/") + "/chat/completions", data=body,
