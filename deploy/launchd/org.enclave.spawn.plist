@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.enclave.spawn — host daemon that drains the graduation/spawn queue (manager writes a spec, the
+  watcher runs "enclave new" image-only with that spec, then "enclave run"). See docs/SPAWN.md.
+  Committed here as the canonical template alongside its lifecycle twin org.enclave.control.plist.
+
+  Install (operator, on the host): edit the __PLACEHOLDER__ paths, then
+    cp deploy/launchd/org.enclave.spawn.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/org.enclave.spawn.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.enclave.spawn</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>__ENCLAVE_REPO__/bin/enclave</string>
+        <string>fleet</string>
+        <string>watch</string>
+        <string>__FLEET_ROOT__/_queue</string>
+        <string>--stacks-root</string>
+        <string>__FLEET_ROOT__</string>
+        <string>--interval</string>
+        <string>5</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ENCLAVE_STACKS_ROOTS</key>
+        <string>__FLEET_ROOT__</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/org.enclave.spawn.out</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/org.enclave.spawn.err</string>
+</dict>
+</plist>
