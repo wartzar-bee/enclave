@@ -11,7 +11,7 @@ Discovery (observed state, NOT identity): `docker compose ls --format json` enum
 (project = AGENT_ID, with its ConfigFile). The agent's HOME (its /agent brain dir, which may be mounted
 in-place from elsewhere) is read authoritatively from `docker inspect` of the agent container, falling
 back to <deployment>/home. An optional manifest (~/.config/enclave/fleet.json) adds identity the runtime
-can't infer — notably a `manager` (the studio-agent → sub-agents hierarchy) the rail groups by.
+can't infer — notably a `manager` (the master-agent → sub-agents hierarchy) the rail groups by.
 
 Stdlib only. Runs on the host (needs the docker CLI). Lifecycle (up/down) lands in P1b via a fleetctl
 privilege helper; this module is read-only + open-in-browser.
@@ -173,7 +173,7 @@ def snapshot():
         }
     # Auto-classify standalone vs fleet from the manager hierarchy (no config): an agent is part of a
     # FLEET if it has a manager OR is itself a manager of someone; otherwise it runs STANDALONE
-    # (e.g. agent-pas-ops — its own independent enclave, not wired into the studio→sub-agents tree).
+    # (its own independent enclave, not wired into any master→sub-agents tree).
     managers = {a["manager"] for a in agents.values() if a.get("manager")}
     for aid, a in agents.items():
         a["kind"] = "fleet" if (a.get("manager") or aid in managers) else "standalone"
@@ -211,7 +211,7 @@ _scan_cache = {"ts": 0.0, "data": {}}
 
 def _scan_deployments(max_depth=4, ttl=30.0):
     """Auto-discover enclave deployments on disk under STACKS_ROOTS, at ANY depth (bounded) — so the
-    console finds standalone agents (e.g. agent-pas-ops) AND never-`up`'d fleet members with no per-dir
+    console finds standalone agents AND never-`up`'d fleet members with no per-dir
     config, just a search root (default ~/Dev). Marker-gated + skips vcs/vendor/backup dirs so a broad
     root stays clean; de-dupes by AGENT_ID (first match wins). {id: dir}.
 

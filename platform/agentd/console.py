@@ -2,7 +2,7 @@
 """
 console.py — Enclave fleet console (P2): one web panel to see + steer 20-100 agents.
 
-Two panes (NOT a table): a left RAIL of agents grouped by manager (the studio-agent -> sub-agents
+Two panes (NOT a table): a left RAIL of agents grouped by manager (the master-agent -> sub-agents
 hierarchy) with live status dots, and a right DETAIL pane (Chat / Status / Logs + a directive box).
 
 Architecture (per FLEET-CONSOLE-PLAN.md v2, post-critique):
@@ -438,7 +438,7 @@ function kidsOf(id){return Object.values(agents).filter(a=>a.manager===id);}   /
 function isManager(id){return kidsOf(id).length>0;}                            // runs a fleet of sub-agents
 function railRow(a,depth){
   const k=statusKey(a),mgr=isManager(a.id),n=kidsOf(a.id).length;
-  const pad=10+depth*17, master=mgr&&depth===0;          // depth-0 manager = the fleet master (e.g. studio)
+  const pad=10+depth*17, master=mgr&&depth===0;          // depth-0 manager = the fleet master
   const tree=depth?`<span class="tree">└ </span>`:"";
   const crown=mgr?`<span class="crown" title="manager — runs a fleet of sub-agents">♛</span>`:"";
   const badge=mgr?`<span class="mgrbadge" title="manages ${n} sub-agent(s)">FLEET ·${n}</span>`:"";
@@ -455,8 +455,8 @@ function render(){
   if(f){ /* filtering: flat list (a tree with hidden parents misleads) — badges still mark managers */
     list.sort(byId).forEach(a=>h+=railRow(a,0));
   }else{
-    /* FLEET as a real hierarchy: each master (depth-0 manager, e.g. studio) with its sub-agents nested
-       beneath it; STANDALONE (independent enclaves like agent-pas-ops) in their own section. */
+    /* FLEET as a real hierarchy: each master (depth-0 manager) with its sub-agents nested
+       beneath it; STANDALONE (independent enclaves not wired into a fleet) in their own section. */
     const ids=new Set(all.map(a=>a.id));
     const fleet=all.filter(a=>a.kind!=="standalone");
     const roots=fleet.filter(a=>!a.manager||!ids.has(a.manager)).sort(byId);
