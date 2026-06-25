@@ -151,7 +151,52 @@ def snapshot():
             "tick": (st["tick"] or "idle") if running else "down",
             "last_seen": st["last_seen"],
         }
+    # Folder-scan: surface DOWN / never-`up`'d deployments compose-ls can't see (incl. standalone
+    # agents outside the main fleet root), marked down — so the console shows the whole fleet.
+    for aid, dep in _scan_deployments().items():
+        if aid in agents:
+            continue
+        env = _env(dep)
+        home = pathlib.Path(dep) / "home"
+        home = home if home.is_dir() else None
+        st = _state(home)
+        m = man.get(aid, {})
+        agents[aid] = {
+            "id": aid, "up": False, "status": "stopped",
+            "brain": env.get("BRAIN", "?"), "model": env.get("MODEL") or env.get("BRAIN_MODEL", "?"),
+            "port": _port(env), "dir": dep,
+            "configfile": str(pathlib.Path(dep) / "docker-compose.yml"),
+            "home": str(home) if home else "",
+            "manager": m.get("manager", ""), "tags": m.get("tags", []),
+            "headline": st["headline"], "work_open": st["work_open"],
+            "tick": "down", "last_seen": st["last_seen"],
+        }
     return agents
+
+
+def _is_deployment(d):
+    d = pathlib.Path(d)
+    return (d / "docker-compose.yml").is_file() and (d / ".env").is_file()
+
+
+def _scan_deployments():
+    """Folder-scan the stacks roots for enclave deployments compose-ls misses (down/never-started). A
+    root may be a PARENT of deployments OR a deployment dir itself (a standalone agent). {id: dir}."""
+    out = {}
+    for root in STACKS_ROOTS:
+        root = pathlib.Path(root)
+        try:
+            cands = [root] if _is_deployment(root) else [c for c in root.iterdir() if c.is_dir()]
+        except Exception:
+            continue
+        for c in cands:
+            if not _is_deployment(c):
+                continue
+            aid = _env(str(c)).get("AGENT_ID") or pathlib.Path(c).name
+            if _SAFE.match(aid):
+                out.setdefault(aid, str(c))
+    return out
+
 
 
 AUDIT = pathlib.Path(os.environ.get("ENCLAVE_FLEET_AUDIT",

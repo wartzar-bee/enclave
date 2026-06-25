@@ -57,8 +57,11 @@ def choose_tier(reason, pending, model, routine, forced=None):
         if any(k in blob for k in MECHANICAL):
             return routine, "directive:mechanical→routine"
         return model, "directive:uncertain→top"      # safe default: don't under-power
-    if reason == "heartbeat":
-        return routine, "routine-heartbeat→routine"   # idle maintenance pass — the frequent cheap win
+    if reason in ("heartbeat", "continue"):
+        # Routine maintenance pass / continuous backlog re-fire (no parsed directive) — the frequent
+        # cheap win. A self-driving agent's back-to-back grind MUST stay off the top model; Opus is for
+        # judgment directives + escalation only (see docs/CONTEXT-AND-TICKS.md).
+        return routine, f"routine-{reason}→routine"
     return model, f"{reason}→top"                      # startup / a directive trigger with nothing parsed
 
 

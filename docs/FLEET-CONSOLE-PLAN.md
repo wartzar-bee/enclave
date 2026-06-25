@@ -173,6 +173,37 @@ browser ──auth(session)──▶│  ThreadingHTTPServer, 127.0.0.1   │  l
 - **P2 — web console**: rail + status dots (bg probe + SSE) + reverse-proxied chat + directive box.
 - **P3 — peer-messaging Network view** + bulk ops (multi-select directive) + audit log + auth hardening.
 
+## Monitoring views (implemented) — Overview + Graph
+
+The console is now a **3-view** app (top nav): **Overview** (default) · **Agents** (the original rail +
+chat/status/logs + directives) · **Graph** (fleet topology). A second, slower background loop
+(`_cost_loop`, ~45s — `CONSOLE_COST_SECS`) feeds the cost/monitoring data so the 4s agent snapshot stays
+hot and independent; the whole loop is fail-open.
+
+- **Overview** — subscription **cap gauges** (5h + 7d %, color-coded at the guard thresholds 70/85/90,
+  reset countdown, "credits OFF" badge); **fleet spend cards** (window $, tokens, ticks, daily burn +
+  projected week, cache-hit %); a **sortable per-agent cost table** (window $, tokens, spend-share %,
+  cache %, last-tick $ + reason, live status dot — row click → Agents view); and **charts** (Chart.js,
+  vendored): fleet cost over time stacked by agent, cost by tick-reason, cost by model. Window selector
+  (today / wtd / 7d). An **alerts banner** (cap ≥ warn/floor, agent up-but-not-ticking, an agent over
+  60% of fleet spend) shows on every view.
+- **Graph** — force-directed topology (force-graph, vendored): nodes = agents (color = status, size =
+  wtd spend, accent ring = open work), edges = the manager hierarchy (`fleet.json` + snapshot) + peer
+  comms (parsed from each agent's `inbox.md`, particle-animated). Node click → Agents view.
+- **Polish:** **CSV export** of the per-agent rollup (`GET /api/usage.csv?window=…`, ⬇ button on
+  Overview); a **per-agent 7d cost mini-chart** on the Agents → Status tab (with wtd-spend + last-tick
+  cards); and a dashed **"tick fix" marker** on the cost-over-time charts at the date the
+  lean-tick/off-Opus change landed, so the burn drop is visible at a glance.
+
+**Endpoints:** `GET /api/overview` (usage today/wtd/7d + cap + series + last-tick + alerts + graph),
+`GET /api/graph`, `GET /static/*` (vendored libs); `/api/fleet` now also carries `alerts`.
+**Data sources (read-only):** each agent's `state/usage.jsonl` (per-tick cost — the truth), the
+freshest `state/claude-usage.json` for the cap (or a live probe if `CLAUDE_CODE_OAUTH_TOKEN` is
+present), `state/api_spending.jsonl` for pool spend. **Backend reuse:** `usage.py` `aggregate()` /
+`series()` / `last_record()` + `window_cutoff()`; `claude_usage.fetch()`. No build step, no CDN, works
+offline (libs vendored under `platform/agentd/static/`). If the OAuth token is absent the gauges show
+`n/a` but every spend table/chart still works.
+
 ## What reuses vs net-new
 | Reuse as-is | Net-new |
 |---|---|
