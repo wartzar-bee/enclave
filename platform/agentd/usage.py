@@ -221,6 +221,39 @@ def series(agent_paths, cutoff_epoch, bucket="day", by="agent"):
     return {"bucket": bucket, "by": by, "buckets": buckets, "series": out}
 
 
+def api_rollup(path, cutoff_epoch):
+    """Roll up REAL external-API spend from api_spending.jsonl (fields: ts, model, prompt_tokens,
+    completion_tokens, usd) since cutoff. Returns {usd, calls, by_model:{m:{usd,calls}}}. OUT-OF-POCKET
+    money (OpenRouter / NVIDIA / api+optimize pools) — distinct from Claude subscription usage in
+    usage.jsonl (which counts against the cap, not the wallet)."""
+    out = {"usd": 0.0, "calls": 0, "by_model": {}}
+    p = pathlib.Path(path)
+    if not p.exists():
+        return out
+    with p.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            ts = _parse_ts(rec.get("ts"))
+            if cutoff_epoch is not None and (ts is None or ts < cutoff_epoch):
+                continue
+            usd = rec.get("usd") or 0
+            out["usd"] += usd
+            out["calls"] += 1
+            bm = out["by_model"].setdefault(rec.get("model") or "unknown", {"usd": 0.0, "calls": 0})
+            bm["usd"] += usd
+            bm["calls"] += 1
+    out["usd"] = round(out["usd"], 4)
+    for m in out["by_model"]:
+        out["by_model"][m]["usd"] = round(out["by_model"][m]["usd"], 4)
+    return out
+
+
 def last_record(path):
     """The most recent tick record (last non-blank JSON line), or {} — for the per-agent 'last tick
     cost / model / rc' column. Reads only the tail."""

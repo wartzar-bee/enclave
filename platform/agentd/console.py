@@ -41,7 +41,7 @@ _sessions = {}   # token -> expiry (process-local; re-auth is one POST)
 # any error here must never wedge the snapshot or the page. Read by /api/overview + /api/fleet(alerts).
 STATIC = HERE / "static"
 CAP_CACHE = HERE / "state" / "claude-usage.json"
-_cost = {"usage": {}, "cap": {}, "series": {}, "alerts": [], "last": {}, "graph": {"nodes": [], "links": []}, "ts": 0}
+_cost = {"usage": {}, "external": {}, "cap": {}, "series": {}, "alerts": [], "last": {}, "graph": {"nodes": [], "links": []}, "ts": 0}
 _cost_lock = threading.Lock()
 
 
@@ -173,10 +173,22 @@ def _cost_loop():
         try:
             paths, snap = _snap_homes()
             wins = {}
+            ext = {}
             for w in ("today", "wtd", "7d"):
                 cut, _ = _usage.window_cutoff(w)
                 fleet_t, agents_t = _usage.aggregate(paths, cut)
                 wins[w] = {"fleet": fleet_t, "agents": agents_t}
+                # REAL external-API spend ($ out of pocket) from each agent's api_spending.jsonl
+                fusd, agext, bym = 0.0, {}, {}
+                for aid, up in paths.items():
+                    r = _usage.api_rollup(str(pathlib.Path(up).parent / "api_spending.jsonl"), cut)
+                    if r["calls"]:
+                        agext[aid] = r
+                    fusd += r["usd"]
+                    for m, v in r["by_model"].items():
+                        b = bym.setdefault(m, {"usd": 0.0, "calls": 0})
+                        b["usd"] = round(b["usd"] + v["usd"], 4); b["calls"] += v["calls"]
+                ext[w] = {"fleet": {"usd": round(fusd, 4), "by_model": bym}, "agents": agext}
             cut7, _ = _usage.window_cutoff("7d")
             ser = {by: _usage.series(paths, cut7, "day", by) for by in ("agent", "model", "reason")}
             last = {aid: _usage.last_record(p) for aid, p in paths.items()}
@@ -184,7 +196,7 @@ def _cost_loop():
             graph = _build_graph(snap, paths, wins.get("wtd", {}).get("agents", {}))
             alerts = _alerts(snap, wins.get("wtd", {}), cap)
             with _cost_lock:
-                _cost.update(usage=wins, cap=cap, series=ser, alerts=alerts, last=last, graph=graph, ts=time.time())
+                _cost.update(usage=wins, external=ext, cap=cap, series=ser, alerts=alerts, last=last, graph=graph, ts=time.time())
         except Exception as e:
             sys.stderr.write(f"[console] cost loop error: {e}\n")
         time.sleep(COST_SECS)
@@ -325,9 +337,9 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <div class="sectit">Per-agent consumption</div>
   <table class="cost"><thead id="costhead"></thead><tbody id="costbody"></tbody></table>
   <div class="chartsgrid">
-    <div class="chartcard full"><h3>Fleet cost over time (by agent, $)</h3><canvas id="chTime"></canvas></div>
-    <div class="chartcard"><h3>Cost by tick reason ($)</h3><canvas id="chReason"></canvas></div>
-    <div class="chartcard"><h3>Cost by model ($)</h3><canvas id="chModel"></canvas></div>
+    <div class="chartcard full"><h3>Claude cost over time (by agent, $)</h3><canvas id="chTime"></canvas></div>
+    <div class="chartcard"><h3>Claude cost by tick reason ($)</h3><canvas id="chReason"></canvas></div>
+    <div class="chartcard"><h3>Claude cost by model ($)</h3><canvas id="chModel"></canvas></div>
   </div>
 </div></section>
 <section id="view-agents" class="view">
@@ -361,7 +373,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
 const TOK=new URLSearchParams(location.search).get("token")||"";
 const qs=p=>TOK?(p+(p.includes("?")?"&":"?")+"token="+encodeURIComponent(TOK)):p;
 const PAL=["#d97757","#79c0ff","#3fbf6f","#c9a23f","#b58cf0","#e06c9f","#56b6c2","#d0a35c","#8fbf6f","#f08a8a"];
-let agents={},sel=null,curtab="chat",curview="overview",ov={},sortKey="cost_wtd",sortDir=-1;
+let agents={},sel=null,curtab="chat",curview="overview",ov={},sortKey="claude",sortDir=-1;
 function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 function theme(){return document.body.classList.contains("light")?"light":"dark";}
 function cssv(n){return getComputedStyle(document.body).getPropertyValue(n).trim();}
@@ -437,49 +449,52 @@ function renderOverview(){
   const win=document.getElementById("win").value;
   const u=((ov.usage||{})[win])||{fleet:{},agents:{}};
   const F=u.fleet||{};const cap=ov.cap||{};
+  const ex=((ov.external||{})[win])||{fleet:{usd:0,by_model:{}},agents:{}};
+  const exF=ex.fleet||{usd:0,by_model:{}};
   document.getElementById("stale").textContent=ov.ts?("updated "+Math.max(0,Math.round(Date.now()/1000-ov.ts))+"s ago"):"";
-  /* gauges */
+  /* Claude subscription gauges (flat-rate; usage counts against the CAP, not the wallet) */
   let g=gauge(cap.five_hour,"5h session")+gauge(cap.seven_day,"7d weekly");
-  if(cap.credits_enabled===false)g+=`<span class="creditschip" title="Pay-as-you-go credits are off — the fleet runs strictly under the subscription cap">credits OFF</span>`;
+  g+=`<span class="creditschip" title="Claude is a flat subscription: usage counts against the 5h/7d CAP, not your wallet. Pay-as-you-go credits are ${cap.credits_enabled?"ON":"OFF"}. Real money out the door is the External LLM spend →">Claude subscription${cap.credits_enabled===false?" · credits OFF":""}</span>`;
   document.getElementById("gauges").innerHTML=g;
-  /* projection from 7d daily series */
+  /* projection from 7d daily series (Claude notional) */
   const sa=(ov.series||{}).agent||{buckets:[],series:{}};
   let daily=sa.buckets.map((_,i)=>Object.values(sa.series).reduce((s,v)=>s+(v.cost[i]||0),0));
   const days=daily.length||1,avg=daily.reduce((a,b)=>a+b,0)/days;
-  const cacheTok=F.cache_read||0,allTok=F.tokens||0,cachepct=allTok?Math.round(100*cacheTok/allTok):0;
+  const exToday=(((ov.external||{}).today||{}).fleet||{}).usd||0;
+  const provs=Object.keys(exF.by_model||{});
   const cards=[
-    ["Fleet spend ("+win+")",usd(F.cost_usd),num(F.tokens)+" tokens · "+(F.ticks||0)+" ticks"],
-    ["Today",usd((((ov.usage||{}).today||{}).fleet||{}).cost_usd),"so far"],
-    ["Daily burn (7d avg)",usd(avg),"projected week "+usd(avg*7)],
-    ["Cache hit",cachepct+"%",num(cacheTok)+" cached tokens"],
+    ["External LLM spend ("+win+")",usd(exF.usd||0),(provs.length?provs.length+" model(s) · ":"")+"real $ out-of-pocket (OpenRouter/NVIDIA/pools)"],
+    ["Claude usage ("+win+")",usd(F.cost_usd),num(F.tokens)+" tok · subscription, cap-bound (not $ out)"],
+    ["Today",usd(exToday)+" ext",usd((((ov.usage||{}).today||{}).fleet||{}).cost_usd)+" Claude"],
+    ["Daily burn (Claude 7d avg)",usd(avg),"projected week "+usd(avg*7)],
   ];
   document.getElementById("cards").innerHTML=cards.map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${esc(c[2])}</div></div>`).join("");
-  renderCostTable(u.agents||{});
+  renderCostTable(u.agents||{},ex.agents||{});
   drawCharts(u,win);
 }
-function renderCostTable(ag){
-  const cols=[["id","Agent"],["status","·"],["model","Model"],["cost_wtd","$ ("+document.getElementById("win").value+")"],["tokens","Tokens"],["cost_share_pct","Spend %"],["cache","Cache %"],["last","Last tick"]];
-  const rows=Object.entries(ag).map(([id,a])=>{
-    const live=agents[id]||{};const cachepct=a.tokens?Math.round(100*(a.cache_read||0)/a.tokens):0;
-    const lr=(ov.last||{})[id]||{};
-    return {id,model:a.by_model?Object.keys(a.by_model)[0]||"—":"—",cost_wtd:a.cost_usd||0,tokens:a.tokens||0,
-      cost_share_pct:a.cost_share_pct||0,cache:cachepct,tick:live.tick||"down",
+function renderCostTable(ag,agext){
+  const cols=[["id","Agent"],["brain","Brain"],["status","·"],["claude","Claude $"],["external","Ext $"],["tokens","Tokens"],["last","Last tick"]];
+  const ids=new Set([...Object.keys(agents||{}),...Object.keys(ag||{}),...Object.keys(agext||{})]);
+  const rows=[...ids].map(id=>{
+    const live=agents[id]||{},a=ag[id]||{},e=agext[id]||{},lr=(ov.last||{})[id]||{};
+    return {id,brain:live.brain||"?",tick:live.tick||(live.up?"idle":"down"),
+      claude:a.cost_usd||0,external:e.usd||0,tokens:a.tokens||0,
       last:lr.cost_usd!=null?usd(lr.cost_usd)+" "+(lr.reason||""):(lr.reason||"—"),lastrc:lr.rc};
   });
-  rows.sort((x,y)=>{const k=sortKey;let r=(x[k]>y[k]?1:x[k]<y[k]?-1:0);return r*sortDir;});
-  let h="<tr>"+cols.map(c=>`<th onclick="sortBy('${c[0]}')">${esc(c[1])}${sortKey===c[0]?(sortDir<0?" ▾":" ▴"):""}</th>`).join("")+"</tr>";
-  document.getElementById("costhead").innerHTML=h;
+  rows.sort((x,y)=>{const k=sortKey;const xv=k==="total"?x.claude+x.external:x[k],yv=k==="total"?y.claude+y.external:y[k];return (xv>yv?1:xv<yv?-1:0)*sortDir;});
+  document.getElementById("costhead").innerHTML="<tr>"+cols.map(c=>`<th onclick="sortBy('${c[0]}')">${esc(c[1])}${sortKey===c[0]?(sortDir<0?" ▾":" ▴"):""}</th>`).join("")+"</tr>";
   document.getElementById("costbody").innerHTML=rows.map(r=>{
     const dot=r.tick==="working"?"working":r.tick==="down"?"down":"idle";
     return `<tr onclick="pick('${r.id}')"><td><b>${esc(r.id)}</b></td>
+      <td class="mono">${esc(r.brain)}</td>
       <td><span class="dot ${dot}" style="display:inline-block"></span></td>
-      <td class="mono">${esc((r.model||"").replace("claude-",""))}</td>
-      <td><b>${usd(r.cost_wtd)}</b></td><td>${num(r.tokens)}</td>
-      <td>${r.cost_share_pct}%</td><td>${r.cache}%</td>
-      <td style="${r.lastrc!=null&&r.lastrc!==0?'color:var(--down)':''}">${esc(r.last)}</td></tr>`;
-  }).join("")||`<tr><td colspan="8" style="text-align:center;color:var(--mut);padding:18px">No usage recorded yet.</td></tr>`;
+      <td><b>${r.claude?usd(r.claude):"—"}</b></td>
+      <td style="${r.external>0?"color:var(--accent);font-weight:600":""}">${r.external>0?usd(r.external):"—"}</td>
+      <td>${r.tokens?num(r.tokens):"—"}</td>
+      <td style="${r.lastrc!=null&&r.lastrc!==0?"color:var(--down)":""}">${esc(r.last)}</td></tr>`;
+  }).join("")||`<tr><td colspan="7" style="text-align:center;color:var(--mut);padding:18px">No agents discovered.</td></tr>`;
 }
-function sortBy(k){if(sortKey===k)sortDir=-sortDir;else{sortKey=k;sortDir=k==="id"||k==="model"?1:-1;}renderOverview();}
+function sortBy(k){if(sortKey===k)sortDir=-sortDir;else{sortKey=k;sortDir=(k==="id"||k==="brain")?1:-1;}renderOverview();}
 let charts={};
 function mkChart(id,cfg){if(charts[id])charts[id].destroy();const el=document.getElementById(id);if(!el)return;charts[id]=new Chart(el,cfg);}
 function exportCsv(){window.open(qs("/api/usage.csv?window="+document.getElementById("win").value),"_blank");}
