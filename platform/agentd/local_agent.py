@@ -100,7 +100,12 @@ def chat(endpoint, messages, max_tokens, temperature, timeout):
                 f.write(json.dumps(entry) + "\n")
         except Exception:
             pass
-    return j["choices"][0]["message"]["content"] or ""
+    msg = (j.get("choices") or [{}])[0].get("message", {}) or {}
+    # Reasoning models (e.g. NVIDIA Nemotron) split thinking into a separate `reasoning` field and
+    # only fill `content` once they stop reasoning — if a long trace hits max_tokens first
+    # (finish_reason=length), `content` is absent ENTIRELY. Resolve robustly (content → reasoning)
+    # instead of KeyError-crashing the whole tick.
+    return (msg.get("content") or msg.get("reasoning") or "")
 
 
 # ── tool protocol: parse the model's {tool,input} call ──────────────────────────────────────
@@ -480,11 +485,22 @@ def run(agent_dir):
     timeout = int(os.environ.get("LOCAL_REQ_TIMEOUT", "360"))   # 80B cold-reload after idle can exceed 180s
     hook = os.environ.get("GUARD_HOOK") or "guard.py"
 
-    system = (agent_dir / "CLAUDE.md").read_text() if (agent_dir / "CLAUDE.md").exists() else ""
-    turn = (agent_dir / "tick.txt").read_text() if (agent_dir / "tick.txt").exists() else "Run one autonomous tick."
-    recall = (agent_dir / "state" / "recall.md")
-    if recall.exists():
-        turn = f"{turn}\n\n<recall>\n{recall.read_text()[:6000]}\n</recall>"
+    if os.environ.get("WORKER_MODE"):
+        # Delegated worker: not an autonomous tick — execute ONE subtask handed down by a manager.
+        # Ignore CLAUDE.md/recall (no persona/world-rebuild); the task IS the instruction. Escalation
+        # is blocked below (workers never call the frontier; that's the manager's job).
+        system = ("You are a WORKER sub-agent. A manager delegated you ONE concrete task. Do EXACTLY "
+                  "that task using your tools (bash/read/write/edit/glob/grep/qmd) — write real, "
+                  "COMPLETE files, run code to check it. Do not ask questions, do not expand scope, do "
+                  "not git/commit. When the task is done AND verified, call `finish` with a 2-5 line "
+                  "summary of what you did and which files you changed.")
+        turn = os.environ.get("DELEGATE_TASK", "Complete the delegated task, then call finish.")
+    else:
+        system = (agent_dir / "CLAUDE.md").read_text() if (agent_dir / "CLAUDE.md").exists() else ""
+        turn = (agent_dir / "tick.txt").read_text() if (agent_dir / "tick.txt").exists() else "Run one autonomous tick."
+        recall = (agent_dir / "state" / "recall.md")
+        if recall.exists():
+            turn = f"{turn}\n\n<recall>\n{recall.read_text()[:6000]}\n</recall>"
 
     messages = [{"role": "system", "content": system + "\n\n" + HARNESS},
                 {"role": "user", "content": turn}]
@@ -601,7 +617,11 @@ def run(agent_dir):
                 "FULL file body BETWEEN the fences:\n```write " + str(inp.get("file_path", "<path>")) +
                 "\n<the complete file content here>\n```\nEmit it now in ONE block."})
             continue
-        if tool == "escalate":
+        if tool == "escalate" and os.environ.get("WORKER_MODE"):
+            obs = ("error: a delegated worker cannot escalate to the frontier model — that is the "
+                   "manager's job. Complete the task with your own tools (bash/read/write/edit/grep/qmd) "
+                   "or call `finish` reporting what blocked you.")
+        elif tool == "escalate":
             obs = exec_escalate(agent_dir, inp, esc, max_tokens, timeout)
         elif tool in EXECUTORS:
             obs = EXECUTORS[tool](agent_dir, inp)
