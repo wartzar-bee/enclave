@@ -38,6 +38,35 @@ SECRET_DENY = (".ssh/", "id_rsa", "id_ed25519", ".aws/credentials", "/.netrc",
                ".secrets/git.env", "gitcreds-helper")
 GIT_RE = re.compile(r"(?:^|[;&|]\s*|\s)git(?:\s|$)")
 
+# SSRF → cloud-metadata credential theft (P2, always on). The instance-metadata service
+# (169.254.169.254 / metadata.google.internal, identical across AWS/GCP/Azure/OpenStack) hands out
+# short-lived cloud credentials to anything that can reach it — an autonomous agent has ZERO
+# legitimate reason to, so any reference in a Bash command or a WebFetch url is blocked unconditionally.
+# This is the cheapest, highest-leverage egress control: it shuts the canonical SSRF-to-cred-exfil path.
+SSRF_METADATA_RE = re.compile(
+    r"169\.254\.169\.254"                 # canonical IMDS IPv4 (all major clouds)
+    r"|metadata\.google\.internal"        # GCP metadata DNS name
+    r"|\bmetadata\.goog\b"                 # GCP short alias
+    r"|\[?fd00:ec2::254\]?",              # AWS IMDSv2 IPv6
+    re.I)
+
+# Broader private/loopback/link-local egress — OPT-IN (env GUARD_BLOCK_PRIVATE_EGRESS=1), because
+# agents legitimately talk to localhost bridges (comms_bridge, cookie-inject, qmd). When enabled, a
+# network-fetch command (curl/wget/nc/http client) aimed at an RFC-1918 / loopback / link-local target
+# is blocked. Only fires alongside a fetch keyword, so plain `grep localhost file` stays allowed.
+PRIVATE_EGRESS_RE = re.compile(
+    r"\b(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}"            # loopback /8
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"                  # 10/8
+    r"|192\.168\.\d{1,3}\.\d{1,3}"                     # 192.168/16
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"    # 172.16-31/12
+    r"|169\.254\.\d{1,3}\.\d{1,3}"                     # link-local /16
+    r"|0\.0\.0\.0)\b"
+    r"|\blocalhost\b|\[::1\]",
+    re.I)
+FETCH_CLIENT_RE = re.compile(
+    r"\b(?:curl|wget|nc|ncat|netcat|http|https|telnet|ssh|scp|rsync|"
+    r"requests\.(?:get|post|put|head)|urllib|httpx|aiohttp|fetch)\b", re.I)
+
 # Loader / interpreter hijack via env injection — block a Bash command that SETS a dynamic-loader
 # or interpreter preload/startup var. These smuggle attacker code into the NEXT process (a shared
 # lib via LD_PRELOAD/DYLD_*, a JS flag via NODE_OPTIONS, a startup file via BASH_ENV/PYTHONSTARTUP),
@@ -102,8 +131,10 @@ def decide(tool_name, tool_input, publish_deny=None):
     """PURE allow/deny decision (unit-tested). Returns (allow: bool, reason: str)."""
     cmd = (tool_input.get("command") or "") if tool_name == "Bash" else ""
     path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("notebook_path") or ""
+    url = tool_input.get("url") or ""           # WebFetch / fetch-style tools
     low_cmd = cmd.lower()
     blob = f"{cmd} {path}".lower()
+    egress = f"{cmd} {url}"                       # everything that can drive a network request
 
     # 1) git is disabled for agents BY DEFAULT — their writes persist on their own; the master owns
     #    commits. Opt-in per agent via env GUARD_ALLOW_GIT=1 (e.g. an orchestrator that owns its repos
@@ -118,6 +149,19 @@ def decide(tool_name, tool_input, publish_deny=None):
         return False, ("setting a dynamic-loader / interpreter env var (LD_PRELOAD / DYLD_* / "
                        "NODE_OPTIONS / BASH_ENV / GIT_SSH_COMMAND / …) is blocked — it smuggles code "
                        "into the next process and would bypass this guard")
+
+    # 1c) SSRF → cloud-metadata credential theft (always on — never legitimate for an agent).
+    #     Covers Bash (curl/wget/etc.) AND WebFetch-style url inputs.
+    if SSRF_METADATA_RE.search(egress):
+        return False, ("reaching the cloud instance-metadata service (169.254.169.254 / "
+                       "metadata.google.internal) is blocked — it would hand out cloud credentials "
+                       "via SSRF; no agent task needs it")
+
+    # 1d) broader private/loopback/link-local egress (opt-in: GUARD_BLOCK_PRIVATE_EGRESS=1).
+    #     Only fires when a network-fetch client is present, so localhost tooling stays usable.
+    if os.environ.get("GUARD_BLOCK_PRIVATE_EGRESS") and FETCH_CLIENT_RE.search(egress) and PRIVATE_EGRESS_RE.search(egress):
+        return False, ("network egress to a private/loopback/link-local address is blocked for this "
+                       "agent (GUARD_BLOCK_PRIVATE_EGRESS) — only public endpoints are allowed")
 
     # 2) foreign credential / key-store access (defense-in-depth atop the scoped mount)
     for pat in SECRET_DENY:
