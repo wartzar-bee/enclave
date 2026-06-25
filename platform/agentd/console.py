@@ -571,15 +571,17 @@ async function saveGoal(){if(!sel)return;const t=document.getElementById("goalIn
   if(m){if(r&&r.ok){m.style.color="var(--ok)";m.textContent="✓ goal saved (applies next supervisor cycle)";window._cfgGoal=t;}else{m.style.color="var(--err)";m.textContent="error: "+esc((r&&r.error)||"failed");}}}
 function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;const mode=effMode();
   const brainOpts=_cfgMeta.brains.map(b=>`<option ${effV("BRAIN")===b?"selected":""}>${b}</option>`).join("");
+  const known=(_cfgMeta.models&&_cfgMeta.models[effV("BRAIN")])||[];const curM=effV("MODEL");
+  const modelOpts=[...new Set([...(curM?[curM]:[]),...known])].map(m=>`<option ${m===curM?"selected":""}>${esc(m)}</option>`).join("")+(curM?"":`<option value="" selected>(none)</option>`)+`<option value="__custom__">✏️ custom…</option>`;
   const presetBtns=(_cfgMeta.presets||[]).map(n=>`<button class="btn" onclick="presetLocal('${n}')">${esc(n)}</button>`).join(" ");
   const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
   const rows=_cfgEditable.map(k=>{const ch=_pending[k]!==undefined;return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(effV(k))}" oninput="pend(this.dataset.k,this.value)"></td></tr>`;}).join("");
   p.innerHTML=`
     <div class="card" style="margin-bottom:12px"><div class="k">brain</div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-        <select id="brainSel" onchange="pend('BRAIN',this.value)">${brainOpts}</select>
-        <input id="modelIn" placeholder="model (optional)" value="${esc(effV("MODEL"))}" oninput="pend('MODEL',this.value)" style="flex:1"></div>
-      <div class="s" style="margin-top:5px">claude · api · local · optimize</div></div>
+        <select id="brainSel" onchange="pend('BRAIN',this.value);drawConfig()">${brainOpts}</select>
+        <select id="modelSel" onchange="modelPick(this.value)" style="flex:1">${modelOpts}</select></div>
+      <div class="s" style="margin-top:5px">brain sets the pool; model is the list for that brain (pick ✏️ custom… to type one)</div></div>
     <div class="card" style="margin-bottom:12px"><div class="k">run mode</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${modeBtns}</div>
       <div class="s" style="margin-top:5px">${esc(MODE_HELP[mode]||"")}</div></div>
@@ -593,6 +595,7 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
       <span class="s" id="dirty">no unsaved changes</span><span class="s" id="cfgmsg" style="margin-left:auto"></span></div>`;
   updateDirty();
 }
+function modelPick(v){if(v==="__custom__"){const c=prompt("Model id:",effV("MODEL")||"");if(c!==null)pend("MODEL",c.trim());drawConfig();}else{pend("MODEL",v);}}
 function modeLocal(m){if(m==="scheduled"){const iv=prompt("Heartbeat interval seconds:",effV("INTERVAL_SECONDS")||"10800");if(!iv)return;pend("SUPERVISE","off");pend("INTERVAL_SECONDS",iv);}
   else if(m==="autonomous"){pend("SUPERVISE","auto");}
   else{pend("SUPERVISE","off");pend("INTERVAL_SECONDS","10800");}
@@ -653,23 +656,15 @@ async function loadModels(){const b=document.getElementById("modelsbox");if(!b)r
   let d={};try{d=await(await fetch(qs("/api/models"))).json();}catch(e){}
   const arch=d.archetypes||{};
   if(!Object.keys(arch).length){b.innerHTML=`<div class="sectit">Model recommendations</div><div class="card"><div class="s">${esc(d.note||d.error||"no recommendations available")}</div></div>`;return;}
-  const agentOpts=Object.keys(agents).sort().map(id=>`<option>${esc(id)}</option>`).join("");
-  let h=`<div class="sectit">Model recommendations <span class="s" style="font-weight:400">— ${esc(d.pool||"")} pool · ${d.candidates||0} evaluated${d.excluded&&d.excluded.length?" · "+d.excluded.length+" excluded (throttled-on-free)":""}</span></div>`;
+  let h=`<div class="sectit">Model recommendations <span class="s" style="font-weight:400">— ${esc(d.pool||"")} pool · ${d.candidates||0} evaluated${d.excluded&&d.excluded.length?" · "+d.excluded.length+" excluded (throttled-on-free)":""} · pick one in an agent's Config tab</span></div>`;
   for(const role of Object.keys(arch)){const info=arch[role];
     h+=`<div class="card" style="margin-bottom:12px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <div class="k" style="text-transform:capitalize;font-size:13px">${esc(role)}</div>
-      <div class="s">best: <b style="color:var(--ok)">${esc(info.recommend||"—")}</b></div>
-      <span style="flex:1"></span>
-      <select class="mdlagent" data-role="${esc(role)}" style="max-width:160px">${agentOpts}</select>
-      <button class="btn" onclick="applyModel('${esc(role)}','${esc(info.recommend||"")}')">Set as MODEL →</button></div>
+      <div class="s">best: <b style="color:var(--ok)">${esc(info.recommend||"—")}</b></div></div>
       <table class="cost" style="margin-top:8px"><thead><tr><th style="text-align:left">model</th><th>score</th><th>p50</th><th style="text-align:left">categories</th></tr></thead><tbody>`+
       (info.ranked||[]).map(s=>`<tr><td style="text-align:left" class="mono">${esc(s.model)}${s.model===info.recommend?' <span style="color:var(--ok)">★</span>':""}</td><td>${s.score}</td><td>${s.p50}s</td><td style="text-align:left" class="s">${Object.keys(s.cats||{}).map(c=>c+":"+Math.round(s.cats[c])).join("  ")}</td></tr>`).join("")+
       `</tbody></table></div>`;}
   b.innerHTML=h;}
-async function applyModel(role,model){if(!model)return;const s=document.querySelector('.mdlagent[data-role="'+role+'"]');const id=s&&s.value;if(!id)return;
-  if(!confirm("Set MODEL="+model+" on "+id+"?\\n(intended for BRAIN=api/worker agents; this recreates the agent)"))return;
-  const r=await postR("/api/config",{id,updates:{MODEL:model}});
-  alert(r&&r.ok?("✓ applied to "+id):("error: "+((r&&(r.error||r.out))||"failed")));}
 function gauge(w,label){const pct=w&&w.pct!=null?w.pct:null;const warn=label.indexOf("5h")>=0?70:85;
   /* resolve to real hex — Chrome does NOT substitute var() inside SVG presentation attributes
      (fill=/stroke=), so passing "var(--ok)" there renders black/invisible. */
@@ -963,9 +958,28 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, "application/json", r.stdout or "{}")
         if p == "/api/presets":   # the named one-click profiles (+ their key/value defs) for the UI
             import fleet_config
+            # known model ids per brain, so the Config model field can be a dropdown (no typos).
+            # claude tier is the product's supported set; api/optimize models come from the eval
+            # recs file (ENCLAVE_MODEL_RECS) when configured; local is unknown -> current+custom only.
+            claude_tier = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+            eval_models = []
+            recs_path = os.environ.get("ENCLAVE_MODEL_RECS", "")
+            if recs_path and os.path.isfile(recs_path):
+                try:
+                    rd = json.loads(pathlib.Path(recs_path).read_text())
+                    s = set()
+                    for info in rd.get("archetypes", {}).values():
+                        for r in info.get("ranked", []):
+                            s.add(r["model"])
+                    eval_models = sorted(s)
+                except Exception:
+                    pass
+            models_by_brain = {"claude": claude_tier, "optimize": claude_tier,
+                               "api": eval_models, "local": []}
             return self._send(200, "application/json", json.dumps({
                 "presets": sorted(fleet_config.PRESETS), "defs": fleet_config.PRESETS,
-                "brains": sorted(fleet_config.BRAINS), "modes": sorted(fleet_config.MODES)}))
+                "brains": sorted(fleet_config.BRAINS), "modes": sorted(fleet_config.MODES),
+                "models": models_by_brain}))
         if p == "/api/models":   # P4: model-eval recommendations (from an external recs file, if configured)
             recs_path = os.environ.get("ENCLAVE_MODEL_RECS", "")
             if recs_path and os.path.isfile(recs_path):
