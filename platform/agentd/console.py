@@ -326,6 +326,9 @@ body.railcollapsed #railtoggle{display:inline-flex;align-items:center;justify-co
 .btn{background:var(--hover);border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:6px 11px;cursor:pointer;font:inherit;font-size:12.5px}
 .btn:hover{background:var(--sel)}.btn.danger:hover{background:#3a2420;border-color:#c2603f}
 .tabs{display:flex;gap:4px;padding:8px 14px 0}.tab{padding:6px 12px;border-radius:8px 8px 0 0;cursor:pointer;color:var(--mut)}.tab.sel{background:var(--card);color:var(--tx)}
+.seg{display:inline-flex;border:1px solid var(--bd);border-radius:7px;overflow:hidden}
+.segb{padding:3px 11px;border:none;background:transparent;color:var(--mut);cursor:pointer;font-size:12px;font-weight:600}
+.segb.sel{background:var(--sel);color:var(--tx)}.segb:hover:not(.sel){background:var(--hover)}
 #pane{flex:1;background:var(--card);margin:0 0 0 0;overflow:auto;min-height:0;display:flex;flex-direction:column}
 iframe{flex:1;border:0;width:100%;background:var(--bg)}
 #status,#logs{padding:16px;white-space:pre-wrap;font:12.5px ui-monospace,Menlo,monospace;color:var(--tx);overflow:auto}
@@ -592,13 +595,22 @@ function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);wi
   else if(t==="config"){renderConfig(a);}
   else if(t==="skills"){renderSkills(a);}
   else if(t==="logs"){
-    p.innerHTML=`<div style="display:flex;align-items:center;gap:10px;padding:6px 12px"><label class="s"><input type="checkbox" id="logfollow" checked> live tail</label><span class="s" id="logstamp"></span></div><div id="logs">loading…</div>`;
+    p.innerHTML=`<div style="display:flex;align-items:center;gap:12px;padding:6px 12px">
+      <span class="seg"><button class="segb sel" id="logActivity" onclick="setLogKind('activity')">Activity</button><button class="segb" id="logRaw" onclick="setLogKind('raw')">Raw</button></span>
+      <label class="s"><input type="checkbox" id="logfollow" checked> live tail</label><span class="s" id="logstamp"></span>
+      <span style="flex:1"></span><span class="s" id="logkindhint" style="color:var(--mut)">narrative — what the agent did</span></div><div id="logs">loading…</div>`;
     loadLogs(true);window._logTimer=setInterval(()=>{if(curtab==="logs"&&document.getElementById("logfollow")&&document.getElementById("logfollow").checked)loadLogs(false);},2000);
   }
 }
+let _logKind="activity";
+function setLogKind(k){_logKind=k;
+  const A=document.getElementById("logActivity"),R=document.getElementById("logRaw");
+  if(A)A.classList.toggle("sel",k==="activity");if(R)R.classList.toggle("sel",k==="raw");
+  const h=document.getElementById("logkindhint");if(h)h.textContent=k==="activity"?"narrative — what the agent did (state/rollup.md)":"raw tick trace (logs/runner.log)";
+  loadLogs(true);}
 async function loadLogs(force){if(!sel)return;const e=document.getElementById("logs");if(!e)return;
   const atBottom=Math.abs(e.scrollHeight-e.clientHeight-e.scrollTop)<40;
-  try{const x=await(await fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}&tail=300`))).text();
+  try{const x=await(await fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}&tail=300&kind=${_logKind}`))).text();
     if(e.textContent!==x){e.textContent=x;if(force||atBottom)e.scrollTop=e.scrollHeight;}
     const st=document.getElementById("logstamp");if(st)st.textContent="updated "+new Date().toLocaleTimeString();}catch(_){}}
 async function runDoctor(){if(!sel)return;const o=document.getElementById("docout"),c=document.getElementById("docchecks");
@@ -714,7 +726,9 @@ function drawDiagCharts(d){if(typeof Chart==="undefined")return;
 }
 /* ---------- Config tab (P0/P2) — EDIT LOCALLY, then ONE Save applies + restarts once ---------- */
 const MODE_HELP={autonomous:"continuous — prep→do→continue (SUPERVISE=auto)",chat:"reply-only — wakes on messages (SUPERVISE=off)",scheduled:"heartbeat cadence (SUPERVISE=off + INTERVAL_SECONDS)"};
-let _cfgEnv={},_cfgEditable=[],_cfgMeta={brains:["claude","api","local","optimize"],modes:["autonomous","chat","scheduled"],presets:[],defs:{}},_pending={};
+let _cfgEnv={},_cfgEditable=[],_cfgMeta={brains:["claude","api","local","optimize"],modes:["autonomous","chat","scheduled"],presets:[],defs:{}},_pending={},_cfgAdvanced=false;
+function setCfgAdv(v){_cfgAdvanced=v;drawConfig();}
+function _pendAdvCount(){const simple=["BRAIN","MODEL","SUPERVISE"];return Object.keys(_pending).filter(k=>!simple.includes(k)).length;}
 function effV(k){return _pending[k]!==undefined?_pending[k]:(_cfgEnv[k]||"");}
 function effMode(){if(effV("SUPERVISE")==="auto")return"autonomous";const iv=effV("INTERVAL_SECONDS");return (iv&&iv!=="10800")?"scheduled":"chat";}
 function pend(k,v){if(String(_cfgEnv[k]||"")===String(v))delete _pending[k];else _pending[k]=String(v);updateDirty();}
@@ -767,8 +781,10 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
       <div class="s" style="margin-top:5px">${esc(MODE_HELP[mode]||"")}</div></div>
     <div class="card" style="margin-bottom:12px"><div class="k">presets${ic("One-click config profiles. Clicking one FILLS the fields below (brain/mode/etc.) for you to review — nothing is applied until you Save.")}</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${presetBtns||"<span class='s'>none</span>"}</div></div>
-    <div class="card"><div class="k">agent.env (editable keys · • = changed)${ic("The agent's runtime settings file. Only safe-to-edit keys are shown; identity/wiring keys (AGENT_ID, ports, secrets) are hidden. Click the i next to a key for what it does.")}</div>
-      <table class="cost" style="margin-top:8px"><tbody>${rows}</tbody></table></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span class="seg"><button class="segb ${_cfgAdvanced?"":"sel"}" onclick="setCfgAdv(false)">Simple</button><button class="segb ${_cfgAdvanced?"sel":""}" onclick="setCfgAdv(true)">Advanced</button></span>
+      <span class="s" style="color:var(--mut)">${_cfgAdvanced?"all editable agent.env keys":"brain / mode / presets — the common settings"}${_pendAdvCount()?` · <span style="color:var(--idle)">${_pendAdvCount()} unsaved in advanced</span>`:""}</span></div>
+    ${_cfgAdvanced?`<div class="card"><div class="k">agent.env (editable keys · • = changed)${ic("The agent's runtime settings file. Only safe-to-edit keys are shown; identity/wiring keys (AGENT_ID, ports, secrets) are hidden. Click the i next to a key for what it does.")}</div>
+      <table class="cost" style="margin-top:8px"><tbody>${rows}</tbody></table></div>`:""}
     <div style="display:flex;gap:10px;align-items:center;padding:12px 2px">
       <button class="btn danger" id="saveBtn" onclick="saveCfg()" disabled>Save &amp; apply</button>
       <button class="btn" id="discardBtn" onclick="discardCfg()" disabled>Discard</button>
@@ -1154,11 +1170,24 @@ class H(BaseHTTPRequestHandler):
                 n = max(20, min(2000, int(n)))
             except ValueError:
                 n = 200
-            # Read home/logs/runner.log directly from the cached home (fast, no docker). This is the
-            # full tick trace; fall back to `docker compose logs` only if the file is absent.
+            kind = parse_qs(urlparse(self.path).query).get("kind", ["raw"])[0]
             with _lock:
                 a = (_cache.get("agents") or {}).get(aid)
             home = a.get("home") if a else None
+            # Activity = the agent's own narrative (state/rollup.md) — what it DID, human-readable.
+            # Raw = the full tick trace (logs/runner.log). Two different audiences, one toggle.
+            if kind == "activity" and home:
+                rf = pathlib.Path(home) / "state" / "rollup.md"
+                if rf.exists():
+                    try:
+                        return self._send(200, "text/plain; charset=utf-8",
+                                          "\n".join(rf.read_text(errors="ignore").splitlines()[-n:]))
+                    except Exception:
+                        pass
+                return self._send(200, "text/plain; charset=utf-8",
+                                  "(no activity narrative yet — state/rollup.md is written as the agent works)")
+            # Raw: read home/logs/runner.log directly from the cached home (fast, no docker); fall back
+            # to `docker compose logs` only if the file is absent.
             logf = pathlib.Path(home) / "logs" / "runner.log" if home else None
             if logf and logf.exists():
                 try:
@@ -1279,6 +1308,31 @@ class H(BaseHTTPRequestHandler):
                 finally:
                     sk.close()
                 chk("chat port reachable", reach, f":{port}")
+            # Host-side runtime checks (universal — not studio-specific): disk headroom + docker daemon.
+            try:
+                import shutil
+                du = shutil.disk_usage(home if home and os.path.isdir(home) else "/")
+                free_gb = du.free / 1e9
+                chk("disk space", free_gb > 2.0, f"{free_gb:.1f} GB free ({du.free * 100 // du.total}% used)")
+            except Exception:
+                pass
+            chk("docker daemon", bool(fleet._docker("version", "--format", "{{.Server.Version}}").strip()),
+                "reachable")
+            # Optional host-bridge reachability — endpoints come from ENCLAVE_DOCTOR_BRIDGES (the studio
+            # sets its qmd/voice/mlx/… here) so the PRODUCT stays generic. Format: "name:host:port,…".
+            for spec in (os.environ.get("ENCLAVE_DOCTOR_BRIDGES", "") or "").split(","):
+                spec = spec.strip()
+                if not spec or spec.count(":") < 2:
+                    continue
+                bname, bhost, bport = spec.rsplit(":", 2)
+                bsk = socket.socket(); bsk.settimeout(0.4)
+                try:
+                    bsk.connect((bhost, int(bport))); breach = True
+                except Exception:
+                    breach = False
+                finally:
+                    bsk.close()
+                chk(f"bridge: {bname}", breach, f"{bhost}:{bport}")
             return self._send(200, "application/json", json.dumps(
                 {"ok": all(c["ok"] for c in checks), "checks": checks}))
         if p == "/api/resources":   # Phase B: live container resources (docker stats/inspect; host-side)
