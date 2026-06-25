@@ -31,12 +31,42 @@ MECHANICAL = ("post", "upload", "schedule", "measure", "snapshot", "append", "fo
 
 
 def pending_directives(inbox):
-    """Unchecked '- [ ]' items in inbox.md — the directives this tick still has to act on."""
+    """Unchecked '- [ ]' items in inbox.md — the directives this tick still has to act on.
+
+    An item is treated as DONE (and skipped) when it carries a child completion line — an
+    INDENTED '... done:' sub-bullet beneath it. Agents reliably record completion that way
+    but don't always flip the parent '- [ ]' checkbox to '- [x]'; a stale done-but-unflipped
+    directive (esp. one tagged '[tier:top]') would otherwise pin the tier router to the top
+    model on EVERY tick — heartbeats included — forever (a real subscription-cap leak seen on
+    stoneforge: 19 'pending' items, all completed, kept every tick on Opus). Hygiene-tolerant
+    by design: the router shouldn't depend on perfect checkbox discipline."""
     try:
         lines = inbox.read_text().splitlines()
     except OSError:
         return []
-    return [ln.strip()[5:].strip() for ln in lines if ln.strip().startswith("- [ ]")]
+    pending, i, n = [], 0, len(lines)
+    while i < n:
+        ln = lines[i]
+        if ln.strip().startswith("- [ ]"):
+            text, done, j = ln.strip()[5:].strip(), False, i + 1
+            # Scan this item's child lines (indented continuations + sub-bullets) until the
+            # next top-level line. A 'done:' among them marks the directive completed.
+            while j < n:
+                child = lines[j]
+                if not child.strip():
+                    j += 1
+                    continue
+                if child[:1] not in (" ", "\t"):   # next top-level line → end of this item
+                    break
+                if "done:" in child.lower():
+                    done = True
+                j += 1
+            if not done:
+                pending.append(text)
+            i = j
+        else:
+            i += 1
+    return pending
 
 
 def choose_tier(reason, pending, model, routine, forced=None):
