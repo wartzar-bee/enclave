@@ -364,13 +364,13 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
 <div id="newmodal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50">
   <div style="max-width:520px;margin:6vh auto;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:20px;max-height:86vh;overflow:auto">
     <h2 style="margin:0 0 12px">Create agent</h2>
-    <label class="nl">name (kebab-case)</label><input id="n_name" placeholder="my-new-agent">
-    <label class="nl">template</label><select id="n_template"><option>venture</option><option>autonomous</option><option>orchestrator</option><option>ops</option><option>analyst</option><option>support</option></select>
-    <label class="nl">brain</label><select id="n_brain"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
-    <label class="nl">model (optional)</label><input id="n_model" placeholder="claude-sonnet-4-6">
-    <label class="nl">heartbeat interval seconds (optional)</label><input id="n_interval" placeholder="10800">
-    <label class="nl">mission (appended to CLAUDE.md)</label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
-    <label class="nl">secrets (comma-separated env files, optional)</label><input id="n_secrets" placeholder="anthropic.env, comms-bridge.env">
+    <label class="nl">name (kebab-case)<span class="info" onclick="showInfo(event,'Becomes the agent id, folder, and container name. Lowercase letters, digits and dashes only.')">i</span></label><input id="n_name" placeholder="my-new-agent">
+    <label class="nl">template<span class="info" onclick="showInfo(event,'Starter brain + skills: venture (builds products), autonomous (self-driving), orchestrator (manages sub-agents), ops / analyst / support (focused task agents).')">i</span></label><select id="n_template"><option>venture</option><option>autonomous</option><option>orchestrator</option><option>ops</option><option>analyst</option><option>support</option></select>
+    <label class="nl">brain<span class="info" onclick="showInfo(event,'Model tier: claude (Anthropic) | api (OpenAI-compatible provider) | local (model on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).')">i</span></label><select id="n_brain"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
+    <label class="nl">model (optional)<span class="info" onclick="showInfo(event,'Top model id for the chosen brain. Leave blank to use the template default.')">i</span></label><input id="n_model" placeholder="claude-sonnet-4-6">
+    <label class="nl">heartbeat interval seconds (optional)<span class="info" onclick="showInfo(event,'Max idle seconds between ticks when there is no message. 10800 = 3h. Blank = template default.')">i</span></label><input id="n_interval" placeholder="10800">
+    <label class="nl">mission (appended to CLAUDE.md)<span class="info" onclick="showInfo(event,'Plain-English description of what this agent does and how it should behave. Appended to its CLAUDE.md system prompt.')">i</span></label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
+    <label class="nl">secrets (comma-separated env files, optional)<span class="info" onclick="showInfo(event,'Scoped credential files to mount from .secrets (you fill in the values after). e.g. anthropic.env, comms-bridge.env.')">i</span></label><input id="n_secrets" placeholder="anthropic.env, comms-bridge.env">
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
       <button class="btn" onclick="closeNew()">Cancel</button>
       <button class="btn danger" onclick="submitNew()">Queue create</button></div>
@@ -686,12 +686,13 @@ async function loadModels(){const b=document.getElementById("modelsbox");if(!b)r
   let d={};try{d=await(await fetch(qs("/api/models"))).json();}catch(e){}
   const arch=d.archetypes||{};
   if(!Object.keys(arch).length){b.innerHTML=`<div class="sectit">Model recommendations</div><div class="card"><div class="s">${esc(d.note||d.error||"no recommendations available")}</div></div>`;return;}
-  let h=`<div class="sectit">Model recommendations <span class="s" style="font-weight:400">— ${esc(d.pool||"")} pool · ${d.candidates||0} evaluated${d.excluded&&d.excluded.length?" · "+d.excluded.length+" excluded (throttled-on-free)":""} · pick one in an agent's Config tab</span></div>`;
+  const ROLE_HELP={orchestrator:"The agent BRAIN / manager — needs routing, planning, decisions and multi-step instruction-following (what local pods failed at).",coder:"A worker that writes code — graded by actually running its output against tests.",fast:"Cheap high-throughput labor — classify / extract / format. Latency matters most."};
+  let h=`<div class="sectit">Model recommendations <span class="s" style="font-weight:400">— ${esc(d.pool||"")} pool · ${d.candidates||0} evaluated${d.excluded&&d.excluded.length?" · "+d.excluded.length+" excluded (throttled-on-free)":""} · pick one in an agent's Config tab</span>${ic("Best model per agent archetype from the capability eval. This page is a decision aid only — set the model in an agent's Config tab.")}</div>`;
   for(const role of Object.keys(arch)){const info=arch[role];
     h+=`<div class="card" style="margin-bottom:12px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <div class="k" style="text-transform:capitalize;font-size:13px">${esc(role)}</div>
+      <div class="k" style="text-transform:capitalize;font-size:13px">${esc(role)}${ic(ROLE_HELP[role]||"")}</div>
       <div class="s">best: <b style="color:var(--ok)">${esc(info.recommend||"—")}</b></div></div>
-      <table class="cost" style="margin-top:8px"><thead><tr><th style="text-align:left">model</th><th>score</th><th>p50</th><th style="text-align:left">categories</th></tr></thead><tbody>`+
+      <table class="cost" style="margin-top:8px"><thead><tr><th style="text-align:left">model</th><th>score${ic("Weighted capability score for this archetype (0-100), blending the relevant test categories.")}</th><th>p50${ic("Median response latency in seconds — lower is faster.")}</th><th style="text-align:left">categories</th></tr></thead><tbody>`+
       (info.ranked||[]).map(s=>`<tr><td style="text-align:left" class="mono">${esc(s.model)}${s.model===info.recommend?' <span style="color:var(--ok)">★</span>':""}</td><td>${s.score}</td><td>${s.p50}s</td><td style="text-align:left" class="s">${Object.keys(s.cats||{}).map(c=>c+":"+Math.round(s.cats[c])).join("  ")}</td></tr>`).join("")+
       `</tbody></table></div>`;}
   b.innerHTML=h;}
