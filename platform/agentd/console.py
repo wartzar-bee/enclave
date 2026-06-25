@@ -551,10 +551,11 @@ async function setMode(m){let interval;if(m==="scheduled"){interval=prompt("Hear
 async function saveCfg(){const ins=document.querySelectorAll(".cfgi");const upd={};ins.forEach(i=>{const k=i.dataset.k,v=i.value;if((window._cfgEnv||{})[k]!==v)upd[k]=v;});
   if(!Object.keys(upd).length){document.getElementById("cfgmsg").textContent="no changes";return;}
   await applyCfg({updates:upd});}
-async function applyCfg(body){if(!sel)return;const msg=document.getElementById("cfgmsg");if(msg)msg.textContent="applying…";
+async function applyCfg(body){if(!sel)return;const msg=document.getElementById("cfgmsg");if(msg){msg.style.color="var(--mut)";msg.textContent="applying…";}
   const r=await postR("/api/config",Object.assign({id:sel},body));
-  if(msg)msg.textContent=r&&r.ok?"applied — restarting":("error: "+esc((r&&(r.error||r.out))||"failed"));
-  setTimeout(()=>{tab("config");load();},1200);}
+  if(msg){if(r&&r.ok){const stopped=/stopped|will apply/i.test(r.out||"");msg.style.color="var(--ok)";msg.textContent=stopped?"✓ saved — agent is stopped; Start it to apply":"✓ applied — agent recreated (live now)";}
+    else{msg.style.color="var(--err)";msg.textContent="error: "+esc((r&&(r.error||r.out))||"failed");}}
+  setTimeout(()=>{tab("config");load();},1400);}
 async function act(action){if(!sel)return;if(action==="down"&&!confirm("Stop "+sel+"?"))return;
   await post("/api/action",{action,id:sel});setTimeout(load,800);}
 async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dtext.value="";

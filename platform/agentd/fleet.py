@@ -388,13 +388,20 @@ def cmd_list(as_json=False):
 
 
 def _restart_after(a, diff):
-    """Print the applied config diff, then restart the stack so the change takes effect."""
+    """Print the applied config diff, then make it LIVE NOW by recreating the agent container.
+    `docker compose restart` reuses the old container's environment, so it would NOT pick up the
+    new .env/agent.env values until the agent's next natural tick (hours away on a slow heartbeat).
+    `up -d --force-recreate` rebuilds the container with the fresh env and boots it straight into a
+    new tick → the change applies immediately."""
     if not diff:
         print("no change (already set)"); return
     for k, old, new in diff:
         print(f"  {k}: {old or '∅'} → {new}")
-    print(f"restarting {a['id']} to apply …")
-    _compose(a, "restart")
+    if not a.get("up"):
+        print(f"{a['id']} is stopped — config saved; it will apply when you Start the agent.")
+        return
+    print(f"applying to {a['id']} now (recreating agent container) …")
+    _compose(a, "up", "-d", "--force-recreate", "--no-deps", "agent")
 
 
 def cmd_config(aid, as_json=False):
