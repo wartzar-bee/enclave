@@ -366,8 +366,8 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <h2 style="margin:0 0 12px">Create agent</h2>
     <label class="nl">name (kebab-case)<span class="info" onclick="showInfo(event,'Becomes the agent id, folder, and container name. Lowercase letters, digits and dashes only.')">i</span></label><input id="n_name" placeholder="my-new-agent">
     <label class="nl">template<span class="info" onclick="showInfo(event,'Starter brain + skills: venture (builds products), autonomous (self-driving), orchestrator (manages sub-agents), ops / analyst / support (focused task agents).')">i</span></label><select id="n_template"><option>venture</option><option>autonomous</option><option>orchestrator</option><option>ops</option><option>analyst</option><option>support</option></select>
-    <label class="nl">brain<span class="info" onclick="showInfo(event,'Model tier: claude (Anthropic) | api (OpenAI-compatible provider) | local (model on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).')">i</span></label><select id="n_brain"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
-    <label class="nl">model (optional)<span class="info" onclick="showInfo(event,'Top model id for the chosen brain. Leave blank to use the template default.')">i</span></label><input id="n_model" placeholder="claude-sonnet-4-6">
+    <label class="nl">brain<span class="info" onclick="showInfo(event,'Model tier: claude (Anthropic) | api (OpenAI-compatible provider) | local (model on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).')">i</span></label><select id="n_brain" onchange="fillNewModels()"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
+    <label class="nl">model (optional)<span class="info" onclick="showInfo(event,'Pick from the models for the chosen brain, or ✏️ custom… to type one. Leave on (template default) to use the template model.')">i</span></label><select id="n_model" onchange="newModelPick()"></select>
     <label class="nl">heartbeat interval seconds (optional)<span class="info" onclick="showInfo(event,'Max idle seconds between ticks when there is no message. 10800 = 3h. Blank = template default.')">i</span></label><input id="n_interval" placeholder="10800">
     <label class="nl">mission (appended to CLAUDE.md)<span class="info" onclick="showInfo(event,'Plain-English description of what this agent does and how it should behave. Appended to its CLAUDE.md system prompt.')">i</span></label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
     <label class="nl">secrets (comma-separated env files, optional)<span class="info" onclick="showInfo(event,'Scoped credential files to mount from .secrets (you fill in the values after). e.g. anthropic.env, comms-bridge.env.')">i</span></label><input id="n_secrets" placeholder="anthropic.env, comms-bridge.env">
@@ -648,13 +648,19 @@ async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dt
 async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});}catch(e){}}
 async function postR(path,body){try{const r=await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});return await r.json();}catch(e){return{error:String(e)};}}
 /* ---------- New-agent modal (P1 create) ---------- */
-function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";}
+let _newModels={};
+async function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";await fillNewModels();}
+async function fillNewModels(){const sel=document.getElementById("n_model");if(!sel)return;
+  if(!Object.keys(_newModels).length){try{_newModels=(await(await fetch(qs("/api/presets"))).json()).models||{};}catch(e){}}
+  const brain=document.getElementById("n_brain").value;const list=_newModels[brain]||[];const cur=sel.value;
+  sel.innerHTML='<option value="">(template default)</option>'+list.map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("")+'<option value="__custom__">✏️ custom…</option>';}
+function newModelPick(){const sel=document.getElementById("n_model");if(sel.value==="__custom__"){const c=prompt("Model id:","");if(c&&c.trim()){const o=document.createElement("option");o.textContent=c.trim();o.selected=true;sel.insertBefore(o,sel.lastElementChild);}else{sel.value="";}}}
 function closeNew(){document.getElementById("newmodal").style.display="none";}
 async function submitNew(){const g=id=>document.getElementById(id).value.trim();
   const name=g("n_name");const msg=document.getElementById("n_msg");
   if(!/^[a-z0-9][a-z0-9_-]*$/.test(name)){msg.style.color="var(--err)";msg.textContent="name must be kebab-case [a-z0-9][a-z0-9_-]*";return;}
   const body={name,template:g("n_template"),brain:g("n_brain")};
-  if(g("n_model"))body.model=g("n_model");
+  const mdl=g("n_model");if(mdl&&mdl!=="__custom__")body.model=mdl;
   if(g("n_interval"))body.interval_seconds=g("n_interval");
   if(g("n_mission"))body.mission=g("n_mission");
   const sec=g("n_secrets");if(sec)body.secrets=sec.split(",").map(s=>s.trim()).filter(Boolean);
