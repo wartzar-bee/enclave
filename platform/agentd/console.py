@@ -351,6 +351,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <span class="navtab" data-v="agents" onclick="view('agents')">Agents</span>
   <span class="navtab" data-v="graph" onclick="view('graph')">Graph</span>
   <span class="navtab" data-v="activity" onclick="view('activity')">Audit</span>
+  <span class="navtab" data-v="models" onclick="view('models')">Models</span>
   <span id="winwrap"><select id="win" onchange="renderOverview()"><option value="today">Today</option><option value="wtd" selected>Week-to-date</option><option value="7d">Last 7 days</option></select>
     <button class="btn" onclick="exportCsv()" title="Download usage as CSV">⬇ CSV</button></span>
   <span class="stale" id="stale"></span>
@@ -421,6 +422,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <div class="sectit">Audit log <span class="s" style="font-weight:400">— control-plane actions (spawn / lifecycle / config), who &amp; when, newest first</span></div>
   <table class="cost"><thead><tr><th>when</th><th>who</th><th>action</th><th>agent</th><th>detail</th></tr></thead><tbody id="auditbody"></tbody></table>
 </div></section>
+<section id="view-models" class="view"><div class="ovwrap"><div id="modelsbox"></div></div></section>
 </div>
 <script>
 const TOK=new URLSearchParams(location.search).get("token")||"";
@@ -439,9 +441,10 @@ function view(v){curview=v;
   document.getElementById("view-agents").style.display=v==="agents"?"flex":"none";
   document.getElementById("view-graph").style.display=v==="graph"?"block":"none";
   document.getElementById("view-activity").style.display=v==="activity"?"block":"none";
+  document.getElementById("view-models").style.display=v==="models"?"block":"none";
   document.getElementById("winwrap").style.display=v==="overview"?"":"none";
   try{localStorage.setItem("console_view",v);}catch(e){}
-  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else if(v==="activity"){loadActivity();}else{render();}
+  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else if(v==="activity"){loadActivity();}else if(v==="models"){loadModels();}else{render();}
 }
 /* ---------- canonical status model (ONE source of truth — rail, detail, table, graph) ---------- */
 const STATUS={
@@ -646,6 +649,27 @@ async function loadActivity(){const b=document.getElementById("auditbody");if(!b
     b.innerHTML=es.length?es.map(e=>{const t=(e.ts||"").replace("T"," ").replace("Z","");
       return `<tr><td class="mono" style="text-align:left">${esc(t)}</td><td style="text-align:left">${esc(e.who||"")}</td><td style="text-align:left"><b>${esc(e.action||"")}</b></td><td style="text-align:left">${esc(e.agent||"")}</td><td class="s" style="text-align:left">${esc(e.detail||e.result||"")}</td></tr>`;}).join(""):'<tr><td colspan=5 class="s">no actions logged yet</td></tr>';
   }catch(e){b.innerHTML='<tr><td colspan=5 class="s" style="color:var(--err)">audit log unavailable</td></tr>';}}
+async function loadModels(){const b=document.getElementById("modelsbox");if(!b)return;b.innerHTML='<div class="sectit">loading…</div>';
+  let d={};try{d=await(await fetch(qs("/api/models"))).json();}catch(e){}
+  const arch=d.archetypes||{};
+  if(!Object.keys(arch).length){b.innerHTML=`<div class="sectit">Model recommendations</div><div class="card"><div class="s">${esc(d.note||d.error||"no recommendations available")}</div></div>`;return;}
+  const agentOpts=Object.keys(agents).sort().map(id=>`<option>${esc(id)}</option>`).join("");
+  let h=`<div class="sectit">Model recommendations <span class="s" style="font-weight:400">— ${esc(d.pool||"")} pool · ${d.candidates||0} evaluated${d.excluded&&d.excluded.length?" · "+d.excluded.length+" excluded (throttled-on-free)":""}</span></div>`;
+  for(const role of Object.keys(arch)){const info=arch[role];
+    h+=`<div class="card" style="margin-bottom:12px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div class="k" style="text-transform:capitalize;font-size:13px">${esc(role)}</div>
+      <div class="s">best: <b style="color:var(--ok)">${esc(info.recommend||"—")}</b></div>
+      <span style="flex:1"></span>
+      <select class="mdlagent" data-role="${esc(role)}" style="max-width:160px">${agentOpts}</select>
+      <button class="btn" onclick="applyModel('${esc(role)}','${esc(info.recommend||"")}')">Set as MODEL →</button></div>
+      <table class="cost" style="margin-top:8px"><thead><tr><th style="text-align:left">model</th><th>score</th><th>p50</th><th style="text-align:left">categories</th></tr></thead><tbody>`+
+      (info.ranked||[]).map(s=>`<tr><td style="text-align:left" class="mono">${esc(s.model)}${s.model===info.recommend?' <span style="color:var(--ok)">★</span>':""}</td><td>${s.score}</td><td>${s.p50}s</td><td style="text-align:left" class="s">${Object.keys(s.cats||{}).map(c=>c+":"+Math.round(s.cats[c])).join("  ")}</td></tr>`).join("")+
+      `</tbody></table></div>`;}
+  b.innerHTML=h;}
+async function applyModel(role,model){if(!model)return;const s=document.querySelector('.mdlagent[data-role="'+role+'"]');const id=s&&s.value;if(!id)return;
+  if(!confirm("Set MODEL="+model+" on "+id+"?\\n(intended for BRAIN=api/worker agents; this recreates the agent)"))return;
+  const r=await postR("/api/config",{id,updates:{MODEL:model}});
+  alert(r&&r.ok?("✓ applied to "+id):("error: "+((r&&(r.error||r.out))||"failed")));}
 function gauge(w,label){const pct=w&&w.pct!=null?w.pct:null;const warn=label.indexOf("5h")>=0?70:85;
   /* resolve to real hex — Chrome does NOT substitute var() inside SVG presentation attributes
      (fill=/stroke=), so passing "var(--ok)" there renders black/invisible. */
@@ -942,6 +966,16 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, "application/json", json.dumps({
                 "presets": sorted(fleet_config.PRESETS), "defs": fleet_config.PRESETS,
                 "brains": sorted(fleet_config.BRAINS), "modes": sorted(fleet_config.MODES)}))
+        if p == "/api/models":   # P4: model-eval recommendations (from an external recs file, if configured)
+            recs_path = os.environ.get("ENCLAVE_MODEL_RECS", "")
+            if recs_path and os.path.isfile(recs_path):
+                try:
+                    return self._send(200, "application/json", pathlib.Path(recs_path).read_text())
+                except Exception as e:
+                    return self._send(200, "application/json", json.dumps({"error": str(e)}))
+            return self._send(200, "application/json", json.dumps(
+                {"archetypes": {}, "note": "No recommendations configured. Point ENCLAVE_MODEL_RECS "
+                 "at a model-eval recommendations JSON (e.g. produced by recommend_setup.py --json)."}))
         if p == "/api/doctor":   # P3: per-agent wiring health check (in-process, no docker)
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
