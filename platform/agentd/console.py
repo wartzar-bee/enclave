@@ -350,6 +350,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <span class="navtab sel" data-v="overview" onclick="view('overview')">Overview</span>
   <span class="navtab" data-v="agents" onclick="view('agents')">Agents</span>
   <span class="navtab" data-v="graph" onclick="view('graph')">Graph</span>
+  <span class="navtab" data-v="activity" onclick="view('activity')">Activity</span>
   <span id="winwrap"><select id="win" onchange="renderOverview()"><option value="today">Today</option><option value="wtd" selected>Week-to-date</option><option value="7d">Last 7 days</option></select>
     <button class="btn" onclick="exportCsv()" title="Download usage as CSV">⬇ CSV</button></span>
   <span class="stale" id="stale"></span>
@@ -415,6 +416,10 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <div class="li"><span class="sw" style="background:#c9a23f;border-radius:2px"></span>manager link · <span class="sw" style="background:#56b6c2;border-radius:2px"></span>peer comms</div>
   </div>
 </section>
+<section id="view-activity" class="view"><div class="ovwrap">
+  <div class="sectit">Control-plane activity <span class="s" style="font-weight:400">— every spawn / lifecycle / config action, newest first</span></div>
+  <table class="cost"><thead><tr><th>when</th><th>who</th><th>action</th><th>agent</th><th>detail</th></tr></thead><tbody id="auditbody"></tbody></table>
+</div></section>
 </div>
 <script>
 const TOK=new URLSearchParams(location.search).get("token")||"";
@@ -432,9 +437,10 @@ function view(v){curview=v;
   document.getElementById("view-overview").style.display=v==="overview"?"block":"none";
   document.getElementById("view-agents").style.display=v==="agents"?"flex":"none";
   document.getElementById("view-graph").style.display=v==="graph"?"block":"none";
+  document.getElementById("view-activity").style.display=v==="activity"?"block":"none";
   document.getElementById("winwrap").style.display=v==="overview"?"":"none";
   try{localStorage.setItem("console_view",v);}catch(e){}
-  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else{render();}
+  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else if(v==="activity"){loadActivity();}else{render();}
 }
 /* ---------- canonical status model (ONE source of truth — rail, detail, table, graph) ---------- */
 const STATUS={
@@ -492,7 +498,8 @@ function render(){
 function setBar(a){bm.innerHTML=a?`${statusPill(a)} · <span class="mono">${esc(a.status)}</span> · :${a.port}`:"";}
 function pick(id){sel=id;if(curview!=="agents")view("agents");render();const a=agents[id];bt.textContent=id;setBar(a);tab(curtab);}
 function openChat(){if(sel)window.open("http://127.0.0.1:"+agents[sel].port+"/","_blank");}
-function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("sel",e.dataset.t===t));
+function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);window._logTimer=null;}
+  document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("sel",e.dataset.t===t));
   const p=document.getElementById("pane");if(!sel){p.innerHTML='<div class="empty">Select an agent.</div>';return;}
   const a=agents[sel];
   if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/?theme=${theme()}" allow="microphone; clipboard-write"></iframe>`;}
@@ -507,12 +514,28 @@ function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classLis
       ${a.headline?`<div class="card" style="margin-bottom:12px"><div class="k">headline</div><div class="s" style="font-size:12.5px;color:var(--tx);margin-top:3px">${esc(a.headline)}</div></div>`:""}
       <div class="chartcard" style="max-width:580px;margin-bottom:12px"><h3>This agent — cost over time (7d, $)</h3><canvas id="miniChart"></canvas></div>
       <div class="card"><div class="k">runtime</div><div class="s" style="margin-top:4px">
-        chat ${a.reachable?"reachable":"<span style='color:var(--err)'>unreachable</span>"} · open work ${a.work_open||0} · home <span class="mono">${esc(a.home||"—")}</span></div></div></div>`;
+        chat ${a.reachable?"reachable":"<span style='color:var(--err)'>unreachable</span>"} · open work ${a.work_open||0} · home <span class="mono">${esc(a.home||"—")}</span></div>
+        <div style="margin-top:9px"><button class="btn" onclick="runDoctor()">🩺 Health check</button><span class="s" id="docout" style="margin-left:10px"></span></div>
+        <div id="docchecks" style="margin-top:8px"></div></div></div>`;
     ensureOv().then(()=>drawMini(sel));
   }
   else if(t==="config"){renderConfig(a);}
-  else if(t==="logs"){p.innerHTML='<div id="logs">loading…</div>';fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}`)).then(r=>r.text()).then(x=>{const e=document.getElementById("logs");if(e)e.textContent=x;});}
+  else if(t==="logs"){
+    p.innerHTML=`<div style="display:flex;align-items:center;gap:10px;padding:6px 12px"><label class="s"><input type="checkbox" id="logfollow" checked> live tail</label><span class="s" id="logstamp"></span></div><div id="logs">loading…</div>`;
+    loadLogs(true);window._logTimer=setInterval(()=>{if(curtab==="logs"&&document.getElementById("logfollow")&&document.getElementById("logfollow").checked)loadLogs(false);},2000);
+  }
 }
+async function loadLogs(force){if(!sel)return;const e=document.getElementById("logs");if(!e)return;
+  const atBottom=Math.abs(e.scrollHeight-e.clientHeight-e.scrollTop)<40;
+  try{const x=await(await fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}&tail=300`))).text();
+    if(e.textContent!==x){e.textContent=x;if(force||atBottom)e.scrollTop=e.scrollHeight;}
+    const st=document.getElementById("logstamp");if(st)st.textContent="updated "+new Date().toLocaleTimeString();}catch(_){}}
+async function runDoctor(){if(!sel)return;const o=document.getElementById("docout"),c=document.getElementById("docchecks");
+  if(o){o.style.color="var(--mut)";o.textContent="checking…";}if(c)c.innerHTML="";
+  const r=await(await fetch(qs(`/api/doctor?id=${encodeURIComponent(sel)}`))).json().catch(()=>({error:"failed"}));
+  if(r.error){if(o){o.style.color="var(--err)";o.textContent=r.error;}return;}
+  if(o){o.style.color=r.ok?"var(--ok)":"var(--idle)";o.textContent=r.ok?"all green":"needs attention";}
+  if(c)c.innerHTML=(r.checks||[]).map(x=>`<div class="s" style="padding:2px 0"><span style="color:${x.ok?"var(--ok)":"var(--err)"}">${x.ok?"✓":"✗"}</span> ${esc(x.check)}${x.detail?` <span style="color:var(--mut)">— ${esc(x.detail)}</span>`:""}</div>`).join("");}
 /* ---------- Config tab (P0/P2) — EDIT LOCALLY, then ONE Save applies + restarts once ---------- */
 const MODE_HELP={autonomous:"continuous — prep→do→continue (SUPERVISE=auto)",chat:"reply-only — wakes on messages (SUPERVISE=off)",scheduled:"heartbeat cadence (SUPERVISE=off + INTERVAL_SECONDS)"};
 let _cfgEnv={},_cfgEditable=[],_cfgMeta={brains:["claude","api","local","optimize"],modes:["autonomous","chat","scheduled"],presets:[],defs:{}},_pending={};
@@ -595,6 +618,11 @@ function renderAlerts(al){const b=document.getElementById("alertbar");if(!al||!a
   b.innerHTML=al.map(a=>`<div class="alert ${a.level==="crit"?"crit":"warn"}">${a.level==="crit"?"⛔":"⚠"} ${esc(a.msg)}</div>`).join("");}
 /* ---------- Overview view ---------- */
 async function loadOverview(){try{ov=await(await fetch(qs("/api/overview"))).json();}catch(e){}renderOverview();}
+async function loadActivity(){const b=document.getElementById("auditbody");if(!b)return;b.innerHTML='<tr><td colspan=5 class="s">loading…</td></tr>';
+  try{const j=await(await fetch(qs("/api/audit?n=150"))).json();const es=j.entries||[];
+    b.innerHTML=es.length?es.map(e=>{const t=(e.ts||"").replace("T"," ").replace("Z","");
+      return `<tr><td class="mono" style="text-align:left">${esc(t)}</td><td style="text-align:left">${esc(e.who||"")}</td><td style="text-align:left"><b>${esc(e.action||"")}</b></td><td style="text-align:left">${esc(e.agent||"")}</td><td class="s" style="text-align:left">${esc(e.detail||e.result||"")}</td></tr>`;}).join(""):'<tr><td colspan=5 class="s">no actions logged yet</td></tr>';
+  }catch(e){b.innerHTML='<tr><td colspan=5 class="s" style="color:var(--err)">audit log unavailable</td></tr>';}}
 function gauge(w,label){const pct=w&&w.pct!=null?w.pct:null;const warn=label.indexOf("5h")>=0?70:85;
   /* resolve to real hex — Chrome does NOT substitute var() inside SVG presentation attributes
      (fill=/stroke=), so passing "var(--ok)" there renders black/invisible. */
@@ -845,7 +873,24 @@ class H(BaseHTTPRequestHandler):
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
                 return self._send(400, "text/plain", "bad id")
-            r = _fleet_cmd("logs", aid, "--tail", "150", timeout=30)
+            n = parse_qs(urlparse(self.path).query).get("tail", ["200"])[0]
+            try:
+                n = max(20, min(2000, int(n)))
+            except ValueError:
+                n = 200
+            # Read home/logs/runner.log directly from the cached home (fast, no docker). This is the
+            # full tick trace; fall back to `docker compose logs` only if the file is absent.
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            logf = pathlib.Path(home) / "logs" / "runner.log" if home else None
+            if logf and logf.exists():
+                try:
+                    tail = logf.read_text(errors="ignore").splitlines()[-n:]
+                    return self._send(200, "text/plain; charset=utf-8", "\n".join(tail))
+                except Exception:
+                    pass
+            r = _fleet_cmd("logs", aid, "--tail", str(n), timeout=30)
             return self._send(200, "text/plain; charset=utf-8", (r.stdout or "") + (r.stderr or ""))
         if p == "/api/config":
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
@@ -874,6 +919,57 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, "application/json", json.dumps({
                 "presets": sorted(fleet_config.PRESETS), "defs": fleet_config.PRESETS,
                 "brains": sorted(fleet_config.BRAINS), "modes": sorted(fleet_config.MODES)}))
+        if p == "/api/doctor":   # P3: per-agent wiring health check (in-process, no docker)
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            if not a:
+                return self._send(404, "application/json", '{"error":"unknown agent"}')
+            import fleet_config
+            checks = []
+            def chk(name, okv, detail=""):
+                checks.append({"check": name, "ok": bool(okv), "detail": str(detail)})
+            home, depdir = a.get("home"), a.get("dir")
+            chk("home dir present", home and os.path.isdir(home), home or "missing")
+            env = fleet_config.read_config(home)["env"] if home else {}
+            chk("agent.env readable", bool(env), "")
+            chk("brain configured", bool(env.get("BRAIN")), env.get("BRAIN", "—"))
+            secs = [s.strip() for s in (env.get("SECRETS", "")).split(",") if s.strip()]
+            if secs and depdir:
+                missing = [s for s in secs if not os.path.exists(os.path.join(depdir, "secrets", s))]
+                chk("scoped secrets mounted", not missing,
+                    ("missing: " + ", ".join(missing)) if missing else f"{len(secs)} present")
+            chk("container running", a.get("up"), a.get("status", ""))
+            port = a.get("port")
+            if port:
+                sk = socket.socket(); sk.settimeout(0.4)
+                try:
+                    sk.connect(("127.0.0.1", int(port))); reach = True
+                except Exception:
+                    reach = False
+                finally:
+                    sk.close()
+                chk("chat port reachable", reach, f":{port}")
+            return self._send(200, "application/json", json.dumps(
+                {"ok": all(c["ok"] for c in checks), "checks": checks}))
+        if p == "/api/audit":   # P3: recent control-plane actions (who did what, when)
+            n = parse_qs(urlparse(self.path).query).get("n", ["80"])[0]
+            try:
+                n = max(10, min(500, int(n)))
+            except ValueError:
+                n = 80
+            af = pathlib.Path(os.environ.get("ENCLAVE_FLEET_AUDIT",
+                              str(pathlib.Path.home() / ".config" / "enclave" / "fleet-audit.log")))
+            out = []
+            if af.exists():
+                for ln in af.read_text(errors="ignore").splitlines()[-n:]:
+                    try:
+                        out.append(json.loads(ln))
+                    except Exception:
+                        pass
+            return self._send(200, "application/json", json.dumps({"entries": out[::-1]}))
         if p == "/api/stream":
             return self._stream()
         return self._send(404, "application/json", '{"error":"not found"}')
