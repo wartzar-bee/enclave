@@ -250,6 +250,9 @@ body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;-
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);height:100vh;display:flex;flex-direction:column}
 #nav{display:flex;align-items:center;gap:6px;padding:9px 14px;background:var(--card);border-bottom:1px solid var(--bd);flex:0 0 auto}
 #nav .brand{font-size:12.5px;font-weight:700;letter-spacing:.05em;color:var(--mut);margin-right:8px}
+#newmodal .nl{display:block;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:11px 0 3px}
+#newmodal input,#newmodal select,#newmodal textarea{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit}
+.cfgi{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 7px;font-size:12px}
 .navtab{padding:6px 13px;border-radius:9px;cursor:pointer;color:var(--mut);font-weight:600;font-size:13px}
 .navtab:hover{background:var(--hover);color:var(--tx)}.navtab.sel{background:var(--sel);color:var(--tx)}
 #nav select,#nav .btn{background:var(--hover);border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:6px 10px;cursor:pointer;font:inherit;font-size:12.5px}
@@ -347,14 +350,32 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <span class="navtab sel" data-v="overview" onclick="view('overview')">Overview</span>
   <span class="navtab" data-v="agents" onclick="view('agents')">Agents</span>
   <span class="navtab" data-v="graph" onclick="view('graph')">Graph</span>
+  <span class="navtab" data-v="activity" onclick="view('activity')">Audit</span>
   <span id="winwrap"><select id="win" onchange="renderOverview()"><option value="today">Today</option><option value="wtd" selected>Week-to-date</option><option value="7d">Last 7 days</option></select>
     <button class="btn" onclick="exportCsv()" title="Download usage as CSV">⬇ CSV</button></span>
   <span class="stale" id="stale"></span>
+  <button class="btn" onclick="openNew()" title="Create a new agent">+ New Agent</button>
   <button class="btn" id="themebtn" title="Toggle light/dark" onclick="toggleTheme()">🌙</button>
 </nav>
+<div id="newmodal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50">
+  <div style="max-width:520px;margin:6vh auto;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:20px;max-height:86vh;overflow:auto">
+    <h2 style="margin:0 0 12px">Create agent</h2>
+    <label class="nl">name (kebab-case)</label><input id="n_name" placeholder="my-new-agent">
+    <label class="nl">template</label><select id="n_template"><option>venture</option><option>autonomous</option><option>orchestrator</option><option>ops</option><option>analyst</option><option>support</option></select>
+    <label class="nl">brain</label><select id="n_brain"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
+    <label class="nl">model (optional)</label><input id="n_model" placeholder="claude-sonnet-4-6">
+    <label class="nl">heartbeat interval seconds (optional)</label><input id="n_interval" placeholder="10800">
+    <label class="nl">mission (appended to CLAUDE.md)</label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
+    <label class="nl">secrets (comma-separated env files, optional)</label><input id="n_secrets" placeholder="anthropic.env, comms-bridge.env">
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn" onclick="closeNew()">Cancel</button>
+      <button class="btn danger" onclick="submitNew()">Queue create</button></div>
+    <div class="s" id="n_msg" style="margin-top:8px"></div>
+  </div></div>
 <div id="alertbar"></div>
 <div id="body">
 <section id="view-overview" class="view"><div class="ovwrap">
+  <div id="escbox"></div>
   <div class="sectit">Fleet status</div>
   <div class="fleetstrip" id="fleethealth"></div>
   <div class="sectit">Spend &amp; subscription</div>
@@ -379,6 +400,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
       <button class="btn" onclick="openChat()">↗ Chat tab</button></div>
     <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
       <span class="tab" data-t="status" onclick="tab('status')">Status</span>
+      <span class="tab" data-t="config" onclick="tab('config')">Config</span>
       <span class="tab" data-t="logs" onclick="tab('logs')">Logs</span></div>
     <div id="pane"><div class="empty">Select an agent from the rail.</div></div>
     <div id="dbox"><input id="dtext" placeholder="Send a directive to this agent (wakes its tick)…"><button class="btn" onclick="sendD()">Send</button></div>
@@ -395,6 +417,10 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <div class="li"><span class="sw" style="background:#c9a23f;border-radius:2px"></span>manager link · <span class="sw" style="background:#56b6c2;border-radius:2px"></span>peer comms</div>
   </div>
 </section>
+<section id="view-activity" class="view"><div class="ovwrap">
+  <div class="sectit">Audit log <span class="s" style="font-weight:400">— control-plane actions (spawn / lifecycle / config), who &amp; when, newest first</span></div>
+  <table class="cost"><thead><tr><th>when</th><th>who</th><th>action</th><th>agent</th><th>detail</th></tr></thead><tbody id="auditbody"></tbody></table>
+</div></section>
 </div>
 <script>
 const TOK=new URLSearchParams(location.search).get("token")||"";
@@ -412,9 +438,10 @@ function view(v){curview=v;
   document.getElementById("view-overview").style.display=v==="overview"?"block":"none";
   document.getElementById("view-agents").style.display=v==="agents"?"flex":"none";
   document.getElementById("view-graph").style.display=v==="graph"?"block":"none";
+  document.getElementById("view-activity").style.display=v==="activity"?"block":"none";
   document.getElementById("winwrap").style.display=v==="overview"?"":"none";
   try{localStorage.setItem("console_view",v);}catch(e){}
-  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else{render();}
+  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else if(v==="activity"){loadActivity();}else{render();}
 }
 /* ---------- canonical status model (ONE source of truth — rail, detail, table, graph) ---------- */
 const STATUS={
@@ -472,7 +499,8 @@ function render(){
 function setBar(a){bm.innerHTML=a?`${statusPill(a)} · <span class="mono">${esc(a.status)}</span> · :${a.port}`:"";}
 function pick(id){sel=id;if(curview!=="agents")view("agents");render();const a=agents[id];bt.textContent=id;setBar(a);tab(curtab);}
 function openChat(){if(sel)window.open("http://127.0.0.1:"+agents[sel].port+"/","_blank");}
-function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("sel",e.dataset.t===t));
+function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);window._logTimer=null;}
+  document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("sel",e.dataset.t===t));
   const p=document.getElementById("pane");if(!sel){p.innerHTML='<div class="empty">Select an agent.</div>';return;}
   const a=agents[sel];
   if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/?theme=${theme()}" allow="microphone; clipboard-write"></iframe>`;}
@@ -486,22 +514,138 @@ function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classLis
       </div>
       ${a.headline?`<div class="card" style="margin-bottom:12px"><div class="k">headline</div><div class="s" style="font-size:12.5px;color:var(--tx);margin-top:3px">${esc(a.headline)}</div></div>`:""}
       <div class="chartcard" style="max-width:580px;margin-bottom:12px"><h3>This agent — cost over time (7d, $)</h3><canvas id="miniChart"></canvas></div>
-      <div id="status">${esc(JSON.stringify({id:a.id,up:a.up,status:a.status,brain:a.brain,model:a.model,port:a.port,manager:a.manager,tick:a.tick,reachable:a.reachable,work_open:a.work_open,headline:a.headline,home:a.home},null,2))}</div></div>`;
+      <div class="card"><div class="k">runtime</div><div class="s" style="margin-top:4px">
+        chat ${a.reachable?"reachable":"<span style='color:var(--err)'>unreachable</span>"} · open work ${a.work_open||0} · home <span class="mono">${esc(a.home||"—")}</span></div>
+        <div style="margin-top:9px"><button class="btn" onclick="runDoctor()">🩺 Health check</button><span class="s" id="docout" style="margin-left:10px"></span></div>
+        <div id="docchecks" style="margin-top:8px"></div></div></div>`;
     ensureOv().then(()=>drawMini(sel));
   }
-  else if(t==="logs"){p.innerHTML='<div id="logs">loading…</div>';fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}`)).then(r=>r.text()).then(x=>{const e=document.getElementById("logs");if(e)e.textContent=x;});}
+  else if(t==="config"){renderConfig(a);}
+  else if(t==="logs"){
+    p.innerHTML=`<div style="display:flex;align-items:center;gap:10px;padding:6px 12px"><label class="s"><input type="checkbox" id="logfollow" checked> live tail</label><span class="s" id="logstamp"></span></div><div id="logs">loading…</div>`;
+    loadLogs(true);window._logTimer=setInterval(()=>{if(curtab==="logs"&&document.getElementById("logfollow")&&document.getElementById("logfollow").checked)loadLogs(false);},2000);
+  }
 }
+async function loadLogs(force){if(!sel)return;const e=document.getElementById("logs");if(!e)return;
+  const atBottom=Math.abs(e.scrollHeight-e.clientHeight-e.scrollTop)<40;
+  try{const x=await(await fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}&tail=300`))).text();
+    if(e.textContent!==x){e.textContent=x;if(force||atBottom)e.scrollTop=e.scrollHeight;}
+    const st=document.getElementById("logstamp");if(st)st.textContent="updated "+new Date().toLocaleTimeString();}catch(_){}}
+async function runDoctor(){if(!sel)return;const o=document.getElementById("docout"),c=document.getElementById("docchecks");
+  if(o){o.style.color="var(--mut)";o.textContent="checking…";}if(c)c.innerHTML="";
+  const r=await(await fetch(qs(`/api/doctor?id=${encodeURIComponent(sel)}`))).json().catch(()=>({error:"failed"}));
+  if(r.error){if(o){o.style.color="var(--err)";o.textContent=r.error;}return;}
+  if(o){o.style.color=r.ok?"var(--ok)":"var(--idle)";o.textContent=r.ok?"all green":"needs attention";}
+  if(c)c.innerHTML=(r.checks||[]).map(x=>`<div class="s" style="padding:2px 0"><span style="color:${x.ok?"var(--ok)":"var(--err)"}">${x.ok?"✓":"✗"}</span> ${esc(x.check)}${x.detail?` <span style="color:var(--mut)">— ${esc(x.detail)}</span>`:""}</div>`).join("");}
+/* ---------- Config tab (P0/P2) — EDIT LOCALLY, then ONE Save applies + restarts once ---------- */
+const MODE_HELP={autonomous:"continuous — prep→do→continue (SUPERVISE=auto)",chat:"reply-only — wakes on messages (SUPERVISE=off)",scheduled:"heartbeat cadence (SUPERVISE=off + INTERVAL_SECONDS)"};
+let _cfgEnv={},_cfgEditable=[],_cfgMeta={brains:["claude","api","local","optimize"],modes:["autonomous","chat","scheduled"],presets:[],defs:{}},_pending={};
+function effV(k){return _pending[k]!==undefined?_pending[k]:(_cfgEnv[k]||"");}
+function effMode(){if(effV("SUPERVISE")==="auto")return"autonomous";const iv=effV("INTERVAL_SECONDS");return (iv&&iv!=="10800")?"scheduled":"chat";}
+function pend(k,v){if(String(_cfgEnv[k]||"")===String(v))delete _pending[k];else _pending[k]=String(v);updateDirty();}
+function updateDirty(){const n=Object.keys(_pending).length;const b=document.getElementById("dirty");
+  if(b){b.textContent=n?(n+" unsaved change"+(n>1?"s":"")):"no unsaved changes";b.style.color=n?"var(--idle)":"var(--mut)";}
+  const sv=document.getElementById("saveBtn");if(sv)sv.disabled=!n;const dc=document.getElementById("discardBtn");if(dc)dc.disabled=!n;}
+async function renderConfig(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading config…</div>';
+  let cfg={};
+  try{cfg=await(await fetch(qs(`/api/config?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">config unavailable (agent has no home dir on this host)</div>';return;}
+  if(cfg.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(cfg.error)+'</div>';return;}
+  try{_cfgMeta=await(await fetch(qs("/api/presets"))).json();}catch(e){}
+  _cfgEnv=cfg.env||cfg;_cfgEditable=cfg.editable||Object.keys(_cfgEnv).filter(k=>!k.startsWith("_")).sort();_pending={};
+  let goal="";try{goal=((await(await fetch(qs(`/api/goal?id=${encodeURIComponent(sel)}`))).json()).goal)||"";}catch(e){}
+  window._cfgGoal=goal;
+  p.innerHTML='<div style="padding:16px;overflow:auto;height:100%"><div id="cfgmain"></div><div id="cfggoal"></div></div>';
+  drawConfig();drawGoal();
+}
+function drawGoal(){const g=document.getElementById("cfggoal");if(!g)return;
+  g.innerHTML=`<div class="card" style="margin-top:12px"><div class="k">phase goal — autonomous steering</div>
+    <div class="s" style="margin:3px 0 7px">The off-Opus supervisor (BRAIN=local/optimize agents) reads this each cycle to set the work queue. Saving does NOT restart the agent.</div>
+    <textarea id="goalIn" rows="3" style="width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px;font-family:inherit;font-size:13px">${esc(window._cfgGoal||"")}</textarea>
+    <div style="margin-top:8px"><button class="btn" onclick="saveGoal()">Save goal</button><span class="s" id="goalmsg" style="margin-left:10px"></span></div></div>`;}
+async function saveGoal(){if(!sel)return;const t=document.getElementById("goalIn").value;const m=document.getElementById("goalmsg");
+  if(m){m.style.color="var(--mut)";m.textContent="saving…";}
+  const r=await postR("/api/goal",{id:sel,text:t});
+  if(m){if(r&&r.ok){m.style.color="var(--ok)";m.textContent="✓ goal saved (applies next supervisor cycle)";window._cfgGoal=t;}else{m.style.color="var(--err)";m.textContent="error: "+esc((r&&r.error)||"failed");}}}
+function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;const mode=effMode();
+  const brainOpts=_cfgMeta.brains.map(b=>`<option ${effV("BRAIN")===b?"selected":""}>${b}</option>`).join("");
+  const presetBtns=(_cfgMeta.presets||[]).map(n=>`<button class="btn" onclick="presetLocal('${n}')">${esc(n)}</button>`).join(" ");
+  const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
+  const rows=_cfgEditable.map(k=>{const ch=_pending[k]!==undefined;return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(effV(k))}" oninput="pend(this.dataset.k,this.value)"></td></tr>`;}).join("");
+  p.innerHTML=`
+    <div class="card" style="margin-bottom:12px"><div class="k">brain</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <select id="brainSel" onchange="pend('BRAIN',this.value)">${brainOpts}</select>
+        <input id="modelIn" placeholder="model (optional)" value="${esc(effV("MODEL"))}" oninput="pend('MODEL',this.value)" style="flex:1"></div>
+      <div class="s" style="margin-top:5px">claude · api · local · optimize</div></div>
+    <div class="card" style="margin-bottom:12px"><div class="k">run mode</div>
+      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${modeBtns}</div>
+      <div class="s" style="margin-top:5px">${esc(MODE_HELP[mode]||"")}</div></div>
+    <div class="card" style="margin-bottom:12px"><div class="k">presets (fills the fields below — review, then Save)</div>
+      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${presetBtns||"<span class='s'>none</span>"}</div></div>
+    <div class="card"><div class="k">agent.env (editable keys · • = changed)</div>
+      <table class="cost" style="margin-top:8px"><tbody>${rows}</tbody></table></div>
+    <div style="display:flex;gap:10px;align-items:center;padding:12px 2px">
+      <button class="btn danger" id="saveBtn" onclick="saveCfg()" disabled>Save &amp; apply</button>
+      <button class="btn" id="discardBtn" onclick="discardCfg()" disabled>Discard</button>
+      <span class="s" id="dirty">no unsaved changes</span><span class="s" id="cfgmsg" style="margin-left:auto"></span></div>`;
+  updateDirty();
+}
+function modeLocal(m){if(m==="scheduled"){const iv=prompt("Heartbeat interval seconds:",effV("INTERVAL_SECONDS")||"10800");if(!iv)return;pend("SUPERVISE","off");pend("INTERVAL_SECONDS",iv);}
+  else if(m==="autonomous"){pend("SUPERVISE","auto");}
+  else{pend("SUPERVISE","off");pend("INTERVAL_SECONDS","10800");}
+  drawConfig();}
+function presetLocal(name){const d=(_cfgMeta.defs||{})[name];if(!d)return;Object.keys(d).forEach(k=>pend(k,d[k]));drawConfig();}
+function discardCfg(){_pending={};drawConfig();}
+async function saveCfg(){if(!sel)return;const upd=Object.assign({},_pending);if(!Object.keys(upd).length)return;
+  const msg=document.getElementById("cfgmsg");if(msg){msg.style.color="var(--mut)";msg.textContent="saving…";}
+  const sv=document.getElementById("saveBtn");if(sv)sv.disabled=true;
+  const r=await postR("/api/config",{id:sel,updates:upd});
+  if(r&&r.ok){const stopped=/stopped|will apply/i.test(r.out||"");if(msg){msg.style.color="var(--ok)";msg.textContent=stopped?"✓ saved — agent stopped; Start to apply":"✓ saved &amp; applied (agent recreated, live now)";}
+    setTimeout(()=>{tab("config");load();},1400);}
+  else{if(msg){msg.style.color="var(--err)";msg.textContent="error: "+esc((r&&(r.error||r.out))||"failed");}updateDirty();}}
 async function act(action){if(!sel)return;if(action==="down"&&!confirm("Stop "+sel+"?"))return;
   await post("/api/action",{action,id:sel});setTimeout(load,800);}
 async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dtext.value="";
   await post("/api/action",{action:"send",id:sel,text:t});}
 async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});}catch(e){}}
+async function postR(path,body){try{const r=await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});return await r.json();}catch(e){return{error:String(e)};}}
+/* ---------- New-agent modal (P1 create) ---------- */
+function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";}
+function closeNew(){document.getElementById("newmodal").style.display="none";}
+async function submitNew(){const g=id=>document.getElementById(id).value.trim();
+  const name=g("n_name");const msg=document.getElementById("n_msg");
+  if(!/^[a-z0-9][a-z0-9_-]*$/.test(name)){msg.style.color="var(--err)";msg.textContent="name must be kebab-case [a-z0-9][a-z0-9_-]*";return;}
+  const body={name,template:g("n_template"),brain:g("n_brain")};
+  if(g("n_model"))body.model=g("n_model");
+  if(g("n_interval"))body.interval_seconds=g("n_interval");
+  if(g("n_mission"))body.mission=g("n_mission");
+  const sec=g("n_secrets");if(sec)body.secrets=sec.split(",").map(s=>s.trim()).filter(Boolean);
+  msg.style.color="var(--mut)";msg.textContent="queuing…";
+  const r=await postR("/api/create",body);
+  if(r&&r.ok){msg.style.color="var(--ok)";msg.textContent=r.note||"queued";setTimeout(()=>{closeNew();load();},2500);}
+  else{msg.style.color="var(--err)";msg.textContent="error: "+esc((r&&(r.error||r.out))||"failed");}}
 async function load(){try{const j=await(await fetch(qs("/api/fleet"))).json();agents=j.agents||{};renderAlerts(j.alerts||[]);if(curview==="agents"){render();if(sel&&agents[sel]){setBar(agents[sel]);}}else{renderOverview();}}catch(e){}}
 /* ---------- alerts ---------- */
 function renderAlerts(al){const b=document.getElementById("alertbar");if(!al||!al.length){b.innerHTML="";return;}
   b.innerHTML=al.map(a=>`<div class="alert ${a.level==="crit"?"crit":"warn"}">${a.level==="crit"?"⛔":"⚠"} ${esc(a.msg)}</div>`).join("");}
 /* ---------- Overview view ---------- */
-async function loadOverview(){try{ov=await(await fetch(qs("/api/overview"))).json();}catch(e){}renderOverview();}
+async function loadOverview(){try{ov=await(await fetch(qs("/api/overview"))).json();}catch(e){}renderOverview();loadEscalations();}
+let _escOpen=false;
+async function loadEscalations(){const b=document.getElementById("escbox");if(!b)return;
+  let items=[];try{items=(await(await fetch(qs("/api/escalations"))).json()).items||[];}catch(e){return;}
+  if(!items.length){b.innerHTML="";return;}
+  const show=_escOpen?items:items.slice(0,4);
+  b.innerHTML=`<div class="sectit" style="color:var(--idle);cursor:pointer" onclick="_escOpen=!_escOpen;loadEscalations()">⚠ Needs your decision · ${items.length} <span class="s" style="font-weight:400">(${_escOpen?"collapse":"expand"})</span></div>
+    <div style="max-height:${_escOpen?"50vh":"auto"};overflow:auto;margin-bottom:10px">`+
+    show.map(it=>`<div class="s" style="padding:5px 9px;border-left:2px solid var(--idle);margin-bottom:4px;background:var(--card);border-radius:0 6px 6px 0">
+      <b style="color:var(--tx)">${esc(it.agent)}</b> <span class="mono" style="color:var(--mut)">${esc((it.ts||"").slice(0,10))}</span> — ${esc(it.text.slice(0,150))}</div>`).join("")+
+    (!_escOpen&&items.length>show.length?`<div class="s" style="color:var(--mut);padding:3px 9px;cursor:pointer" onclick="_escOpen=true;loadEscalations()">+${items.length-show.length} more…</div>`:"")+
+    `</div>`;}
+async function loadActivity(){const b=document.getElementById("auditbody");if(!b)return;b.innerHTML='<tr><td colspan=5 class="s">loading…</td></tr>';
+  try{const j=await(await fetch(qs("/api/audit?n=150"))).json();const es=j.entries||[];
+    b.innerHTML=es.length?es.map(e=>{const t=(e.ts||"").replace("T"," ").replace("Z","");
+      return `<tr><td class="mono" style="text-align:left">${esc(t)}</td><td style="text-align:left">${esc(e.who||"")}</td><td style="text-align:left"><b>${esc(e.action||"")}</b></td><td style="text-align:left">${esc(e.agent||"")}</td><td class="s" style="text-align:left">${esc(e.detail||e.result||"")}</td></tr>`;}).join(""):'<tr><td colspan=5 class="s">no actions logged yet</td></tr>';
+  }catch(e){b.innerHTML='<tr><td colspan=5 class="s" style="color:var(--err)">audit log unavailable</td></tr>';}}
 function gauge(w,label){const pct=w&&w.pct!=null?w.pct:null;const warn=label.indexOf("5h")>=0?70:85;
   /* resolve to real hex — Chrome does NOT substitute var() inside SVG presentation attributes
      (fill=/stroke=), so passing "var(--ok)" there renders black/invisible. */
@@ -658,7 +802,10 @@ const _urlView=new URLSearchParams(location.search).get("view");
 try{view((["overview","agents","graph"].includes(_urlView)?_urlView:null)||localStorage.getItem("console_view")||"overview");}catch(e){view("overview");}
 load();
 setInterval(()=>{if(curview==="overview")loadOverview();},15000);
-try{const es=new EventSource(qs("/api/stream"));es.onmessage=e=>{try{const j=JSON.parse(e.data);agents=j.agents||agents;if(curview==="agents")render();}catch(_){}};}catch(e){setInterval(load,5000);}
+let _lastA="";
+try{const es=new EventSource(qs("/api/stream"));es.onmessage=e=>{try{const j=JSON.parse(e.data);const na=j.agents||agents;const k=JSON.stringify(na);
+  if(k===_lastA)return;                       /* skip no-op pushes — the rail rebuilt every ~4s and flickered ("page reloads") even when nothing changed */
+  _lastA=k;agents=na;if(curview==="agents"){render();if(sel&&agents[sel])setBar(agents[sel]);}else if(curview==="overview")renderOverview();}catch(_){}};}catch(e){setInterval(load,5000);}
 </script></body></html>"""
 
 
@@ -749,8 +896,149 @@ class H(BaseHTTPRequestHandler):
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
                 return self._send(400, "text/plain", "bad id")
-            r = _fleet_cmd("logs", aid, "--tail", "150", timeout=30)
+            n = parse_qs(urlparse(self.path).query).get("tail", ["200"])[0]
+            try:
+                n = max(20, min(2000, int(n)))
+            except ValueError:
+                n = 200
+            # Read home/logs/runner.log directly from the cached home (fast, no docker). This is the
+            # full tick trace; fall back to `docker compose logs` only if the file is absent.
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            logf = pathlib.Path(home) / "logs" / "runner.log" if home else None
+            if logf and logf.exists():
+                try:
+                    tail = logf.read_text(errors="ignore").splitlines()[-n:]
+                    return self._send(200, "text/plain; charset=utf-8", "\n".join(tail))
+                except Exception:
+                    pass
+            r = _fleet_cmd("logs", aid, "--tail", str(n), timeout=30)
             return self._send(200, "text/plain; charset=utf-8", (r.stdout or "") + (r.stderr or ""))
+        if p == "/api/config":
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            # Read straight from the cached snapshot + files IN-PROCESS — no `enclave fleet` subprocess
+            # and no docker call, so opening the Config tab is instant (the slow CLI path re-snapshotted
+            # the whole fleet every time). Fall back to the CLI only on a cold cache.
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if home:
+                try:
+                    import fleet_config
+                    cfg = fleet_config.read_config(home)
+                    return self._send(200, "application/json", json.dumps(
+                        {"env": cfg["env"], "editable": cfg["editable"], "path": cfg["path"]}))
+                except Exception as e:
+                    return self._send(400, "application/json", json.dumps({"error": str(e)}))
+            r = _fleet_cmd("config", aid, "--json", timeout=15)
+            if r.returncode != 0:
+                return self._send(400, "application/json", json.dumps({"error": (r.stderr or r.stdout)[-300:]}))
+            return self._send(200, "application/json", r.stdout or "{}")
+        if p == "/api/presets":   # the named one-click profiles (+ their key/value defs) for the UI
+            import fleet_config
+            return self._send(200, "application/json", json.dumps({
+                "presets": sorted(fleet_config.PRESETS), "defs": fleet_config.PRESETS,
+                "brains": sorted(fleet_config.BRAINS), "modes": sorted(fleet_config.MODES)}))
+        if p == "/api/doctor":   # P3: per-agent wiring health check (in-process, no docker)
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            if not a:
+                return self._send(404, "application/json", '{"error":"unknown agent"}')
+            import fleet_config
+            checks = []
+            def chk(name, okv, detail=""):
+                checks.append({"check": name, "ok": bool(okv), "detail": str(detail)})
+            home, depdir = a.get("home"), a.get("dir")
+            chk("home dir present", home and os.path.isdir(home), home or "missing")
+            env = fleet_config.read_config(home)["env"] if home else {}
+            chk("agent.env readable", bool(env), "")
+            chk("brain configured", bool(env.get("BRAIN")), env.get("BRAIN", "—"))
+            secs = [s.strip() for s in (env.get("SECRETS", "")).split(",") if s.strip()]
+            if secs and depdir:
+                missing = [s for s in secs if not os.path.exists(os.path.join(depdir, "secrets", s))]
+                chk("scoped secrets mounted", not missing,
+                    ("missing: " + ", ".join(missing)) if missing else f"{len(secs)} present")
+            chk("container running", a.get("up"), a.get("status", ""))
+            port = a.get("port")
+            if port:
+                sk = socket.socket(); sk.settimeout(0.4)
+                try:
+                    sk.connect(("127.0.0.1", int(port))); reach = True
+                except Exception:
+                    reach = False
+                finally:
+                    sk.close()
+                chk("chat port reachable", reach, f":{port}")
+            return self._send(200, "application/json", json.dumps(
+                {"ok": all(c["ok"] for c in checks), "checks": checks}))
+        if p == "/api/audit":   # P3: recent control-plane actions (who did what, when)
+            n = parse_qs(urlparse(self.path).query).get("n", ["80"])[0]
+            try:
+                n = max(10, min(500, int(n)))
+            except ValueError:
+                n = 80
+            af = pathlib.Path(os.environ.get("ENCLAVE_FLEET_AUDIT",
+                              str(pathlib.Path.home() / ".config" / "enclave" / "fleet-audit.log")))
+            out = []
+            if af.exists():
+                for ln in af.read_text(errors="ignore").splitlines()[-n:]:
+                    try:
+                        out.append(json.loads(ln))
+                    except Exception:
+                        pass
+            return self._send(200, "application/json", json.dumps({"entries": out[::-1]}))
+        if p == "/api/escalations":   # P3 HITL: the fleet's open "needs a human decision" asks
+            with _lock:
+                agents = dict(_cache.get("agents") or {})
+            items = []
+            for aid, a in agents.items():
+                home = a.get("home")
+                if not home:
+                    continue
+                st = pathlib.Path(home) / "state"
+                # escalations.log: blocks beginning "<ts> ESCALATE :: <text>" (+ indented continuations)
+                ef = st / "escalations.log"
+                if ef.exists():
+                    cur = None
+                    for ln in ef.read_text(errors="ignore").splitlines():
+                        m = re.match(r"^(\d{4}-\d\d-\d\dT[\d:]+Z)\s+(\w+)\s*::\s*(.*)", ln)
+                        if m:
+                            if cur and cur["kind"] == "ESCALATE":
+                                items.append({"agent": aid, "ts": cur["ts"], "kind": "escalation", "text": cur["text"][:400]})
+                            cur = {"ts": m.group(1), "kind": m.group(2), "text": m.group(3)}
+                        elif cur and ln.strip():
+                            cur["text"] += " " + ln.strip()
+                    if cur and cur["kind"] == "ESCALATE":
+                        items.append({"agent": aid, "ts": cur["ts"], "kind": "escalation", "text": cur["text"][:400]})
+                # approvals.json: a non-empty array = pending approval requests
+                aj = st / "approvals.json"
+                if aj.exists():
+                    try:
+                        arr = json.loads(aj.read_text(errors="ignore") or "[]")
+                        for it in (arr if isinstance(arr, list) else []):
+                            txt = it.get("text") or it.get("msg") or json.dumps(it) if isinstance(it, dict) else str(it)
+                            items.append({"agent": aid, "ts": (it.get("ts", "") if isinstance(it, dict) else ""),
+                                          "kind": "approval", "text": str(txt)[:400]})
+                    except Exception:
+                        pass
+            items.sort(key=lambda x: x["ts"], reverse=True)
+            return self._send(200, "application/json", json.dumps({"items": items[:100]}))
+        if p == "/api/goal":   # P3 steering: the autonomous-supervisor goal (state/phase-goal.txt)
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            gf = pathlib.Path(home) / "state" / "phase-goal.txt" if home else None
+            txt = gf.read_text(errors="ignore") if (gf and gf.exists()) else ""
+            return self._send(200, "application/json", json.dumps({"goal": txt}))
         if p == "/api/stream":
             return self._stream()
         return self._send(404, "application/json", '{"error":"not found"}')
@@ -799,6 +1087,87 @@ class H(BaseHTTPRequestHandler):
             try:
                 r = _fleet_cmd(*args, timeout=190)
                 return self._send(200, "application/json", json.dumps({"ok": r.returncode == 0, "out": (r.stdout or r.stderr)[-400:]}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/config":   # apply a config change, then restart (P0 writable-config plane)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            aid = d.get("id", "")
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            # one of: preset | brain(+model) | mode(+interval) | updates{K:V}
+            if d.get("preset"):
+                args = ["preset", aid, str(d["preset"])]
+            elif d.get("brain"):
+                args = ["set-brain", aid, str(d["brain"])] + ([str(d["model"])] if d.get("model") else [])
+            elif d.get("mode"):
+                args = ["set-mode", aid, str(d["mode"])] + ([str(d["interval"])] if d.get("interval") else [])
+            elif isinstance(d.get("updates"), dict) and d["updates"]:
+                args = ["set-config", aid] + [f"{k}={v}" for k, v in d["updates"].items()]
+            else:
+                return self._send(400, "application/json", '{"error":"need preset|brain|mode|updates"}')
+            try:
+                r = _fleet_cmd(*args, timeout=190)
+                return self._send(200, "application/json", json.dumps({"ok": r.returncode == 0, "out": (r.stdout or r.stderr)[-500:]}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/goal":   # P3 steering: write the autonomous-supervisor goal (no restart needed)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            aid = d.get("id", "")
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(400, "application/json", '{"error":"agent has no home on this host"}')
+            try:
+                gf = pathlib.Path(home) / "state" / "phase-goal.txt"
+                gf.parent.mkdir(parents=True, exist_ok=True)
+                gf.write_text((d.get("text") or "").strip() + "\n")
+                fleet._audit("set-goal", aid, (d.get("text") or "")[:80])
+                return self._send(200, "application/json", json.dumps({"ok": True}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/create":   # enqueue a new-agent spec for the spawn watcher (P1 create-agent)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            name = (d.get("name") or "").strip()
+            if not fleet._SAFE.match(name):
+                return self._send(400, "application/json", '{"error":"name must be kebab-case [a-z0-9][a-z0-9_-]*"}')
+            # whitelist spec fields the spawn pipeline understands (enclave new --spec)
+            spec = {"name": name}
+            for k in ("template", "brain", "model", "mission"):
+                if d.get(k):
+                    spec[k] = d[k]
+            if d.get("interval_seconds"):
+                try:
+                    spec["interval_seconds"] = int(d["interval_seconds"])
+                except (TypeError, ValueError):
+                    return self._send(400, "application/json", '{"error":"interval_seconds must be an integer"}')
+            if isinstance(d.get("secrets"), list) and d["secrets"]:
+                spec["secrets"] = [str(s).strip() for s in d["secrets"] if str(s).strip()]
+            qroot = pathlib.Path(os.environ.get("ENCLAVE_SPAWN_QUEUE",
+                                 str(fleet.STACKS_ROOTS[0] / "_queue") if fleet.STACKS_ROOTS else "/tmp/enclave-queue"))
+            incoming = qroot / "incoming"
+            try:
+                incoming.mkdir(parents=True, exist_ok=True)
+                dest = incoming / f"{name}.json"
+                if dest.exists():
+                    return self._send(409, "application/json", json.dumps({"error": f"spec {name}.json already queued"}))
+                dest.write_text(json.dumps(spec, indent=2))
+                fleet._audit("create-queued", name, str(dest))
+                watching = (qroot / "processed").exists() or (qroot / "failed").exists()
+                note = "queued — spawn watcher will build + start it" if watching else \
+                       f"queued at {dest} — NOTE: no spawn watcher detected on this queue (run `enclave fleet watch {qroot}`)"
+                return self._send(200, "application/json", json.dumps({"ok": True, "queued": str(dest), "note": note}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))
         return self._send(404, "application/json", '{"error":"not found"}')

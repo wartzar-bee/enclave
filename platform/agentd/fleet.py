@@ -387,6 +387,92 @@ def cmd_list(as_json=False):
     print(f"\n  {len(snap)} agent(s)   ● working  ○ idle  ✗ down")
 
 
+def _restart_after(a, diff):
+    """Print the applied config diff, then make it LIVE NOW by recreating the agent container.
+    `docker compose restart` reuses the old container's environment, so it would NOT pick up the
+    new .env/agent.env values until the agent's next natural tick (hours away on a slow heartbeat).
+    `up -d --force-recreate` rebuilds the container with the fresh env and boots it straight into a
+    new tick → the change applies immediately."""
+    if not diff:
+        print("no change (already set)"); return
+    for k, old, new in diff:
+        print(f"  {k}: {old or '∅'} → {new}")
+    if not a.get("up"):
+        print(f"{a['id']} is stopped — config saved; it will apply when you Start the agent.")
+        return
+    print(f"applying to {a['id']} now (recreating agent container) …")
+    _compose(a, "up", "-d", "--force-recreate", "--no-deps", "agent")
+
+
+def cmd_config(aid, as_json=False):
+    """Show an agent's editable runtime config (agent.env)."""
+    import fleet_config
+    a = _resolve(aid)
+    if not a.get("home"):
+        sys.exit(f"{aid} has no home dir on this host — config not editable")
+    cfg = fleet_config.read_config(a["home"])
+    if as_json:
+        print(json.dumps({"env": cfg["env"], "editable": cfg["editable"], "path": cfg["path"]})); return
+    print(f"{aid}  ({cfg['path']})  ★=editable")
+    for k in sorted(cfg["env"]):
+        star = "★" if k in cfg["editable"] else " "
+        print(f"  {star} {k:<22} {cfg['env'][k]}")
+
+
+def cmd_set_config(aid, kvs):
+    """Patch one or more KEY=VALUE pairs in agent.env, then restart."""
+    import fleet_config
+    a = _resolve(aid)
+    if not a.get("home"):
+        sys.exit(f"{aid} has no home dir on this host")
+    updates = {}
+    for kv in kvs:
+        if "=" not in kv:
+            sys.exit(f"expected KEY=VALUE, got '{kv}'")
+        k, v = kv.split("=", 1); updates[k.strip()] = v.strip()
+    try:
+        diff = fleet_config.patch_agent_env(a["home"], updates, aid)
+    except ValueError as e:
+        sys.exit(str(e))
+    _restart_after(a, diff)
+
+
+def cmd_set_brain(aid, brain, model=None):
+    import fleet_config
+    a = _resolve(aid)
+    if not a.get("home"):
+        sys.exit(f"{aid} has no home dir on this host")
+    try:
+        diff = fleet_config.set_brain(a["home"], brain, model, aid)
+    except ValueError as e:
+        sys.exit(str(e))
+    _restart_after(a, diff)
+
+
+def cmd_set_mode(aid, mode, interval=None):
+    import fleet_config
+    a = _resolve(aid)
+    if not a.get("home"):
+        sys.exit(f"{aid} has no home dir on this host")
+    try:
+        diff = fleet_config.set_mode(a["home"], mode, interval, aid)
+    except ValueError as e:
+        sys.exit(str(e))
+    _restart_after(a, diff)
+
+
+def cmd_preset(aid, name):
+    import fleet_config
+    a = _resolve(aid)
+    if not a.get("home"):
+        sys.exit(f"{aid} has no home dir on this host")
+    try:
+        diff = fleet_config.apply_preset(a["home"], name, aid)
+    except ValueError as e:
+        sys.exit(str(e))
+    _restart_after(a, diff)
+
+
 def cmd_open(aid):
     a = snapshot().get(aid)
     if not a:
@@ -419,8 +505,20 @@ def main():
         cmd_logs(pos[0], _flag(args, "--tail", "80"))
     elif cmd == "send" and len(pos) >= 2:
         cmd_send(pos[0], " ".join(pos[1:]))
+    elif cmd == "config" and pos:
+        cmd_config(pos[0], as_json="--json" in args)
+    elif cmd == "set-config" and len(pos) >= 2:
+        cmd_set_config(pos[0], pos[1:])
+    elif cmd == "set-brain" and len(pos) >= 2:
+        cmd_set_brain(pos[0], pos[1], pos[2] if len(pos) > 2 else None)
+    elif cmd == "set-mode" and len(pos) >= 2:
+        cmd_set_mode(pos[0], pos[1], pos[2] if len(pos) > 2 else None)
+    elif cmd == "preset" and len(pos) >= 2:
+        cmd_preset(pos[0], pos[1])
     else:
-        sys.exit("usage: fleet.py list [--json] | open|up|down|restart|kick|logs <id> | send <id> <text>")
+        sys.exit("usage: fleet.py list [--json] | open|up|down|restart|kick|logs <id> | send <id> <text>\n"
+                 "       config <id> [--json] | set-config <id> KEY=VAL… | set-brain <id> <brain> [model]\n"
+                 "       set-mode <id> <autonomous|chat|scheduled> [interval] | preset <id> <name>")
 
 
 def _flag(args, name, default=None):
