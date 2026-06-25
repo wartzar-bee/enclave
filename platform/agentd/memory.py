@@ -22,7 +22,7 @@ Layout under <base>/ (default: the agent dir; the host can point elsewhere):
 CLI:
   memory.py --base D remember --type lesson "text" [--tags a,b] [--slug s]
   memory.py --base D recall   "query terms" [-k 5]
-  memory.py --base D learn    <slug> "Title" (--body "..." | --body-file f)
+  memory.py --base D learn    <slug> "Title" (--body "..." | --body-file f) [--gate]
   memory.py --base D index    [skills]
   memory.py --base D forget   <type>/<slug>
 """
@@ -91,18 +91,80 @@ class Memory:
         f.write_text(text)
         return f
 
-    def learn(self, slug, title, body):
+    # ── SKILL QUALITY GATE (P3, Hermes "learn-from-success" borrow) ──────────────────
+    # A skill is a REUSABLE PROCEDURE, not a one-off note. Without a gate the learn-loop
+    # silts the vault with thin/duplicate entries that then cost recall tokens every tick.
+    # Gate = deterministic STRUCTURE checks (always run) + a local-LLM dedup/usefulness pass
+    # ($0, off-cap, FAIL-OPEN: route.mjs down → ADMIT but tag `unverified`, never block on infra —
+    # same report-only philosophy as the egress guard). Returns (ok, reason, verdict_tag).
+    def _skill_gate(self, slug, title, body):
+        b = (body or "").strip()
+        # (1) substance — a procedure needs enough to be reusable, not a one-liner
+        if len(b) < 120:
+            return False, "too thin (<120 chars) — a skill captures a reusable procedure, not a note", None
+        # (2) shape — must read as how-to (numbered/bulleted steps, or several lines), not a bare fact
+        lines = [l for l in b.splitlines() if l.strip()]
+        procedural = (len(lines) >= 3 or bool(re.search(r"(?m)^\s*(\d+[.)]|[-*])\s+\S", b)))
+        if not procedural:
+            return False, "not procedural — needs steps (numbered/bulleted) or multiple how-to lines", None
+        # (3) dedup vs existing skills (local LLM; fail-open). A true twin → update it, don't fork.
+        existing = []
+        for sf in sorted(self.skills.glob("*.md")):
+            if sf.name == "INDEX.md" or sf.stem == slug: continue
+            t = sf.read_text(); m = re.search(r"(?m)^#\s+(.+)$", t)
+            existing.append((sf.stem, (m.group(1).strip() if m else sf.stem)[:80]))
+        if not existing:
+            return True, "ok", "verified"
+        listing = "\n".join(f"{i}: {nm} — {ti}" for i, (nm, ti) in enumerate(existing))
+        prompt = ('A new agent SKILL is being saved. Is it a NEAR-DUPLICATE of an existing one (same '
+                  'procedure)? Return ONLY JSON {"dup": <index or -1>}. -1 if genuinely new. BE '
+                  f'CONSERVATIVE — only flag a true duplicate.\nNEW: {title} — {b[:300]}\nEXISTING:\n{listing}')
+        try:
+            r = subprocess.run(["node", str(self.REPO / "tools/llm/route.mjs"), "--task", "classify",
+                                "--sensitivity", "internal"], input=prompt, capture_output=True,
+                               text=True, timeout=40, cwd=str(self.REPO))
+            mm = re.search(r'"dup"\s*:\s*(-?\d+)', r.stdout)
+            if mm and 0 <= int(mm.group(1)) < len(existing):
+                twin = existing[int(mm.group(1))][0]
+                return False, f"near-duplicate of `{twin}.md` — re-learn THAT slug to re-version it instead", None
+            # a clean -1 verdict ⇒ verified; no parseable verdict (router missing/garbage) ⇒ admit unverified
+            return (True, "ok", "verified") if mm else (True, "ok", "unverified")
+        except Exception:
+            return True, "ok", "unverified"         # router unavailable → admit, mark unverified
+
+    def learn(self, slug, title, body, gate=False):
         slug = _slug(slug)
+        verdict = None
+        if gate:
+            ok, reason, verdict = self._skill_gate(slug, title, body)
+            if not ok:
+                return None, reason
         f = self.skills / f"{slug}.md"
         ver = 1
         if f.exists():
             m = re.search(r"version:\s*(\d+)", f.read_text()); ver = int(m.group(1)) + 1 if m else 2
-        f.write_text(f"---\nskill: {slug}\nversion: {ver}\nts: {self._now()}\n---\n\n# {title}\n\n{body.strip()}\n")
+        gline = f"gated: {verdict}\n" if verdict else ""
+        f.write_text(f"---\nskill: {slug}\nversion: {ver}\nts: {self._now()}\n{gline}---\n\n# {title}\n\n{body.strip()}\n")
         line = f"- **{title}** → `{slug}.md` (v{ver})"
         idx = self.skills / "INDEX.md"; lines = idx.read_text().splitlines()
         lines = [l for l in lines if f"`{slug}.md`" not in l]
         idx.write_text("\n".join(lines + [line]) + "\n")
         return f, ver
+
+    def _rank_skills(self, query, k=2):
+        """Keyword-rank learned skills for the focus query — closes the WRITE→RELOAD loop so a skill
+        saved last tick is RECALLED this tick when relevant (persistence alone left this half open:
+        skills/ snapshots fine but never re-entered the tick context)."""
+        terms = [t for t in re.findall(r"[a-z0-9]+", (query or "").lower()) if len(t) > 2]
+        if not terms: return []
+        out = []
+        for f in sorted(self.skills.glob("*.md")):
+            if f.name == "INDEX.md": continue
+            txt = f.read_text()
+            m = re.search(r"(?m)^#\s+(.+)$", txt); title = (m.group(1).strip() if m else f.stem)
+            sc = sum(txt.lower().count(t) for t in terms)
+            if sc: out.append((sc, f.stem, title))
+        return sorted(out, key=lambda x: -x[0])[:k]
 
     def _entries(self):
         out = []
@@ -435,6 +497,12 @@ class Memory:
         if sem:
             out.append("\n## Relevant by MEANING (semantic — your memory + shared knowledge)\n" +
                        "\n".join(f"- ({p}%) {fn}: {snip}" for p, fn, snip in sem))
+        # Learned skills for the focus — closes the write→reload loop (Hermes borrow): a procedure the
+        # agent learned earlier comes BACK when it's relevant, instead of being re-derived from scratch.
+        skills = self._rank_skills(sem_q or q, k=2)
+        if skills:
+            out.append("\n## Learned skills — reusable procedures (recall, don't re-derive)\n" +
+                       "\n".join(f"- **{ti}** → `skills/{nm}.md`" for _, nm, ti in skills))
         out.append(f"\n_focus: {q[:160] or '(none)'}_\n")
         return "\n".join(out)
 
@@ -460,7 +528,7 @@ def main():
     r = sub.add_parser("remember"); r.add_argument("text"); r.add_argument("--type", default="lesson"); r.add_argument("--tags", default=""); r.add_argument("--slug"); r.add_argument("--related", default="", help="comma-separated page stems to [[link]] (knowledge pages or memories)")
     lk = sub.add_parser("link"); lk.add_argument("rel", help="memory file, e.g. lesson/foo"); lk.add_argument("targets", nargs="+", help="page stems to [[link]] into its related:")
     c = sub.add_parser("recall"); c.add_argument("query"); c.add_argument("-k", type=int, default=5); c.add_argument("--semantic", action="store_true")
-    l = sub.add_parser("learn"); l.add_argument("slug"); l.add_argument("title"); l.add_argument("--body", default=""); l.add_argument("--body-file")
+    l = sub.add_parser("learn"); l.add_argument("slug"); l.add_argument("title"); l.add_argument("--body", default=""); l.add_argument("--body-file"); l.add_argument("--gate", action="store_true", help="run the quality gate (structure + local-LLM dedup) before saving; reject thin/duplicate skills")
     i = sub.add_parser("index"); i.add_argument("which", nargs="?", default="memory")
     dg = sub.add_parser("digest"); dg.add_argument("--query", default=None); dg.add_argument("-k", type=int, default=3)
     fg = sub.add_parser("forget"); fg.add_argument("rel")
@@ -493,7 +561,8 @@ def main():
             print("\n".join(f"#{i['id']} [{i['status']}] {i['text']}" for i in items) if items else "(work queue empty)")
     elif a.cmd == "learn":
         body = pathlib.Path(a.body_file).read_text() if a.body_file else a.body
-        f, v = m.learn(a.slug, a.title, body); print(f"learned skill → {f} (v{v})")
+        f, v = m.learn(a.slug, a.title, body, gate=a.gate)
+        print(f"skill REJECTED by quality gate: {v}" if f is None else f"learned skill → {f} (v{v})")
     elif a.cmd == "digest": print(m.digest(a.query, a.k))
     elif a.cmd == "index": print(m.index(a.which))
     elif a.cmd == "forget": print("forgot" if m.forget(a.rel) else "not found")

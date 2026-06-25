@@ -72,3 +72,27 @@ enforcing per-agent ACLs. This is the control plane the hosted/multi-tenant Encl
 - ~~Containerize qmd for true `embedded` mode~~ → **done** (`Dockerfile.qmd`, `--profile qmd`, CPU default).
 - Optionally upstream a `--collections` / `QMD_ALLOWED_COLLECTIONS` scoping flag to qmd so the wrapper becomes unnecessary.
 - Add query audit logging + per-agent rate limits to the gateway (multi-tenant tier).
+
+---
+
+## The SKILL learned-memory loop (P3 — Hermes borrow)
+
+`memory.py` closes the **write → reload** loop that turns a context-wiped tick into compounding
+competence (the Hermes `hermes-agent` "learn-from-success" pattern, adapted to our `skills/` vault):
+
+- **WRITE (gated).** `memory.py learn <slug> "Title" --body "..." --gate` saves a reusable PROCEDURE
+  into `skills/<slug>.md`, but only past a **quality gate** so the vault doesn't silt up (every saved
+  skill is a recall-token cost forever):
+  1. *substance* — body ≥ 120 chars (a procedure, not a note);
+  2. *shape* — must read as how-to (numbered/bulleted steps or several lines), not a bare fact;
+  3. *dedup* — a local-LLM ($0, off-cap) pass rejects near-duplicates, pointing you to re-learn the
+     existing slug instead (which re-versions it). **Fail-open**: if the router is unavailable the skill
+     is admitted but stamped `gated: unverified` — same report-only philosophy as the egress guard;
+     a missing local model never blocks learning. A clean verdict stamps `gated: verified`.
+  Without `--gate`, `learn` is unchanged (back-compat).
+- **RELOAD.** The pre-tick `digest` (→ `state/recall.md`) now surfaces a **Learned skills** section —
+  the skills most relevant to the current focus — so a procedure learned earlier comes *back* when it's
+  needed instead of being re-derived. `skills/` already rides the vault snapshot/restore, so skills also
+  survive across deployments.
+
+Self-tests: `python3 platform/agentd/test_memory_skill_loop.py` (13 cases, hermetic — no net/node).
