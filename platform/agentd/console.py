@@ -607,7 +607,15 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
   const modelOpts=[...new Set([...(curM?[curM]:[]),...known])].map(m=>`<option ${m===curM?"selected":""}>${esc(m)}</option>`).join("")+(curM?"":`<option value="" selected>(none)</option>`)+`<option value="__custom__">✏️ custom…</option>`;
   const presetBtns=(_cfgMeta.presets||[]).map(n=>`<button class="btn" onclick="presetLocal('${n}')">${esc(n)}</button>`).join(" ");
   const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
-  const rows=_cfgEditable.map(k=>{const ch=_pending[k]!==undefined;return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}${KEY_HELP[k]?ic(KEY_HELP[k]):""}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(effV(k))}" oninput="pend(this.dataset.k,this.value)"></td></tr>`;}).join("");
+  /* BRAIN/MODEL/SUPERVISE are set by the cards above (dropdowns/buttons) — don't repeat them as free
+     text here. Model-valued keys (MODEL_ROUTINE→claude tier, LOCAL_BRAIN_MODEL→local) render as dropdowns. */
+  const HIDE=["BRAIN","MODEL","SUPERVISE"],MODELKEYS={MODEL_ROUTINE:"claude",LOCAL_BRAIN_MODEL:"local"};
+  const rows=_cfgEditable.filter(k=>!HIDE.includes(k)).map(k=>{const ch=_pending[k]!==undefined;const cur=effV(k);let field;
+    if(MODELKEYS[k]!==undefined){const lst=(_cfgMeta.models&&_cfgMeta.models[MODELKEYS[k]])||[];
+      const opts=[...new Set([...(cur?[cur]:[]),...lst])].map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("")+(cur?"":'<option value="" selected>(none)</option>')+'<option value="__custom__">✏️ custom…</option>';
+      field=`<select class="cfgi" data-k="${esc(k)}" onchange="cfgModelPick(this)">${opts}</select>`;}
+    else field=`<input class="cfgi" data-k="${esc(k)}" value="${esc(cur)}" oninput="pend(this.dataset.k,this.value)">`;
+    return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}${KEY_HELP[k]?ic(KEY_HELP[k]):""}</td><td>${field}</td></tr>`;}).join("");
   p.innerHTML=`
     <div class="card" style="margin-bottom:12px"><div class="k">brain${ic(KEY_HELP.BRAIN)}</div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
@@ -628,6 +636,7 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
   updateDirty();
 }
 function modelPick(v){if(v==="__custom__"){const c=prompt("Model id:",effV("MODEL")||"");if(c!==null)pend("MODEL",c.trim());drawConfig();}else{pend("MODEL",v);}}
+function cfgModelPick(el){const k=el.dataset.k;if(el.value==="__custom__"){const c=prompt("Model id:",effV(k)||"");if(c!==null)pend(k,c.trim());drawConfig();}else{pend(k,el.value);}}
 function modeLocal(m){if(m==="scheduled"){const iv=prompt("Heartbeat interval seconds:",effV("INTERVAL_SECONDS")||"10800");if(!iv)return;pend("SUPERVISE","off");pend("INTERVAL_SECONDS",iv);}
   else if(m==="autonomous"){pend("SUPERVISE","auto");}
   else{pend("SUPERVISE","off");pend("INTERVAL_SECONDS","10800");}
