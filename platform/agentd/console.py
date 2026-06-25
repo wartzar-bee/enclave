@@ -253,6 +253,7 @@ body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;-
 #newmodal .nl{display:block;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:11px 0 3px}
 #newmodal input,#newmodal select,#newmodal textarea{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit}
 .cfgi{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 7px;font-size:12px}
+.rowsel{margin-right:6px;flex:0 0 auto;cursor:pointer;opacity:.55}.rowsel:checked{opacity:1}.row:hover .rowsel{opacity:1}
 .navtab{padding:6px 13px;border-radius:9px;cursor:pointer;color:var(--mut);font-weight:600;font-size:13px}
 .navtab:hover{background:var(--hover);color:var(--tx)}.navtab.sel{background:var(--sel);color:var(--tx)}
 #nav select,#nav .btn{background:var(--hover);border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:6px 10px;cursor:pointer;font:inherit;font-size:12.5px}
@@ -390,7 +391,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
 </div></section>
 <section id="view-agents" class="view">
   <aside id="rail"><h1><button class="railx" onclick="toggleRail()" title="Collapse panel">−</button><span>AGENTS</span><span id="count" style="margin-left:auto"></span></h1>
-  <input id="search" placeholder="filter agents…" autocomplete="off"><div id="list"></div></aside>
+  <input id="search" placeholder="filter agents…" autocomplete="off"><div id="batchbar"></div><div id="list"></div></aside>
   <main id="main">
     <div id="bar"><button id="railtoggle" title="Show agents" onclick="toggleRail()">☰</button>
       <span class="t" id="bt">—</span><span class="m" id="bm"></span><span style="flex:1"></span>
@@ -470,9 +471,27 @@ function railRow(a,depth){
   const crown=mgr?`<span class="crown" title="manager — runs a fleet of sub-agents">♛</span>`:"";
   const badge=mgr?`<span class="mgrbadge" title="manages ${n} sub-agent(s)">FLEET ·${n}</span>`:"";
   return `<div class="row${sel===a.id?' sel':''}${master?' master':''}" onclick="pick('${a.id}')" style="padding-left:${pad}px">
+    <input type="checkbox" class="rowsel" ${_selected.has(a.id)?"checked":""} onclick="event.stopPropagation();toggleSel('${a.id}',this.checked)" title="select for batch action">
     ${tree}<span class="dot ${k}"></span><div style="min-width:0"><div class="rid">${crown}${esc(a.id)}${badge}</div>
     <div class="rmeta"><span class="slabel ${k}">${STATUS[k].label}</span> · ${esc(a.brain)}/${esc(shortModel(a.model))} · :${a.port}${a.work_open?" · work "+a.work_open:""}</div></div></div>`;
 }
+const _selected=new Set();
+function toggleSel(id,on){if(on)_selected.add(id);else _selected.delete(id);renderBatchBar();}
+function clearSel(){_selected.clear();render();}
+function renderBatchBar(){const b=document.getElementById("batchbar");if(!b)return;const n=_selected.size;
+  b.innerHTML=n?`<div style="display:flex;gap:6px;align-items:center;padding:7px 10px;flex-wrap:wrap;border-bottom:1px solid var(--bd)">
+    <span class="s"><b>${n}</b> selected</span>
+    <button class="btn" onclick="batchAction('restart')">Restart</button>
+    <button class="btn danger" onclick="batchAction('down')">Stop</button>
+    <button class="btn" onclick="batchAction('up')">Start</button>
+    <button class="btn" onclick="batchAction('send')">Send…</button>
+    <button class="btn" onclick="clearSel()" style="margin-left:auto">clear</button></div>`:"";}
+async function batchAction(action){const ids=[..._selected];if(!ids.length)return;
+  let text="";if(action==="send"){text=prompt("Directive to send to "+ids.length+" agent(s):")||"";if(!text)return;}
+  else if(!confirm(action+" "+ids.length+" agent(s)?"))return;
+  const bb=document.getElementById("batchbar");if(bb)bb.innerHTML='<div class="s" style="padding:8px 10px">working… ('+ids.length+')</div>';
+  for(const id of ids){await post("/api/action",Object.assign({action,id},action==="send"?{text}:{}));}
+  _selected.clear();setTimeout(load,1000);}
 function render(){
   const s=document.getElementById("search");const f=(s.value||"").toLowerCase();
   const all=Object.values(agents);
@@ -495,6 +514,7 @@ function render(){
     if(standalone.length){h+=`<div class="grp">▸ standalone</div>`;standalone.forEach(a=>h+=railRow(a,0));}
   }
   document.getElementById("list").innerHTML=h||`<div class="grp" style="color:var(--mut)">no agents discovered</div>`;
+  renderBatchBar();
 }
 function setBar(a){bm.innerHTML=a?`${statusPill(a)} · <span class="mono">${esc(a.status)}</span> · :${a.port}`:"";}
 function pick(id){sel=id;if(curview!=="agents")view("agents");render();const a=agents[id];bt.textContent=id;setBar(a);tab(curtab);}
