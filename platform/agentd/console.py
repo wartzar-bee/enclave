@@ -350,7 +350,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <span class="navtab sel" data-v="overview" onclick="view('overview')">Overview</span>
   <span class="navtab" data-v="agents" onclick="view('agents')">Agents</span>
   <span class="navtab" data-v="graph" onclick="view('graph')">Graph</span>
-  <span class="navtab" data-v="activity" onclick="view('activity')">Activity</span>
+  <span class="navtab" data-v="activity" onclick="view('activity')">Audit</span>
   <span id="winwrap"><select id="win" onchange="renderOverview()"><option value="today">Today</option><option value="wtd" selected>Week-to-date</option><option value="7d">Last 7 days</option></select>
     <button class="btn" onclick="exportCsv()" title="Download usage as CSV">⬇ CSV</button></span>
   <span class="stale" id="stale"></span>
@@ -418,7 +418,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   </div>
 </section>
 <section id="view-activity" class="view"><div class="ovwrap">
-  <div class="sectit">Control-plane activity <span class="s" style="font-weight:400">— every spawn / lifecycle / config action, newest first</span></div>
+  <div class="sectit">Audit log <span class="s" style="font-weight:400">— control-plane actions (spawn / lifecycle / config), who &amp; when, newest first</span></div>
   <table class="cost"><thead><tr><th>when</th><th>who</th><th>action</th><th>agent</th><th>detail</th></tr></thead><tbody id="auditbody"></tbody></table>
 </div></section>
 </div>
