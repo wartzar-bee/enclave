@@ -251,9 +251,14 @@ body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;-
 #nav{display:flex;align-items:center;gap:6px;padding:9px 14px;background:var(--card);border-bottom:1px solid var(--bd);flex:0 0 auto}
 #nav .brand{font-size:12.5px;font-weight:700;letter-spacing:.05em;color:var(--mut);margin-right:8px}
 #newmodal .nl{display:block;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:11px 0 3px}
-.seclist{max-height:130px;overflow:auto;border:1px solid var(--bd);border-radius:8px;padding:7px 9px;background:var(--hover);display:flex;flex-wrap:wrap;gap:3px 16px}
-.seci{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--tx);cursor:pointer;white-space:nowrap;text-transform:none;letter-spacing:0}
 .newsecrow input{background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:5px 7px;font-size:12px}
+.secdrop{position:absolute;left:0;right:0;top:calc(100% + 2px);z-index:60;max-height:190px;overflow:auto;border:1px solid var(--bd);border-radius:8px;background:var(--card);box-shadow:0 8px 26px rgba(0,0,0,.45);display:none}
+.secdrop.open{display:block}
+.secdrop .opt{padding:7px 11px;cursor:pointer;font-size:12.5px;color:var(--tx);font-family:var(--mono,monospace)}
+.secdrop .opt:hover{background:var(--hover)}
+.secchips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{display:inline-flex;align-items:center;gap:7px;background:var(--sel);border:1px solid var(--bd);border-radius:14px;padding:3px 7px 3px 11px;font-size:12px;color:var(--tx)}
+.chip .x{cursor:pointer;color:var(--mut);font-weight:700;font-size:14px;line-height:1}.chip .x:hover{color:var(--err)}
 #newmodal input,#newmodal select,#newmodal textarea{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit}
 .cfgi{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 7px;font-size:12px}
 .info{display:inline-block;width:15px;height:15px;line-height:14px;text-align:center;border-radius:50%;border:1px solid var(--mut);color:var(--mut);font-size:10px;font-style:normal;cursor:pointer;margin-left:6px;font-weight:700;vertical-align:middle;user-select:none}
@@ -373,8 +378,9 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <label class="nl">model (optional)<span class="info" onclick="showInfo(event,'Pick from the models for the chosen brain, or ✏️ custom… to type one. Leave on (template default) to use the template model.')">i</span></label><select id="n_model" onchange="newModelPick()"></select>
     <label class="nl">heartbeat interval seconds (optional)<span class="info" onclick="showInfo(event,'Max idle seconds between ticks when there is no message. 10800 = 3h. Blank = template default.')">i</span></label><input id="n_interval" placeholder="10800">
     <label class="nl">mission (appended to CLAUDE.md)<span class="info" onclick="showInfo(event,'Plain-English description of what this agent does and how it should behave. Appended to its CLAUDE.md system prompt.')">i</span></label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
-    <label class="nl">secrets — scoped credentials<span class="info" onclick="showInfo(event,'Credential env files the agent mounts read-only. Tick existing ones from your library and/or add a new one (filename + KEY=VALUE content). They are written into the agent at creation, so it runs immediately — nothing to fill in later.')">i</span></label>
-    <div id="n_seclist" class="seclist"><div class="s">loading…</div></div>
+    <label class="nl">secrets — scoped credentials<span class="info" onclick="showInfo(event,'Credential env files the agent mounts read-only. Search + click to grant existing ones from your library, and/or add a new one (filename + KEY=VALUE). They are written into the agent at creation, so it runs immediately — nothing to fill in later.')">i</span></label>
+    <div style="position:relative"><input id="n_secsearch" placeholder="search credentials to add…" autocomplete="off" oninput="secSearch()" onfocus="secSearch()"><div id="n_secdrop" class="secdrop"></div></div>
+    <div id="n_secchips" class="secchips"></div>
     <div id="n_newsec"></div>
     <button type="button" class="btn" onclick="addNewSecret()" style="margin-top:7px">➕ new secret</button>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
@@ -665,11 +671,25 @@ async function postR(path,body){try{const r=await fetch(qs(path),{method:"POST",
 /* ---------- New-agent modal (P1 create) ---------- */
 let _newModels={};
 async function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";document.getElementById("n_newsec").innerHTML="";await fillNewModels();loadSecretsAvail();}
-async function loadSecretsAvail(){const b=document.getElementById("n_seclist");if(!b)return;
-  let d={available:[],lib_configured:false};try{d=await(await fetch(qs("/api/secrets-available"))).json();}catch(e){}
-  if(!d.lib_configured){b.innerHTML='<div class="s">credential library not configured — use ➕ new secret to add one (set ENCLAVE_SECRETS_LIB to enable the picker)</div>';return;}
-  if(!d.available.length){b.innerHTML='<div class="s">no existing credentials in the library</div>';return;}
-  b.innerHTML=d.available.map(n=>`<label class="seci"><input type="checkbox" value="${esc(n)}"> ${esc(n)}</label>`).join("");}
+let _secAvail=[],_secSel=new Set(),_secLib=false;
+async function loadSecretsAvail(){_secSel=new Set();
+  try{const d=await(await fetch(qs("/api/secrets-available"))).json();_secAvail=d.available||[];_secLib=!!d.lib_configured;}catch(e){_secAvail=[];_secLib=false;}
+  const s=document.getElementById("n_secsearch");if(s){s.value="";s.placeholder=_secLib?"search credentials to add…":"credential library not set — use ➕ new secret";s.disabled=!_secLib;}
+  secDrop([]);renderSecChips();}
+function secSearch(){const q=(document.getElementById("n_secsearch").value||"").toLowerCase();
+  if(!_secLib)return secDrop([]);
+  const m=_secAvail.filter(n=>!_secSel.has(n)&&n.toLowerCase().includes(q)).slice(0,12);secDrop(m);}
+function secDrop(list){const d=document.getElementById("n_secdrop");if(!d)return;
+  if(!list.length){d.className="secdrop";d.innerHTML="";return;}
+  d.className="secdrop open";d.innerHTML=list.map(n=>`<div class="opt" onclick="secAdd('${esc(n)}')">${esc(n)}</div>`).join("");}
+function secAdd(n){_secSel.add(n);document.getElementById("n_secsearch").value="";secDrop([]);renderSecChips();}
+function secDel(n){_secSel.delete(n);renderSecChips();secSearch();}
+function renderSecChips(){const c=document.getElementById("n_secchips");if(!c)return;
+  c.innerHTML=[..._secSel].map(n=>`<span class="chip">${esc(n)}<span class="x" onclick="secDel('${esc(n)}')">×</span></span>`).join("");}
+function addNewSecret(){const box=document.getElementById("n_newsec");const row=document.createElement("div");
+  row.className="newsecrow";row.style.cssText="display:flex;gap:6px;margin-top:6px;align-items:center";
+  row.innerHTML=`<input class="ns_name" placeholder="name.env" style="flex:0 0 130px"><input class="ns_val" placeholder="KEY=value" style="flex:1"><span class="info" onclick="this.parentElement.remove()" style="border-color:var(--err);color:var(--err)" title="remove">×</span>`;
+  box.appendChild(row);}
 function addNewSecret(){const box=document.getElementById("n_newsec");const row=document.createElement("div");
   row.className="newsecrow";row.style.cssText="display:flex;gap:6px;margin-top:6px;align-items:center";
   row.innerHTML=`<input class="ns_name" placeholder="name.env" style="flex:0 0 130px"><input class="ns_val" placeholder="KEY=value" style="flex:1"><span class="info" onclick="this.parentElement.remove()" style="border-color:var(--err);color:var(--err)" title="remove">×</span>`;
@@ -687,9 +707,8 @@ async function submitNew(){const g=id=>document.getElementById(id).value.trim();
   const mdl=g("n_model");if(mdl&&mdl!=="__custom__")body.model=mdl;
   if(g("n_interval"))body.interval_seconds=g("n_interval");
   if(g("n_mission"))body.mission=g("n_mission");
-  // (A) ticked existing credentials
-  const picked=[...document.querySelectorAll("#n_seclist input:checked")].map(c=>c.value);
-  if(picked.length)body.secrets=picked;
+  // (A) chosen existing credentials (chips)
+  if(_secSel.size)body.secrets=[..._secSel];
   // (B) new name/value secret files
   const ns=[...document.querySelectorAll("#n_newsec .newsecrow")].map(r=>({name:r.querySelector(".ns_name").value.trim(),content:r.querySelector(".ns_val").value})).filter(x=>x.name&&x.content);
   if(ns.length)body.new_secrets=ns;
