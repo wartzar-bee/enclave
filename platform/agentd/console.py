@@ -512,50 +512,61 @@ function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classLis
   else if(t==="config"){renderConfig(a);}
   else if(t==="logs"){p.innerHTML='<div id="logs">loading…</div>';fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}`)).then(r=>r.text()).then(x=>{const e=document.getElementById("logs");if(e)e.textContent=x;});}
 }
-/* ---------- Config tab (P0/P2: brain switch · run mode · presets · raw editor) ---------- */
+/* ---------- Config tab (P0/P2) — EDIT LOCALLY, then ONE Save applies + restarts once ---------- */
 const MODE_HELP={autonomous:"continuous — prep→do→continue (SUPERVISE=auto)",chat:"reply-only — wakes on messages (SUPERVISE=off)",scheduled:"heartbeat cadence (SUPERVISE=off + INTERVAL_SECONDS)"};
-function curMode(env){if((env.SUPERVISE||"")==="auto")return"autonomous";return (env.INTERVAL_SECONDS&&env.INTERVAL_SECONDS!=="10800")?"scheduled":"chat";}
+let _cfgEnv={},_cfgEditable=[],_cfgMeta={brains:["claude","api","local","optimize"],modes:["autonomous","chat","scheduled"],presets:[],defs:{}},_pending={};
+function effV(k){return _pending[k]!==undefined?_pending[k]:(_cfgEnv[k]||"");}
+function effMode(){if(effV("SUPERVISE")==="auto")return"autonomous";const iv=effV("INTERVAL_SECONDS");return (iv&&iv!=="10800")?"scheduled":"chat";}
+function pend(k,v){if(String(_cfgEnv[k]||"")===String(v))delete _pending[k];else _pending[k]=String(v);updateDirty();}
+function updateDirty(){const n=Object.keys(_pending).length;const b=document.getElementById("dirty");
+  if(b){b.textContent=n?(n+" unsaved change"+(n>1?"s":"")):"no unsaved changes";b.style.color=n?"var(--idle)":"var(--mut)";}
+  const sv=document.getElementById("saveBtn");if(sv)sv.disabled=!n;const dc=document.getElementById("discardBtn");if(dc)dc.disabled=!n;}
 async function renderConfig(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading config…</div>';
-  let cfg={},meta={brains:["claude","api","local","optimize"],modes:["autonomous","chat","scheduled"],presets:[]};
+  let cfg={};
   try{cfg=await(await fetch(qs(`/api/config?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">config unavailable (agent has no home dir on this host)</div>';return;}
   if(cfg.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(cfg.error)+'</div>';return;}
-  try{meta=await(await fetch(qs("/api/presets"))).json();}catch(e){}
-  const env=cfg.env||cfg;const editable=cfg.editable||Object.keys(env).filter(k=>!k.startsWith("_")).sort();const mode=curMode(env);
-  const brainOpts=meta.brains.map(b=>`<option ${env.BRAIN===b?"selected":""}>${b}</option>`).join("");
-  const presetBtns=meta.presets.map(n=>`<button class="btn" onclick="applyCfg({preset:'${n}'})">${esc(n)}</button>`).join(" ");
-  const modeBtns=meta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="setMode('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
-  const rows=editable.map(k=>`<tr><td class="mono" style="color:var(--mut)">${esc(k)}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(env[k])}"></td></tr>`).join("");
+  try{_cfgMeta=await(await fetch(qs("/api/presets"))).json();}catch(e){}
+  _cfgEnv=cfg.env||cfg;_cfgEditable=cfg.editable||Object.keys(_cfgEnv).filter(k=>!k.startsWith("_")).sort();_pending={};
+  drawConfig();
+}
+function drawConfig(){const p=document.getElementById("pane");if(!p)return;const mode=effMode();
+  const brainOpts=_cfgMeta.brains.map(b=>`<option ${effV("BRAIN")===b?"selected":""}>${b}</option>`).join("");
+  const presetBtns=(_cfgMeta.presets||[]).map(n=>`<button class="btn" onclick="presetLocal('${n}')">${esc(n)}</button>`).join(" ");
+  const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
+  const rows=_cfgEditable.map(k=>{const ch=_pending[k]!==undefined;return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(effV(k))}" oninput="pend(this.dataset.k,this.value)"></td></tr>`;}).join("");
   p.innerHTML=`<div style="padding:16px;overflow:auto">
     <div class="card" style="margin-bottom:12px"><div class="k">brain</div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-        <select id="brainSel">${brainOpts}</select>
-        <input id="modelIn" placeholder="model (optional)" value="${esc(env.MODEL||"")}" style="flex:1">
-        <button class="btn" onclick="setBrain()">Switch &amp; restart</button></div>
-      <div class="s" style="margin-top:5px">claude · api · local · optimize. Switching restarts the agent.</div></div>
+        <select id="brainSel" onchange="pend('BRAIN',this.value)">${brainOpts}</select>
+        <input id="modelIn" placeholder="model (optional)" value="${esc(effV("MODEL"))}" oninput="pend('MODEL',this.value)" style="flex:1"></div>
+      <div class="s" style="margin-top:5px">claude · api · local · optimize</div></div>
     <div class="card" style="margin-bottom:12px"><div class="k">run mode</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${modeBtns}</div>
       <div class="s" style="margin-top:5px">${esc(MODE_HELP[mode]||"")}</div></div>
-    <div class="card" style="margin-bottom:12px"><div class="k">presets (one-click profile · applies + restarts)</div>
+    <div class="card" style="margin-bottom:12px"><div class="k">presets (fills the fields below — review, then Save)</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${presetBtns||"<span class='s'>none</span>"}</div></div>
-    <div class="card"><div class="k">agent.env (editable keys)</div>
-      <table class="cost" style="margin-top:8px"><tbody>${rows}</tbody></table>
-      <button class="btn" onclick="saveCfg()">Apply changed keys &amp; restart</button>
-      <span class="s" id="cfgmsg" style="margin-left:10px"></span></div>
+    <div class="card"><div class="k">agent.env (editable keys · • = changed)</div>
+      <table class="cost" style="margin-top:8px"><tbody>${rows}</tbody></table></div>
+    <div style="position:sticky;bottom:0;display:flex;gap:10px;align-items:center;padding:12px 2px;background:var(--bg)">
+      <button class="btn danger" id="saveBtn" onclick="saveCfg()" disabled>Save &amp; apply</button>
+      <button class="btn" id="discardBtn" onclick="discardCfg()" disabled>Discard</button>
+      <span class="s" id="dirty">no unsaved changes</span><span class="s" id="cfgmsg" style="margin-left:auto"></span></div>
   </div>`;
-  window._cfgEnv=env;
+  updateDirty();
 }
-async function setBrain(){const b=document.getElementById("brainSel").value;const m=document.getElementById("modelIn").value.trim();
-  await applyCfg({brain:b,model:m||undefined});}
-async function setMode(m){let interval;if(m==="scheduled"){interval=prompt("Heartbeat interval seconds:",window._cfgEnv&&window._cfgEnv.INTERVAL_SECONDS||"10800");if(!interval)return;}
-  await applyCfg({mode:m,interval});}
-async function saveCfg(){const ins=document.querySelectorAll(".cfgi");const upd={};ins.forEach(i=>{const k=i.dataset.k,v=i.value;if((window._cfgEnv||{})[k]!==v)upd[k]=v;});
-  if(!Object.keys(upd).length){document.getElementById("cfgmsg").textContent="no changes";return;}
-  await applyCfg({updates:upd});}
-async function applyCfg(body){if(!sel)return;const msg=document.getElementById("cfgmsg");if(msg){msg.style.color="var(--mut)";msg.textContent="applying…";}
-  const r=await postR("/api/config",Object.assign({id:sel},body));
-  if(msg){if(r&&r.ok){const stopped=/stopped|will apply/i.test(r.out||"");msg.style.color="var(--ok)";msg.textContent=stopped?"✓ saved — agent is stopped; Start it to apply":"✓ applied — agent recreated (live now)";}
-    else{msg.style.color="var(--err)";msg.textContent="error: "+esc((r&&(r.error||r.out))||"failed");}}
-  setTimeout(()=>{tab("config");load();},1400);}
+function modeLocal(m){if(m==="scheduled"){const iv=prompt("Heartbeat interval seconds:",effV("INTERVAL_SECONDS")||"10800");if(!iv)return;pend("SUPERVISE","off");pend("INTERVAL_SECONDS",iv);}
+  else if(m==="autonomous"){pend("SUPERVISE","auto");}
+  else{pend("SUPERVISE","off");pend("INTERVAL_SECONDS","10800");}
+  drawConfig();}
+function presetLocal(name){const d=(_cfgMeta.defs||{})[name];if(!d)return;Object.keys(d).forEach(k=>pend(k,d[k]));drawConfig();}
+function discardCfg(){_pending={};drawConfig();}
+async function saveCfg(){if(!sel)return;const upd=Object.assign({},_pending);if(!Object.keys(upd).length)return;
+  const msg=document.getElementById("cfgmsg");if(msg){msg.style.color="var(--mut)";msg.textContent="saving…";}
+  const sv=document.getElementById("saveBtn");if(sv)sv.disabled=true;
+  const r=await postR("/api/config",{id:sel,updates:upd});
+  if(r&&r.ok){const stopped=/stopped|will apply/i.test(r.out||"");if(msg){msg.style.color="var(--ok)";msg.textContent=stopped?"✓ saved — agent stopped; Start to apply":"✓ saved &amp; applied (agent recreated, live now)";}
+    setTimeout(()=>{tab("config");load();},1400);}
+  else{if(msg){msg.style.color="var(--err)";msg.textContent="error: "+esc((r&&(r.error||r.out))||"failed");}updateDirty();}}
 async function act(action){if(!sel)return;if(action==="down"&&!confirm("Stop "+sel+"?"))return;
   await post("/api/action",{action,id:sel});setTimeout(load,800);}
 async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dtext.value="";
@@ -739,7 +750,7 @@ const _urlView=new URLSearchParams(location.search).get("view");
 try{view((["overview","agents","graph"].includes(_urlView)?_urlView:null)||localStorage.getItem("console_view")||"overview");}catch(e){view("overview");}
 load();
 setInterval(()=>{if(curview==="overview")loadOverview();},15000);
-try{const es=new EventSource(qs("/api/stream"));es.onmessage=e=>{try{const j=JSON.parse(e.data);agents=j.agents||agents;if(curview==="agents")render();}catch(_){}};}catch(e){setInterval(load,5000);}
+try{const es=new EventSource(qs("/api/stream"));es.onmessage=e=>{try{const j=JSON.parse(e.data);agents=j.agents||agents;if(curview==="agents"){render();if(sel&&agents[sel])setBar(agents[sel]);}else if(curview==="overview")renderOverview();}catch(_){}};}catch(e){setInterval(load,5000);}
 </script></body></html>"""
 
 
@@ -840,11 +851,11 @@ class H(BaseHTTPRequestHandler):
             if r.returncode != 0:
                 return self._send(400, "application/json", json.dumps({"error": (r.stderr or r.stdout)[-300:]}))
             return self._send(200, "application/json", r.stdout or "{}")
-        if p == "/api/presets":   # the named one-click profiles + allowed brains/modes for the UI
+        if p == "/api/presets":   # the named one-click profiles (+ their key/value defs) for the UI
             import fleet_config
             return self._send(200, "application/json", json.dumps({
-                "presets": sorted(fleet_config.PRESETS), "brains": sorted(fleet_config.BRAINS),
-                "modes": sorted(fleet_config.MODES)}))
+                "presets": sorted(fleet_config.PRESETS), "defs": fleet_config.PRESETS,
+                "brains": sorted(fleet_config.BRAINS), "modes": sorted(fleet_config.MODES)}))
         if p == "/api/stream":
             return self._stream()
         return self._send(404, "application/json", '{"error":"not found"}')
