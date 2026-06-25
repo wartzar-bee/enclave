@@ -251,6 +251,9 @@ body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;-
 #nav{display:flex;align-items:center;gap:6px;padding:9px 14px;background:var(--card);border-bottom:1px solid var(--bd);flex:0 0 auto}
 #nav .brand{font-size:12.5px;font-weight:700;letter-spacing:.05em;color:var(--mut);margin-right:8px}
 #newmodal .nl{display:block;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:11px 0 3px}
+.seclist{max-height:130px;overflow:auto;border:1px solid var(--bd);border-radius:8px;padding:7px 9px;background:var(--hover);display:flex;flex-wrap:wrap;gap:3px 16px}
+.seci{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--tx);cursor:pointer;white-space:nowrap;text-transform:none;letter-spacing:0}
+.newsecrow input{background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:5px 7px;font-size:12px}
 #newmodal input,#newmodal select,#newmodal textarea{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit}
 .cfgi{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 7px;font-size:12px}
 .info{display:inline-block;width:15px;height:15px;line-height:14px;text-align:center;border-radius:50%;border:1px solid var(--mut);color:var(--mut);font-size:10px;font-style:normal;cursor:pointer;margin-left:6px;font-weight:700;vertical-align:middle;user-select:none}
@@ -370,7 +373,10 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <label class="nl">model (optional)<span class="info" onclick="showInfo(event,'Pick from the models for the chosen brain, or ✏️ custom… to type one. Leave on (template default) to use the template model.')">i</span></label><select id="n_model" onchange="newModelPick()"></select>
     <label class="nl">heartbeat interval seconds (optional)<span class="info" onclick="showInfo(event,'Max idle seconds between ticks when there is no message. 10800 = 3h. Blank = template default.')">i</span></label><input id="n_interval" placeholder="10800">
     <label class="nl">mission (appended to CLAUDE.md)<span class="info" onclick="showInfo(event,'Plain-English description of what this agent does and how it should behave. Appended to its CLAUDE.md system prompt.')">i</span></label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
-    <label class="nl">secrets (comma-separated env files, optional)<span class="info" onclick="showInfo(event,'Scoped credential files to mount from .secrets (you fill in the values after). e.g. anthropic.env, comms-bridge.env.')">i</span></label><input id="n_secrets" placeholder="anthropic.env, comms-bridge.env">
+    <label class="nl">secrets — scoped credentials<span class="info" onclick="showInfo(event,'Credential env files the agent mounts read-only. Tick existing ones from your library and/or add a new one (filename + KEY=VALUE content). They are written into the agent at creation, so it runs immediately — nothing to fill in later.')">i</span></label>
+    <div id="n_seclist" class="seclist"><div class="s">loading…</div></div>
+    <div id="n_newsec"></div>
+    <button type="button" class="btn" onclick="addNewSecret()" style="margin-top:7px">➕ new secret</button>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
       <button class="btn" onclick="closeNew()">Cancel</button>
       <button class="btn danger" onclick="submitNew()">Queue create</button></div>
@@ -658,7 +664,16 @@ async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{
 async function postR(path,body){try{const r=await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});return await r.json();}catch(e){return{error:String(e)};}}
 /* ---------- New-agent modal (P1 create) ---------- */
 let _newModels={};
-async function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";await fillNewModels();}
+async function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";document.getElementById("n_newsec").innerHTML="";await fillNewModels();loadSecretsAvail();}
+async function loadSecretsAvail(){const b=document.getElementById("n_seclist");if(!b)return;
+  let d={available:[],lib_configured:false};try{d=await(await fetch(qs("/api/secrets-available"))).json();}catch(e){}
+  if(!d.lib_configured){b.innerHTML='<div class="s">credential library not configured — use ➕ new secret to add one (set ENCLAVE_SECRETS_LIB to enable the picker)</div>';return;}
+  if(!d.available.length){b.innerHTML='<div class="s">no existing credentials in the library</div>';return;}
+  b.innerHTML=d.available.map(n=>`<label class="seci"><input type="checkbox" value="${esc(n)}"> ${esc(n)}</label>`).join("");}
+function addNewSecret(){const box=document.getElementById("n_newsec");const row=document.createElement("div");
+  row.className="newsecrow";row.style.cssText="display:flex;gap:6px;margin-top:6px;align-items:center";
+  row.innerHTML=`<input class="ns_name" placeholder="name.env" style="flex:0 0 130px"><input class="ns_val" placeholder="KEY=value" style="flex:1"><span class="info" onclick="this.parentElement.remove()" style="border-color:var(--err);color:var(--err)" title="remove">×</span>`;
+  box.appendChild(row);}
 async function fillNewModels(){const sel=document.getElementById("n_model");if(!sel)return;
   if(!Object.keys(_newModels).length){try{_newModels=(await(await fetch(qs("/api/presets"))).json()).models||{};}catch(e){}}
   const brain=document.getElementById("n_brain").value;const list=_newModels[brain]||[];const cur=sel.value;
@@ -672,7 +687,12 @@ async function submitNew(){const g=id=>document.getElementById(id).value.trim();
   const mdl=g("n_model");if(mdl&&mdl!=="__custom__")body.model=mdl;
   if(g("n_interval"))body.interval_seconds=g("n_interval");
   if(g("n_mission"))body.mission=g("n_mission");
-  const sec=g("n_secrets");if(sec)body.secrets=sec.split(",").map(s=>s.trim()).filter(Boolean);
+  // (A) ticked existing credentials
+  const picked=[...document.querySelectorAll("#n_seclist input:checked")].map(c=>c.value);
+  if(picked.length)body.secrets=picked;
+  // (B) new name/value secret files
+  const ns=[...document.querySelectorAll("#n_newsec .newsecrow")].map(r=>({name:r.querySelector(".ns_name").value.trim(),content:r.querySelector(".ns_val").value})).filter(x=>x.name&&x.content);
+  if(ns.length)body.new_secrets=ns;
   msg.style.color="var(--mut)";msg.textContent="queuing…";
   const r=await postR("/api/create",body);
   if(r&&r.ok){msg.style.color="var(--ok)";msg.textContent=r.note||"queued";setTimeout(()=>{closeNew();load();},2500);}
@@ -1053,6 +1073,13 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, "application/json", json.dumps(
                 {"archetypes": {}, "note": "No recommendations configured. Point ENCLAVE_MODEL_RECS "
                  "at a model-eval recommendations JSON (e.g. produced by recommend_setup.py --json)."}))
+        if p == "/api/secrets-available":   # NAMES of the scoped-credential library (no values) for create
+            lib = os.environ.get("ENCLAVE_SECRETS_LIB", "")
+            names = []
+            if lib and os.path.isdir(lib):
+                names = sorted(f.name for f in pathlib.Path(lib).glob("*.env"))
+            return self._send(200, "application/json", json.dumps(
+                {"available": names, "lib_configured": bool(lib)}))
         if p == "/api/doctor":   # P3: per-agent wiring health check (in-process, no docker)
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
@@ -1313,8 +1340,29 @@ class H(BaseHTTPRequestHandler):
                     spec["interval_seconds"] = int(d["interval_seconds"])
                 except (TypeError, ValueError):
                     return self._send(400, "application/json", '{"error":"interval_seconds must be an integer"}')
-            if isinstance(d.get("secrets"), list) and d["secrets"]:
-                spec["secrets"] = [str(s).strip() for s in d["secrets"] if str(s).strip()]
+            # Secrets: (A) existing files chosen from the library + (B) new name/value files. Both are
+            # STAGED as real env files next to the spec; the spawn watcher copies them into the new
+            # agent's secrets/ and removes the staging (so values don't linger). Spec carries only names.
+            import shutil
+            SECNAME = re.compile(r"^[A-Za-z0-9._-]+\.env$")
+            lib = os.environ.get("ENCLAVE_SECRETS_LIB", "")
+            existing = [str(s).strip() for s in (d.get("secrets") or []) if str(s).strip()]
+            for s in existing:
+                if not SECNAME.match(s):
+                    return self._send(400, "application/json", json.dumps({"error": f"bad secret name: {s}"}))
+                if not (lib and os.path.isfile(os.path.join(lib, s))):
+                    return self._send(400, "application/json", json.dumps({"error": f"secret not in library: {s}"}))
+            new_files = {}
+            for ns in (d.get("new_secrets") or []):
+                nm = str((ns or {}).get("name", "")).strip()
+                if nm and not nm.endswith(".env"):
+                    nm += ".env"
+                if not SECNAME.match(nm):
+                    return self._send(400, "application/json", json.dumps({"error": f"bad new-secret filename: {nm}"}))
+                new_files[nm] = str((ns or {}).get("content", ""))
+            all_names = sorted(set(existing) | set(new_files))
+            if all_names:
+                spec["secrets"] = all_names
             qroot = pathlib.Path(os.environ.get("ENCLAVE_SPAWN_QUEUE",
                                  str(fleet.STACKS_ROOTS[0] / "_queue") if fleet.STACKS_ROOTS else "/tmp/enclave-queue"))
             incoming = qroot / "incoming"
@@ -1323,6 +1371,19 @@ class H(BaseHTTPRequestHandler):
                 dest = incoming / f"{name}.json"
                 if dest.exists():
                     return self._send(409, "application/json", json.dumps({"error": f"spec {name}.json already queued"}))
+                if all_names:   # stage the real secret files (chmod 600) for the watcher to apply
+                    staging = qroot / "secrets-staging" / name
+                    staging.mkdir(parents=True, exist_ok=True)
+                    try: os.chmod(staging, 0o700)
+                    except OSError: pass
+                    for s in existing:
+                        shutil.copy2(os.path.join(lib, s), staging / s)
+                        try: os.chmod(staging / s, 0o600)
+                        except OSError: pass
+                    for nm, content in new_files.items():
+                        (staging / nm).write_text(content if content.endswith("\n") else content + "\n")
+                        try: os.chmod(staging / nm, 0o600)
+                        except OSError: pass
                 dest.write_text(json.dumps(spec, indent=2))
                 fleet._audit("create-queued", name, str(dest))
                 watching = (qroot / "processed").exists() or (qroot / "failed").exists()

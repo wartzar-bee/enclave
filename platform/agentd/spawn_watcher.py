@@ -18,7 +18,7 @@ Safe by construction: agent name must match ^[a-z0-9][a-z0-9_-]*$, the target mu
 under the stacks root (no path escape), and an existing target is refused. Every action is appended to
 ~/.config/enclave/fleet-audit.log.
 """
-import os, sys, re, json, time, pathlib, subprocess
+import os, sys, re, json, time, pathlib, subprocess, shutil
 
 REPO = pathlib.Path(__file__).resolve().parents[2]     # platform/agentd/ -> repo root
 ENCLAVE = REPO / "bin" / "enclave"
@@ -76,6 +76,24 @@ def _process(spec_path, stacks_root, queue):
                          capture_output=True, text=True)
     if new.returncode != 0:
         return _fail("enclave new failed:\n" + (new.stderr or new.stdout))
+    # Apply any secrets staged alongside the spec (real env files written by whoever queued the spawn,
+    # e.g. the console: existing creds copied from the library + new name/value pairs). Overwrites the
+    # placeholder files `enclave new` made. Staging is consumed + removed so values don't linger.
+    staged = queue / "secrets-staging" / name
+    if staged.is_dir():
+        dst = target / "secrets"
+        dst.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for f in staged.glob("*.env"):
+            shutil.copy2(f, dst / f.name)
+            try:
+                os.chmod(dst / f.name, 0o600)
+            except OSError:
+                pass
+            n += 1
+        shutil.rmtree(staged, ignore_errors=True)
+        _audit("spawn-secrets", name, "applied", f"{n} file(s)")
+        print(f"  · applied {n} staged secret file(s) to {name}")
     run = subprocess.run([sys.executable, str(ENCLAVE), "run", "--dir", str(target), "--no-build",
                           "--no-open"], capture_output=True, text=True)
     if run.returncode != 0:
