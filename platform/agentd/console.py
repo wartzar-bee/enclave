@@ -253,6 +253,9 @@ body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;-
 #newmodal .nl{display:block;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:11px 0 3px}
 #newmodal input,#newmodal select,#newmodal textarea{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit}
 .cfgi{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 7px;font-size:12px}
+.info{display:inline-block;width:15px;height:15px;line-height:14px;text-align:center;border-radius:50%;border:1px solid var(--mut);color:var(--mut);font-size:10px;font-style:normal;cursor:pointer;margin-left:6px;font-weight:700;vertical-align:middle;user-select:none}
+.info:hover{color:var(--tx);border-color:var(--tx)}
+.infopop{position:fixed;z-index:100;max-width:300px;background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:9px 11px;font-size:12px;line-height:1.5;box-shadow:0 8px 26px rgba(0,0,0,.45)}
 .navtab{padding:6px 13px;border-radius:9px;cursor:pointer;color:var(--mut);font-weight:600;font-size:13px}
 .navtab:hover{background:var(--hover);color:var(--tx)}.navtab.sel{background:var(--sel);color:var(--tx)}
 #nav select,#nav .btn{background:var(--hover);border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:6px 10px;cursor:pointer;font:inherit;font-size:12.5px}
@@ -351,6 +354,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <span class="navtab" data-v="agents" onclick="view('agents')">Agents</span>
   <span class="navtab" data-v="graph" onclick="view('graph')">Graph</span>
   <span class="navtab" data-v="activity" onclick="view('activity')">Audit</span>
+  <span class="navtab" data-v="models" onclick="view('models')">Models</span>
   <span id="winwrap"><select id="win" onchange="renderOverview()"><option value="today">Today</option><option value="wtd" selected>Week-to-date</option><option value="7d">Last 7 days</option></select>
     <button class="btn" onclick="exportCsv()" title="Download usage as CSV">⬇ CSV</button></span>
   <span class="stale" id="stale"></span>
@@ -360,13 +364,13 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
 <div id="newmodal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50">
   <div style="max-width:520px;margin:6vh auto;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:20px;max-height:86vh;overflow:auto">
     <h2 style="margin:0 0 12px">Create agent</h2>
-    <label class="nl">name (kebab-case)</label><input id="n_name" placeholder="my-new-agent">
-    <label class="nl">template</label><select id="n_template"><option>venture</option><option>autonomous</option><option>orchestrator</option><option>ops</option><option>analyst</option><option>support</option></select>
-    <label class="nl">brain</label><select id="n_brain"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
-    <label class="nl">model (optional)</label><input id="n_model" placeholder="claude-sonnet-4-6">
-    <label class="nl">heartbeat interval seconds (optional)</label><input id="n_interval" placeholder="10800">
-    <label class="nl">mission (appended to CLAUDE.md)</label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
-    <label class="nl">secrets (comma-separated env files, optional)</label><input id="n_secrets" placeholder="anthropic.env, comms-bridge.env">
+    <label class="nl">name (kebab-case)<span class="info" onclick="showInfo(event,'Becomes the agent id, folder, and container name. Lowercase letters, digits and dashes only.')">i</span></label><input id="n_name" placeholder="my-new-agent">
+    <label class="nl">template<span class="info" onclick="showInfo(event,'Starter brain + skills: venture (builds products), autonomous (self-driving), orchestrator (manages sub-agents), ops / analyst / support (focused task agents).')">i</span></label><select id="n_template"><option>venture</option><option>autonomous</option><option>orchestrator</option><option>ops</option><option>analyst</option><option>support</option></select>
+    <label class="nl">brain<span class="info" onclick="showInfo(event,'Model tier: claude (Anthropic) | api (OpenAI-compatible provider) | local (model on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).')">i</span></label><select id="n_brain"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
+    <label class="nl">model (optional)<span class="info" onclick="showInfo(event,'Top model id for the chosen brain. Leave blank to use the template default.')">i</span></label><input id="n_model" placeholder="claude-sonnet-4-6">
+    <label class="nl">heartbeat interval seconds (optional)<span class="info" onclick="showInfo(event,'Max idle seconds between ticks when there is no message. 10800 = 3h. Blank = template default.')">i</span></label><input id="n_interval" placeholder="10800">
+    <label class="nl">mission (appended to CLAUDE.md)<span class="info" onclick="showInfo(event,'Plain-English description of what this agent does and how it should behave. Appended to its CLAUDE.md system prompt.')">i</span></label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
+    <label class="nl">secrets (comma-separated env files, optional)<span class="info" onclick="showInfo(event,'Scoped credential files to mount from .secrets (you fill in the values after). e.g. anthropic.env, comms-bridge.env.')">i</span></label><input id="n_secrets" placeholder="anthropic.env, comms-bridge.env">
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
       <button class="btn" onclick="closeNew()">Cancel</button>
       <button class="btn danger" onclick="submitNew()">Queue create</button></div>
@@ -421,6 +425,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <div class="sectit">Audit log <span class="s" style="font-weight:400">— control-plane actions (spawn / lifecycle / config), who &amp; when, newest first</span></div>
   <table class="cost"><thead><tr><th>when</th><th>who</th><th>action</th><th>agent</th><th>detail</th></tr></thead><tbody id="auditbody"></tbody></table>
 </div></section>
+<section id="view-models" class="view"><div class="ovwrap"><div id="modelsbox"></div></div></section>
 </div>
 <script>
 const TOK=new URLSearchParams(location.search).get("token")||"";
@@ -428,6 +433,33 @@ const qs=p=>TOK?(p+(p.includes("?")?"&":"?")+"token="+encodeURIComponent(TOK)):p
 const PAL=["#d97757","#79c0ff","#3fbf6f","#c9a23f","#b58cf0","#e06c9f","#56b6c2","#d0a35c","#8fbf6f","#f08a8a"];
 let agents={},sel=null,curtab="chat",curview="overview",ov={},sortKey="claude",sortDir=-1;
 function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+/* ---------- click (i) -> explanation popover ---------- */
+function showInfo(ev,text){ev.stopPropagation();const old=document.getElementById("infopop");if(old)old.remove();
+  const p=document.createElement("div");p.id="infopop";p.className="infopop";p.textContent=text;document.body.appendChild(p);
+  const r=ev.target.getBoundingClientRect();
+  p.style.left=Math.max(8,Math.min(r.left,window.innerWidth-p.offsetWidth-12))+"px";
+  p.style.top=(r.bottom+window.innerHeight-r.bottom>p.offsetHeight+10?r.bottom+6:r.top-p.offsetHeight-6)+"px";
+  setTimeout(()=>document.addEventListener("click",()=>{const e=document.getElementById("infopop");if(e)e.remove();},{once:true}),0);}
+function ic(text){return `<span class="info" onclick="showInfo(event,'${esc(text).replace(/'/g,"\\'")}')">i</span>`;}
+const KEY_HELP={
+  BRAIN:"Model tier that runs the agent: claude | api (OpenAI-compatible, e.g. NVIDIA free) | local (MLX/Ollama on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).",
+  MODEL:"The top model id for this brain — e.g. claude-opus-4-8, or an NVIDIA model id for api.",
+  MODEL_ROUTINE:"Cheaper model used for routine/heartbeat & mechanical ticks when ROUTER=on (e.g. claude-sonnet-4-6).",
+  ROUTER:"on = route judgment ticks to MODEL (top) and mechanical ticks to MODEL_ROUTINE (cheap). off = always MODEL.",
+  INTERVAL_SECONDS:"Heartbeat: max idle seconds between ticks when there's no message. 10800 = 3h.",
+  SUPERVISE:"auto = continuous work loop (prep→do→continue). off = only ticks on a message or the heartbeat.",
+  CONTINUOUS_COOLDOWN:"Minimum seconds between back-to-back ticks in auto mode — guards against runaway token burn.",
+  TICK_TIMEOUT:"Hard limit (seconds) for a single tick before it's killed.",
+  DELEGATION_ENFORCE:"on = a BRAIN=claude manager must hand bulk code to a worker (delegate.py) instead of writing it itself.",
+  DELEGATION_MAX_CHARS:"Size threshold (chars) above which the delegation guard blocks manager-written code.",
+  PERMISSION:"Claude Code permission mode. 'dangerous' skips per-tool prompts — required for unattended autonomy.",
+  WORKDIR:"Subfolder under the agent's home it treats as its working directory.",
+  LOCAL_BRAIN_MODEL:"For BRAIN=local: the model name served by the local MLX/Ollama endpoint.",
+  LOCAL_BRAIN_BASE:"For BRAIN=local: the base URL of the local OpenAI-compatible server.",
+  LOCAL_REQ_TIMEOUT:"For BRAIN=local: request timeout in seconds.",
+  GUARD_ALLOW_GIT:"1 = allow the agent to git push via its scoped deploy key (off by default).",
+  GUARD_EGRESS_ENFORCE:"1 = enforce the egress allowlist (block outbound to non-allowlisted hosts)."
+};
 function theme(){return document.body.classList.contains("light")?"light":"dark";}
 function cssv(n){return getComputedStyle(document.body).getPropertyValue(n).trim();}
 function usd(n){if(n==null)return"—";return"$"+(n<10?n.toFixed(2):n<1000?n.toFixed(1):Math.round(n).toLocaleString());}
@@ -439,9 +471,10 @@ function view(v){curview=v;
   document.getElementById("view-agents").style.display=v==="agents"?"flex":"none";
   document.getElementById("view-graph").style.display=v==="graph"?"block":"none";
   document.getElementById("view-activity").style.display=v==="activity"?"block":"none";
+  document.getElementById("view-models").style.display=v==="models"?"block":"none";
   document.getElementById("winwrap").style.display=v==="overview"?"":"none";
   try{localStorage.setItem("console_view",v);}catch(e){}
-  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else if(v==="activity"){loadActivity();}else{render();}
+  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else if(v==="activity"){loadActivity();}else if(v==="models"){loadModels();}else{render();}
 }
 /* ---------- canonical status model (ONE source of truth — rail, detail, table, graph) ---------- */
 const STATUS={
@@ -558,7 +591,7 @@ async function renderConfig(a){const p=document.getElementById("pane");p.innerHT
   drawConfig();drawGoal();
 }
 function drawGoal(){const g=document.getElementById("cfggoal");if(!g)return;
-  g.innerHTML=`<div class="card" style="margin-top:12px"><div class="k">phase goal — autonomous steering</div>
+  g.innerHTML=`<div class="card" style="margin-top:12px"><div class="k">phase goal — autonomous steering${ic("The work goal the off-Opus supervisor reads each cycle to fill the agent's task queue. Only BRAIN=local/optimize agents use it. Saving writes the goal; it does NOT restart the agent.")}</div>
     <div class="s" style="margin:3px 0 7px">The off-Opus supervisor (BRAIN=local/optimize agents) reads this each cycle to set the work queue. Saving does NOT restart the agent.</div>
     <textarea id="goalIn" rows="3" style="width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px;font-family:inherit;font-size:13px">${esc(window._cfgGoal||"")}</textarea>
     <div style="margin-top:8px"><button class="btn" onclick="saveGoal()">Save goal</button><span class="s" id="goalmsg" style="margin-left:10px"></span></div></div>`;}
@@ -568,21 +601,23 @@ async function saveGoal(){if(!sel)return;const t=document.getElementById("goalIn
   if(m){if(r&&r.ok){m.style.color="var(--ok)";m.textContent="✓ goal saved (applies next supervisor cycle)";window._cfgGoal=t;}else{m.style.color="var(--err)";m.textContent="error: "+esc((r&&r.error)||"failed");}}}
 function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;const mode=effMode();
   const brainOpts=_cfgMeta.brains.map(b=>`<option ${effV("BRAIN")===b?"selected":""}>${b}</option>`).join("");
+  const known=(_cfgMeta.models&&_cfgMeta.models[effV("BRAIN")])||[];const curM=effV("MODEL");
+  const modelOpts=[...new Set([...(curM?[curM]:[]),...known])].map(m=>`<option ${m===curM?"selected":""}>${esc(m)}</option>`).join("")+(curM?"":`<option value="" selected>(none)</option>`)+`<option value="__custom__">✏️ custom…</option>`;
   const presetBtns=(_cfgMeta.presets||[]).map(n=>`<button class="btn" onclick="presetLocal('${n}')">${esc(n)}</button>`).join(" ");
   const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
-  const rows=_cfgEditable.map(k=>{const ch=_pending[k]!==undefined;return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(effV(k))}" oninput="pend(this.dataset.k,this.value)"></td></tr>`;}).join("");
+  const rows=_cfgEditable.map(k=>{const ch=_pending[k]!==undefined;return `<tr><td class="mono" style="color:${ch?"var(--idle)":"var(--mut)"}">${ch?"• ":""}${esc(k)}${KEY_HELP[k]?ic(KEY_HELP[k]):""}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(effV(k))}" oninput="pend(this.dataset.k,this.value)"></td></tr>`;}).join("");
   p.innerHTML=`
-    <div class="card" style="margin-bottom:12px"><div class="k">brain</div>
+    <div class="card" style="margin-bottom:12px"><div class="k">brain${ic(KEY_HELP.BRAIN)}</div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-        <select id="brainSel" onchange="pend('BRAIN',this.value)">${brainOpts}</select>
-        <input id="modelIn" placeholder="model (optional)" value="${esc(effV("MODEL"))}" oninput="pend('MODEL',this.value)" style="flex:1"></div>
-      <div class="s" style="margin-top:5px">claude · api · local · optimize</div></div>
-    <div class="card" style="margin-bottom:12px"><div class="k">run mode</div>
+        <select id="brainSel" onchange="pend('BRAIN',this.value);drawConfig()">${brainOpts}</select>
+        <select id="modelSel" onchange="modelPick(this.value)" style="flex:1">${modelOpts}</select></div>
+      <div class="s" style="margin-top:5px">brain sets the pool; model is the list for that brain (pick ✏️ custom… to type one)</div></div>
+    <div class="card" style="margin-bottom:12px"><div class="k">run mode${ic("How the agent runs. Autonomous = continuous work loop (SUPERVISE=auto). Chat = only wakes when you message it. Scheduled = wakes on a fixed heartbeat interval.")}</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${modeBtns}</div>
       <div class="s" style="margin-top:5px">${esc(MODE_HELP[mode]||"")}</div></div>
-    <div class="card" style="margin-bottom:12px"><div class="k">presets (fills the fields below — review, then Save)</div>
+    <div class="card" style="margin-bottom:12px"><div class="k">presets${ic("One-click config profiles. Clicking one FILLS the fields below (brain/mode/etc.) for you to review — nothing is applied until you Save.")}</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${presetBtns||"<span class='s'>none</span>"}</div></div>
-    <div class="card"><div class="k">agent.env (editable keys · • = changed)</div>
+    <div class="card"><div class="k">agent.env (editable keys · • = changed)${ic("The agent's runtime settings file. Only safe-to-edit keys are shown; identity/wiring keys (AGENT_ID, ports, secrets) are hidden. Click the i next to a key for what it does.")}</div>
       <table class="cost" style="margin-top:8px"><tbody>${rows}</tbody></table></div>
     <div style="display:flex;gap:10px;align-items:center;padding:12px 2px">
       <button class="btn danger" id="saveBtn" onclick="saveCfg()" disabled>Save &amp; apply</button>
@@ -590,6 +625,7 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
       <span class="s" id="dirty">no unsaved changes</span><span class="s" id="cfgmsg" style="margin-left:auto"></span></div>`;
   updateDirty();
 }
+function modelPick(v){if(v==="__custom__"){const c=prompt("Model id:",effV("MODEL")||"");if(c!==null)pend("MODEL",c.trim());drawConfig();}else{pend("MODEL",v);}}
 function modeLocal(m){if(m==="scheduled"){const iv=prompt("Heartbeat interval seconds:",effV("INTERVAL_SECONDS")||"10800");if(!iv)return;pend("SUPERVISE","off");pend("INTERVAL_SECONDS",iv);}
   else if(m==="autonomous"){pend("SUPERVISE","auto");}
   else{pend("SUPERVISE","off");pend("INTERVAL_SECONDS","10800");}
@@ -634,7 +670,7 @@ let _escOpen=false;
 async function loadEscalations(){const b=document.getElementById("escbox");if(!b)return;
   let items=[];try{items=(await(await fetch(qs("/api/escalations"))).json()).items||[];}catch(e){return;}
   if(!items.length){b.innerHTML="";return;}
-  const show=_escOpen?items:items.slice(0,4);
+  const show=_escOpen?items:items.slice(0,1);
   b.innerHTML=`<div class="sectit" style="color:var(--idle);cursor:pointer" onclick="_escOpen=!_escOpen;loadEscalations()">⚠ Needs your decision · ${items.length} <span class="s" style="font-weight:400">(${_escOpen?"collapse":"expand"})</span></div>
     <div style="max-height:${_escOpen?"50vh":"auto"};overflow:auto;margin-bottom:10px">`+
     show.map(it=>`<div class="s" style="padding:5px 9px;border-left:2px solid var(--idle);margin-bottom:4px;background:var(--card);border-radius:0 6px 6px 0">
@@ -646,6 +682,20 @@ async function loadActivity(){const b=document.getElementById("auditbody");if(!b
     b.innerHTML=es.length?es.map(e=>{const t=(e.ts||"").replace("T"," ").replace("Z","");
       return `<tr><td class="mono" style="text-align:left">${esc(t)}</td><td style="text-align:left">${esc(e.who||"")}</td><td style="text-align:left"><b>${esc(e.action||"")}</b></td><td style="text-align:left">${esc(e.agent||"")}</td><td class="s" style="text-align:left">${esc(e.detail||e.result||"")}</td></tr>`;}).join(""):'<tr><td colspan=5 class="s">no actions logged yet</td></tr>';
   }catch(e){b.innerHTML='<tr><td colspan=5 class="s" style="color:var(--err)">audit log unavailable</td></tr>';}}
+async function loadModels(){const b=document.getElementById("modelsbox");if(!b)return;b.innerHTML='<div class="sectit">loading…</div>';
+  let d={};try{d=await(await fetch(qs("/api/models"))).json();}catch(e){}
+  const arch=d.archetypes||{};
+  if(!Object.keys(arch).length){b.innerHTML=`<div class="sectit">Model recommendations</div><div class="card"><div class="s">${esc(d.note||d.error||"no recommendations available")}</div></div>`;return;}
+  const ROLE_HELP={orchestrator:"The agent BRAIN / manager — needs routing, planning, decisions and multi-step instruction-following (what local pods failed at).",coder:"A worker that writes code — graded by actually running its output against tests.",fast:"Cheap high-throughput labor — classify / extract / format. Latency matters most."};
+  let h=`<div class="sectit">Model recommendations <span class="s" style="font-weight:400">— ${esc(d.pool||"")} pool · ${d.candidates||0} evaluated${d.excluded&&d.excluded.length?" · "+d.excluded.length+" excluded (throttled-on-free)":""} · pick one in an agent's Config tab</span>${ic("Best model per agent archetype from the capability eval. This page is a decision aid only — set the model in an agent's Config tab.")}</div>`;
+  for(const role of Object.keys(arch)){const info=arch[role];
+    h+=`<div class="card" style="margin-bottom:12px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div class="k" style="text-transform:capitalize;font-size:13px">${esc(role)}${ic(ROLE_HELP[role]||"")}</div>
+      <div class="s">best: <b style="color:var(--ok)">${esc(info.recommend||"—")}</b></div></div>
+      <table class="cost" style="margin-top:8px"><thead><tr><th style="text-align:left">model</th><th>score${ic("Weighted capability score for this archetype (0-100), blending the relevant test categories.")}</th><th>p50${ic("Median response latency in seconds — lower is faster.")}</th><th style="text-align:left">categories</th></tr></thead><tbody>`+
+      (info.ranked||[]).map(s=>`<tr><td style="text-align:left" class="mono">${esc(s.model)}${s.model===info.recommend?' <span style="color:var(--ok)">★</span>':""}</td><td>${s.score}</td><td>${s.p50}s</td><td style="text-align:left" class="s">${Object.keys(s.cats||{}).map(c=>c+":"+Math.round(s.cats[c])).join("  ")}</td></tr>`).join("")+
+      `</tbody></table></div>`;}
+  b.innerHTML=h;}
 function gauge(w,label){const pct=w&&w.pct!=null?w.pct:null;const warn=label.indexOf("5h")>=0?70:85;
   /* resolve to real hex — Chrome does NOT substitute var() inside SVG presentation attributes
      (fill=/stroke=), so passing "var(--ok)" there renders black/invisible. */
@@ -939,9 +989,38 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, "application/json", r.stdout or "{}")
         if p == "/api/presets":   # the named one-click profiles (+ their key/value defs) for the UI
             import fleet_config
+            # known model ids per brain, so the Config model field can be a dropdown (no typos).
+            # claude tier is the product's supported set; api/optimize models come from the eval
+            # recs file (ENCLAVE_MODEL_RECS) when configured; local is unknown -> current+custom only.
+            claude_tier = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+            eval_models = []
+            recs_path = os.environ.get("ENCLAVE_MODEL_RECS", "")
+            if recs_path and os.path.isfile(recs_path):
+                try:
+                    rd = json.loads(pathlib.Path(recs_path).read_text())
+                    s = set()
+                    for info in rd.get("archetypes", {}).values():
+                        for r in info.get("ranked", []):
+                            s.add(r["model"])
+                    eval_models = sorted(s)
+                except Exception:
+                    pass
+            models_by_brain = {"claude": claude_tier, "optimize": claude_tier,
+                               "api": eval_models, "local": []}
             return self._send(200, "application/json", json.dumps({
                 "presets": sorted(fleet_config.PRESETS), "defs": fleet_config.PRESETS,
-                "brains": sorted(fleet_config.BRAINS), "modes": sorted(fleet_config.MODES)}))
+                "brains": sorted(fleet_config.BRAINS), "modes": sorted(fleet_config.MODES),
+                "models": models_by_brain}))
+        if p == "/api/models":   # P4: model-eval recommendations (from an external recs file, if configured)
+            recs_path = os.environ.get("ENCLAVE_MODEL_RECS", "")
+            if recs_path and os.path.isfile(recs_path):
+                try:
+                    return self._send(200, "application/json", pathlib.Path(recs_path).read_text())
+                except Exception as e:
+                    return self._send(200, "application/json", json.dumps({"error": str(e)}))
+            return self._send(200, "application/json", json.dumps(
+                {"archetypes": {}, "note": "No recommendations configured. Point ENCLAVE_MODEL_RECS "
+                 "at a model-eval recommendations JSON (e.g. produced by recommend_setup.py --json)."}))
         if p == "/api/doctor":   # P3: per-agent wiring health check (in-process, no docker)
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
