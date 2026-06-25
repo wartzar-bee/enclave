@@ -250,6 +250,9 @@ body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;-
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);height:100vh;display:flex;flex-direction:column}
 #nav{display:flex;align-items:center;gap:6px;padding:9px 14px;background:var(--card);border-bottom:1px solid var(--bd);flex:0 0 auto}
 #nav .brand{font-size:12.5px;font-weight:700;letter-spacing:.05em;color:var(--mut);margin-right:8px}
+#newmodal .nl{display:block;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:11px 0 3px}
+#newmodal input,#newmodal select,#newmodal textarea{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit}
+.cfgi{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 7px;font-size:12px}
 .navtab{padding:6px 13px;border-radius:9px;cursor:pointer;color:var(--mut);font-weight:600;font-size:13px}
 .navtab:hover{background:var(--hover);color:var(--tx)}.navtab.sel{background:var(--sel);color:var(--tx)}
 #nav select,#nav .btn{background:var(--hover);border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:6px 10px;cursor:pointer;font:inherit;font-size:12.5px}
@@ -350,8 +353,24 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <span id="winwrap"><select id="win" onchange="renderOverview()"><option value="today">Today</option><option value="wtd" selected>Week-to-date</option><option value="7d">Last 7 days</option></select>
     <button class="btn" onclick="exportCsv()" title="Download usage as CSV">⬇ CSV</button></span>
   <span class="stale" id="stale"></span>
+  <button class="btn" onclick="openNew()" title="Create a new agent">+ New Agent</button>
   <button class="btn" id="themebtn" title="Toggle light/dark" onclick="toggleTheme()">🌙</button>
 </nav>
+<div id="newmodal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50">
+  <div style="max-width:520px;margin:6vh auto;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:20px;max-height:86vh;overflow:auto">
+    <h2 style="margin:0 0 12px">Create agent</h2>
+    <label class="nl">name (kebab-case)</label><input id="n_name" placeholder="my-new-agent">
+    <label class="nl">template</label><select id="n_template"><option>venture</option><option>autonomous</option><option>orchestrator</option><option>ops</option><option>analyst</option><option>support</option></select>
+    <label class="nl">brain</label><select id="n_brain"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
+    <label class="nl">model (optional)</label><input id="n_model" placeholder="claude-sonnet-4-6">
+    <label class="nl">heartbeat interval seconds (optional)</label><input id="n_interval" placeholder="10800">
+    <label class="nl">mission (appended to CLAUDE.md)</label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
+    <label class="nl">secrets (comma-separated env files, optional)</label><input id="n_secrets" placeholder="anthropic.env, comms-bridge.env">
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn" onclick="closeNew()">Cancel</button>
+      <button class="btn danger" onclick="submitNew()">Queue create</button></div>
+    <div class="s" id="n_msg" style="margin-top:8px"></div>
+  </div></div>
 <div id="alertbar"></div>
 <div id="body">
 <section id="view-overview" class="view"><div class="ovwrap">
@@ -379,6 +398,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
       <button class="btn" onclick="openChat()">↗ Chat tab</button></div>
     <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
       <span class="tab" data-t="status" onclick="tab('status')">Status</span>
+      <span class="tab" data-t="config" onclick="tab('config')">Config</span>
       <span class="tab" data-t="logs" onclick="tab('logs')">Logs</span></div>
     <div id="pane"><div class="empty">Select an agent from the rail.</div></div>
     <div id="dbox"><input id="dtext" placeholder="Send a directive to this agent (wakes its tick)…"><button class="btn" onclick="sendD()">Send</button></div>
@@ -489,13 +509,73 @@ function tab(t){curtab=t;document.querySelectorAll(".tab").forEach(e=>e.classLis
       <div id="status">${esc(JSON.stringify({id:a.id,up:a.up,status:a.status,brain:a.brain,model:a.model,port:a.port,manager:a.manager,tick:a.tick,reachable:a.reachable,work_open:a.work_open,headline:a.headline,home:a.home},null,2))}</div></div>`;
     ensureOv().then(()=>drawMini(sel));
   }
+  else if(t==="config"){renderConfig(a);}
   else if(t==="logs"){p.innerHTML='<div id="logs">loading…</div>';fetch(qs(`/api/logs?id=${encodeURIComponent(sel)}`)).then(r=>r.text()).then(x=>{const e=document.getElementById("logs");if(e)e.textContent=x;});}
 }
+/* ---------- Config tab (P0/P2: brain switch · run mode · presets · raw editor) ---------- */
+const MODE_HELP={autonomous:"continuous — prep→do→continue (SUPERVISE=auto)",chat:"reply-only — wakes on messages (SUPERVISE=off)",scheduled:"heartbeat cadence (SUPERVISE=off + INTERVAL_SECONDS)"};
+function curMode(env){if((env.SUPERVISE||"")==="auto")return"autonomous";return (env.INTERVAL_SECONDS&&env.INTERVAL_SECONDS!=="10800")?"scheduled":"chat";}
+async function renderConfig(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading config…</div>';
+  let cfg={},meta={brains:["claude","api","local","optimize"],modes:["autonomous","chat","scheduled"],presets:[]};
+  try{cfg=await(await fetch(qs(`/api/config?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">config unavailable (agent has no home dir on this host)</div>';return;}
+  if(cfg.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(cfg.error)+'</div>';return;}
+  try{meta=await(await fetch(qs("/api/presets"))).json();}catch(e){}
+  const env=cfg;const mode=curMode(env);
+  const brainOpts=meta.brains.map(b=>`<option ${env.BRAIN===b?"selected":""}>${b}</option>`).join("");
+  const presetBtns=meta.presets.map(n=>`<button class="btn" onclick="applyCfg({preset:'${n}'})">${esc(n)}</button>`).join(" ");
+  const modeBtns=meta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="setMode('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
+  const rows=Object.keys(env).filter(k=>!k.startsWith("_")).sort().map(k=>`<tr><td class="mono" style="color:var(--mut)">${esc(k)}</td><td><input class="cfgi" data-k="${esc(k)}" value="${esc(env[k])}"></td></tr>`).join("");
+  p.innerHTML=`<div style="padding:16px;overflow:auto">
+    <div class="card" style="margin-bottom:12px"><div class="k">brain</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <select id="brainSel">${brainOpts}</select>
+        <input id="modelIn" placeholder="model (optional)" value="${esc(env.MODEL||"")}" style="flex:1">
+        <button class="btn" onclick="setBrain()">Switch &amp; restart</button></div>
+      <div class="s" style="margin-top:5px">claude · api · local · optimize. Switching restarts the agent.</div></div>
+    <div class="card" style="margin-bottom:12px"><div class="k">run mode</div>
+      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${modeBtns}</div>
+      <div class="s" style="margin-top:5px">${esc(MODE_HELP[mode]||"")}</div></div>
+    <div class="card" style="margin-bottom:12px"><div class="k">presets (one-click profile · applies + restarts)</div>
+      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${presetBtns||"<span class='s'>none</span>"}</div></div>
+    <div class="card"><div class="k">agent.env (editable keys)</div>
+      <table class="cost" style="margin-top:8px"><tbody>${rows}</tbody></table>
+      <button class="btn" onclick="saveCfg()">Apply changed keys &amp; restart</button>
+      <span class="s" id="cfgmsg" style="margin-left:10px"></span></div>
+  </div>`;
+  window._cfgEnv=env;
+}
+async function setBrain(){const b=document.getElementById("brainSel").value;const m=document.getElementById("modelIn").value.trim();
+  await applyCfg({brain:b,model:m||undefined});}
+async function setMode(m){let interval;if(m==="scheduled"){interval=prompt("Heartbeat interval seconds:",window._cfgEnv&&window._cfgEnv.INTERVAL_SECONDS||"10800");if(!interval)return;}
+  await applyCfg({mode:m,interval});}
+async function saveCfg(){const ins=document.querySelectorAll(".cfgi");const upd={};ins.forEach(i=>{const k=i.dataset.k,v=i.value;if((window._cfgEnv||{})[k]!==v)upd[k]=v;});
+  if(!Object.keys(upd).length){document.getElementById("cfgmsg").textContent="no changes";return;}
+  await applyCfg({updates:upd});}
+async function applyCfg(body){if(!sel)return;const msg=document.getElementById("cfgmsg");if(msg)msg.textContent="applying…";
+  const r=await postR("/api/config",Object.assign({id:sel},body));
+  if(msg)msg.textContent=r&&r.ok?"applied — restarting":("error: "+esc((r&&(r.error||r.out))||"failed"));
+  setTimeout(()=>{tab("config");load();},1200);}
 async function act(action){if(!sel)return;if(action==="down"&&!confirm("Stop "+sel+"?"))return;
   await post("/api/action",{action,id:sel});setTimeout(load,800);}
 async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dtext.value="";
   await post("/api/action",{action:"send",id:sel,text:t});}
 async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});}catch(e){}}
+async function postR(path,body){try{const r=await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});return await r.json();}catch(e){return{error:String(e)};}}
+/* ---------- New-agent modal (P1 create) ---------- */
+function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";}
+function closeNew(){document.getElementById("newmodal").style.display="none";}
+async function submitNew(){const g=id=>document.getElementById(id).value.trim();
+  const name=g("n_name");const msg=document.getElementById("n_msg");
+  if(!/^[a-z0-9][a-z0-9_-]*$/.test(name)){msg.style.color="var(--err)";msg.textContent="name must be kebab-case [a-z0-9][a-z0-9_-]*";return;}
+  const body={name,template:g("n_template"),brain:g("n_brain")};
+  if(g("n_model"))body.model=g("n_model");
+  if(g("n_interval"))body.interval_seconds=g("n_interval");
+  if(g("n_mission"))body.mission=g("n_mission");
+  const sec=g("n_secrets");if(sec)body.secrets=sec.split(",").map(s=>s.trim()).filter(Boolean);
+  msg.style.color="var(--mut)";msg.textContent="queuing…";
+  const r=await postR("/api/create",body);
+  if(r&&r.ok){msg.style.color="var(--ok)";msg.textContent=r.note||"queued";setTimeout(()=>{closeNew();load();},2500);}
+  else{msg.style.color="var(--err)";msg.textContent="error: "+esc((r&&(r.error||r.out))||"failed");}}
 async function load(){try{const j=await(await fetch(qs("/api/fleet"))).json();agents=j.agents||{};renderAlerts(j.alerts||[]);if(curview==="agents"){render();if(sel&&agents[sel]){setBar(agents[sel]);}}else{renderOverview();}}catch(e){}}
 /* ---------- alerts ---------- */
 function renderAlerts(al){const b=document.getElementById("alertbar");if(!al||!al.length){b.innerHTML="";return;}
@@ -836,6 +916,42 @@ class H(BaseHTTPRequestHandler):
             try:
                 r = _fleet_cmd(*args, timeout=190)
                 return self._send(200, "application/json", json.dumps({"ok": r.returncode == 0, "out": (r.stdout or r.stderr)[-500:]}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/create":   # enqueue a new-agent spec for the spawn watcher (P1 create-agent)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            name = (d.get("name") or "").strip()
+            if not fleet._SAFE.match(name):
+                return self._send(400, "application/json", '{"error":"name must be kebab-case [a-z0-9][a-z0-9_-]*"}')
+            # whitelist spec fields the spawn pipeline understands (enclave new --spec)
+            spec = {"name": name}
+            for k in ("template", "brain", "model", "mission"):
+                if d.get(k):
+                    spec[k] = d[k]
+            if d.get("interval_seconds"):
+                try:
+                    spec["interval_seconds"] = int(d["interval_seconds"])
+                except (TypeError, ValueError):
+                    return self._send(400, "application/json", '{"error":"interval_seconds must be an integer"}')
+            if isinstance(d.get("secrets"), list) and d["secrets"]:
+                spec["secrets"] = [str(s).strip() for s in d["secrets"] if str(s).strip()]
+            qroot = pathlib.Path(os.environ.get("ENCLAVE_SPAWN_QUEUE",
+                                 str(fleet.STACKS_ROOTS[0] / "_queue") if fleet.STACKS_ROOTS else "/tmp/enclave-queue"))
+            incoming = qroot / "incoming"
+            try:
+                incoming.mkdir(parents=True, exist_ok=True)
+                dest = incoming / f"{name}.json"
+                if dest.exists():
+                    return self._send(409, "application/json", json.dumps({"error": f"spec {name}.json already queued"}))
+                dest.write_text(json.dumps(spec, indent=2))
+                fleet._audit("create-queued", name, str(dest))
+                watching = (qroot / "processed").exists() or (qroot / "failed").exists()
+                note = "queued — spawn watcher will build + start it" if watching else \
+                       f"queued at {dest} — NOTE: no spawn watcher detected on this queue (run `enclave fleet watch {qroot}`)"
+                return self._send(200, "application/json", json.dumps({"ok": True, "queued": str(dest), "note": note}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))
         return self._send(404, "application/json", '{"error":"not found"}')
