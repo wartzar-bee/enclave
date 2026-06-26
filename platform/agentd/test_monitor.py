@@ -220,7 +220,17 @@ st4 = mstate.MonitorState(path=pathlib.Path(tempfile.mkdtemp()) / "s4.json")
 oks = [st4.push_ok(per_hour=3, now=5000 + i) for i in range(5)]
 check("push_ok: allows up to the cap then blocks", oks == [True, True, True, False, False])
 check("notify.push: fail-open when unconfigured",
-      notify.push("x") is False or notify.available())  # no-op unless a bot is wired in this env
+      notify.push("x") is False or notify.available())  # no-op unless a channel is wired in this env
+# channel preference + Slack webhook path (monkeypatched transport, no network)
+sent = {}
+notify._resolve = lambda: {"SLACK_WEBHOOK_URL": "https://hooks.slack.test/x",
+                           "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""}
+notify._post = lambda url, payload, timeout: sent.update(url=url, payload=payload) or b"ok"
+check("notify.channel: prefers slack", notify.channel() == "slack")
+check("notify.push: posts to the slack webhook",
+      notify.push("hi") is True and sent["url"] == "https://hooks.slack.test/x" and sent["payload"]["text"] == "hi")
+notify._resolve = lambda: {"SLACK_WEBHOOK_URL": "", "TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "5"}
+check("notify.channel: falls back to telegram", notify.channel() == "telegram")
 # cycle gating: a high-sev deterministic alert triggers exactly one push (broken agent → memory_path)
 pushed = []
 fleet_monitor.notify.available = lambda: True
@@ -232,6 +242,38 @@ fleet_monitor.cycle(pol, st5, cq, now=time.time(), dryrun=True, log=lambda *_: N
 check("cycle: high-sev alert pushed once", len(pushed) == 1 and "memory" in pushed[0].lower())
 fleet_monitor.cycle(pol, st5, cq, now=time.time() + 1, dryrun=True, log=lambda *_: None)
 check("cycle: suppressed repeat does NOT re-push", len(pushed) == 1)
+
+
+# --- (9) D3: safe autofix allowlist + operator-stopped gate --------------------------------------
+fleet_monitor.notify.available = lambda: False     # isolate the autofix path from push
+fleet_monitor.intel.available = lambda: False
+downhome = mkhome(runner="boom\n", memory_shim=True)
+down_snap = {"crashed": {"id": "crashed", "up": False, "status": "exited(1)", "port": 8809,
+                         "home": downhome, "last_seen": time.time()}}
+fleet_monitor.fleet.snapshot = lambda: down_snap
+fleet_monitor.diagnostics.from_home = lambda h: {"anomalies": [], "health": {}}
+fleet_monitor.effective_mode = lambda a, p: "autofix"          # operator opted this agent into autofix
+pol_af = Policy({"default_mode": "autofix", "playbooks": {},
+                 "autofix_allowlist": ["container_down"], "thresholds": {}})
+cq9 = pathlib.Path(tempfile.mkdtemp()) / "control"
+st9 = mstate.MonitorState(path=pathlib.Path(tempfile.mkdtemp()) / "s9.json")
+fleet_monitor.cycle(pol_af, st9, cq9, now=time.time(), dryrun=False, log=lambda *_: None)
+specs = list((cq9 / "incoming").glob("*.json")) if (cq9 / "incoming").exists() else []
+check("autofix: allowlisted container_down enqueues a restart", len(specs) == 1)
+check("autofix: spec is a restart for the agent",
+      json.loads(specs[0].read_text()).get("action") == "restart")
+
+# operator-stopped marker present -> NO autofix (escalates instead)
+check("operator_stopped: false without marker", fleet_monitor.operator_stopped(downhome) is False)
+(pathlib.Path(downhome) / "state" / ".operator-stopped").write_text("2026-06-26T00:00:00Z")
+check("operator_stopped: true with marker", fleet_monitor.operator_stopped(downhome) is True)
+cq9b = pathlib.Path(tempfile.mkdtemp()) / "control"
+st9b = mstate.MonitorState(path=pathlib.Path(tempfile.mkdtemp()) / "s9b.json")
+fleet_monitor.cycle(pol_af, st9b, cq9b, now=time.time(), dryrun=False, log=lambda *_: None)
+specs_b = list((cq9b / "incoming").glob("*.json")) if (cq9b / "incoming").exists() else []
+check("autofix: operator-stopped pod is NOT auto-restarted", len(specs_b) == 0)
+esc_b = (pathlib.Path(downhome) / "state" / "escalations.log").read_text()
+check("autofix: escalation explains the operator-stopped skip", "operator stopped it deliberately" in esc_b)
 
 print()
 if check.failed:

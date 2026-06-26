@@ -241,7 +241,20 @@ def cycle(policy, st, control_queue, now=None, dryrun=False, log=print):
     }
 
 
+def operator_stopped(home):
+    """True if the operator deliberately took this agent down (state/.operator-stopped, written by the
+    console's down action). The autofix path honours it so we never fight an intentional stop."""
+    return bool(home) and (pathlib.Path(home) / "state" / ".operator-stopped").exists()
+
+
 def _maybe_autofix(pb, dx, aid, a, home, diag, ctx, st, control_queue, policy, now, dryrun, log):
+    # D3 safety gate: a lifecycle restart/up must never resurrect a pod the operator deliberately
+    # stopped. (Other autofix classes — e.g. a config change — are unaffected.)
+    spec0 = pb.intent(diag, home, a, ctx) or {}
+    if spec0.get("action") in ("restart", "up") and operator_stopped(home):
+        escalate(home, f"[monitor:{pb.key}] {aid} — down, but the operator stopped it deliberately "
+                       f"(.operator-stopped present); NOT auto-restarting. Start it to clear this.")
+        return
     if st.fixed_recently(aid, pb.key, now=now):
         escalate(home, f"[monitor:{pb.key}] {aid} — auto-fix already attempted recently and the "
                        f"problem persists; needs manual attention.")

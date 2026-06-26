@@ -276,6 +276,25 @@ def _fleet_cmd(*args, timeout=60):
                           capture_output=True, text=True, timeout=timeout)
 
 
+def _set_operator_stopped(aid, stopped):
+    """Mark/unmark an operator-initiated stop in the agent home (state/.operator-stopped). The fleet
+    monitor's autofix path honours it so a deliberately-stopped pod is never auto-restarted. Best-effort."""
+    with _lock:
+        a = (_cache.get("agents") or {}).get(aid)
+    home = a.get("home") if a else None
+    if not home:
+        return
+    f = pathlib.Path(home) / "state" / ".operator-stopped"
+    try:
+        if stopped:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        elif f.exists():
+            f.unlink()
+    except Exception:
+        pass
+
+
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Enclave Fleet</title><script src="/static/chart.umd.min.js"></script><script src="/static/force-graph.min.js"></script><style>
 /* palette matches web_chat exactly so the console frame + the embedded chat are ONE UI */
@@ -1685,6 +1704,10 @@ class H(BaseHTTPRequestHandler):
             args = [action, aid] + ([text] if action == "send" and text else [])
             try:
                 r = _fleet_cmd(*args, timeout=190)
+                # D3 safety: mark an operator-initiated stop so the monitor's autofix never "helpfully"
+                # restarts a pod the operator deliberately took down (cleared on the next up/restart).
+                if r.returncode == 0 and action in ("down", "up", "restart"):
+                    _set_operator_stopped(aid, action == "down")
                 return self._send(200, "application/json", json.dumps({"ok": r.returncode == 0, "out": (r.stdout or r.stderr)[-400:]}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))
