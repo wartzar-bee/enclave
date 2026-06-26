@@ -172,6 +172,67 @@ before = esc.read_text().count("memory_path_broken")
 fleet_monitor.cycle(pol, st2, cq, now=time.time() + 1, dryrun=True, log=logs.append)
 check("e2e: repeat cycle suppresses the duplicate", esc.read_text().count("memory_path_broken") == before)
 
+
+# --- (7) D2b: off-Opus LLM layer (intel) — parse, gating, cache, cycle integration ---------------
+from monitor import intel
+
+check("intel.is_novel: high + uncovered key", intel.is_novel({"severity": "high", "key": "cost_spike"}))
+check("intel.is_novel: covered key excluded",
+      not intel.is_novel({"severity": "high", "key": "context_explosion"}))
+check("intel.is_novel: med severity excluded", not intel.is_novel({"severity": "med", "key": "cost_spike"}))
+check("intel._parse_json: extracts JSON from prose",
+      (intel._parse_json('sure! {"cause":"x","fix":"y","confidence":"high"} done') or {}).get("fix") == "y")
+check("intel._parse_json: junk -> None", intel._parse_json("no json here") is None)
+
+# hypothesize with a monkeypatched worker (no network) — verifies shape + honesty defaults
+intel._resolve_key = lambda: "fake-key"
+intel.local_agent.chat = lambda ep, msgs, **k: '{"cause":"runaway retry loop","fix":"cap retries","confidence":"med"}'
+lf = intel.hypothesize("a", {"severity": "high", "key": "cost_spike", "title": "Cost 4x", "evidence": "$0.4/tick"}, {})
+check("intel.hypothesize: source=llm finding", lf and lf["source"] == "llm" and lf["key"] == "llm_cost_spike")
+check("intel.hypothesize: carries cause+fix", lf["cause"] == "runaway retry loop" and lf["recommendation"] == "cap retries")
+intel.local_agent.chat = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("endpoint down"))
+check("intel.hypothesize: fail-open on transport error",
+      intel.hypothesize("a", {"severity": "high", "key": "cost_spike", "title": "t"}, {}) is None)
+
+# cycle integration: a novel high-sev anomaly -> an LLM finding lands in the heartbeat + escalates
+fleet_monitor.intel.available = lambda: True
+fleet_monitor.intel.local_agent.chat = lambda ep, msgs, **k: '{"cause":"unbounded log","fix":"rotate it","confidence":"high"}'
+fleet_monitor.intel._resolve_key = lambda: "fake-key"
+fleet_monitor.diagnostics.from_home = lambda h: {"anomalies": [
+    {"severity": "high", "key": "cost_spike", "title": "Cost spiked 4x", "evidence": "$0.4/tick"}], "health": {}}
+st3 = mstate.MonitorState(path=pathlib.Path(tempfile.mkdtemp()) / "s3.json")
+logs3 = []
+hb = fleet_monitor.cycle(pol, st3, cq, now=time.time(), dryrun=True, log=logs3.append)
+brk = hb["agents"]["broken"]["findings"]
+llm_f = [f for f in brk if f.get("source") == "llm"]
+check("cycle: LLM finding present in heartbeat", len(llm_f) == 1 and llm_f[0]["key"] == "llm_cost_spike")
+check("cycle: LLM finding escalated (alert mode)", llm_f[0]["escalated"] is True)
+check("cycle: LLM hypothesis logged", any("LLM hypothesis" in l for l in logs3))
+# second cycle reuses the cache (no second chat call) — flip chat to raise; cached finding still served
+fleet_monitor.intel.local_agent.chat = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("should not be called"))
+hb2 = fleet_monitor.cycle(pol, st3, cq, now=time.time() + 2, dryrun=True, log=logs3.append)
+llm_f2 = [f for f in hb2["agents"]["broken"]["findings"] if f.get("source") == "llm"]
+check("cycle: LLM result cached (no re-call)", len(llm_f2) == 1 and llm_f2[0]["cause"] == "unbounded log")
+
+# --- (8) D2b: critical push (notify) — rate limit + fail-open + cycle gating --------------------
+from monitor import notify
+st4 = mstate.MonitorState(path=pathlib.Path(tempfile.mkdtemp()) / "s4.json")
+oks = [st4.push_ok(per_hour=3, now=5000 + i) for i in range(5)]
+check("push_ok: allows up to the cap then blocks", oks == [True, True, True, False, False])
+check("notify.push: fail-open when unconfigured",
+      notify.push("x") is False or notify.available())  # no-op unless a bot is wired in this env
+# cycle gating: a high-sev deterministic alert triggers exactly one push (broken agent → memory_path)
+pushed = []
+fleet_monitor.notify.available = lambda: True
+fleet_monitor.notify.push = lambda text, **k: (pushed.append(text), True)[1]
+fleet_monitor.intel.available = lambda: False   # isolate the deterministic push path
+fleet_monitor.diagnostics.from_home = lambda h: {"anomalies": [], "health": {}}
+st5 = mstate.MonitorState(path=pathlib.Path(tempfile.mkdtemp()) / "s5.json")
+fleet_monitor.cycle(pol, st5, cq, now=time.time(), dryrun=True, log=lambda *_: None)
+check("cycle: high-sev alert pushed once", len(pushed) == 1 and "memory" in pushed[0].lower())
+fleet_monitor.cycle(pol, st5, cq, now=time.time() + 1, dryrun=True, log=lambda *_: None)
+check("cycle: suppressed repeat does NOT re-push", len(pushed) == 1)
+
 print()
 if check.failed:
     print(f"{check.failed} FAILED")

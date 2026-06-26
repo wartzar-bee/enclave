@@ -13,9 +13,14 @@
     "bridge_down":         {"enabled": true}
   },
   "autofix_allowlist": [],
+  "_about_llm": "D2b: when true (default), novel HIGH-sev anomalies no playbook covers get an off-Opus LLM cause/fix hypothesis (NVIDIA-free, labeled source:llm). Self-disables with no key. false = deterministic-only.",
+  "llm_enabled": true,
+  "_about_push": "D2b: when true (default), NEW high-sev alerts also push to Telegram (.secrets/notify.env). Self-disables when no bot/chat is configured.",
+  "push_enabled": true,
   "thresholds": {
     "no_tick_hours": 6,
-    "rate_per_agent_hour": 3
+    "rate_per_agent_hour": 3,
+    "push_per_hour": 10
   },
   "learned": []
 }

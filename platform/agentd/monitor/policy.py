@@ -37,6 +37,16 @@ class Policy:
     def autofix_allowed(self, key):
         return key in (self.data.get("autofix_allowlist") or [])
 
+    def llm_enabled(self):
+        """D2b: whether the off-Opus LLM may hypothesise on novel high-sev anomalies. Default ON
+        (it self-disables when no NVIDIA-free key is resolvable); set "llm_enabled": false to forbid."""
+        return bool(self.data.get("llm_enabled", True))
+
+    def push_enabled(self):
+        """D2b: whether NEW high-sev alerts also push to Telegram. Default ON (self-disables when no
+        bot/chat is configured); set "push_enabled": false to forbid."""
+        return bool(self.data.get("push_enabled", True))
+
     def threshold(self, name, default):
         try:
             return type(default)(self.data.get("thresholds", {}).get(name, default))

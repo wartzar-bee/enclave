@@ -67,6 +67,10 @@ _CFGDIR = pathlib.Path.home() / ".config" / "enclave"
 MON_HEARTBEAT = pathlib.Path(os.environ.get("ENCLAVE_MONITOR_HEARTBEAT", str(_CFGDIR / "monitor-heartbeat.json")))
 MON_STATE = pathlib.Path(os.environ.get("ENCLAVE_MONITOR_STATE", str(_CFGDIR / "monitor-state.json")))
 MON_LAUNCH = os.environ.get("ENCLAVE_MONITOR_LAUNCH", "")  # command to (re)start the daemon; "" = read-only
+# One-click Apply drops a control-spec here for control_watcher (the docker-capable actor) to execute —
+# same queue the daemon's autofix path uses. Defaults to <first stacks root>/_control.
+MON_CONTROL_QUEUE = os.environ.get("ENCLAVE_CONTROL_QUEUE",
+                                   str(fleet.STACKS_ROOTS[0] / "_control") if fleet.STACKS_ROOTS else "")
 _cache = {"agents": {}, "ts": 0}
 _lock = threading.Lock()
 _sessions = {}   # token -> expiry (process-local; re-auth is one POST)
@@ -980,13 +984,23 @@ async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b
     histAids.map(aid=>hist[aid].map(r=>`<div class="s"><b>${esc(aid)}</b> · ${esc(r.action||"")} <span style="color:var(--mut)">(${esc(r.playbook||"")}, ${esc(r.result||"")}${r.dryrun?", dry-run":""})</span> <span style="color:var(--mut)">${esc((r.ts||"").replace("T"," ").replace("Z",""))}</span></div>`).join("")).join("")+`</div>`;}
   b.innerHTML=h;}
 function monFinding(aid,f){const c=MONSEV[f.severity]||"--mut";
+  const src=f.source==="llm"?'<span class="s" style="color:var(--accent)" title="hypothesis from the off-Opus LLM layer, not a deterministic playbook">🤖 LLM</span>':"";
+  let apply="";
+  if(f.intent&&f.intent.action&&aid!=="_fleet"){const lbl=f.intent.action==="set-config"?("set "+Object.keys(f.intent.config||{}).join(",")):f.intent.action;
+    apply=`<button class="btn" style="margin-top:6px;padding:3px 9px;font-size:12px" onclick="monApply('${esc(aid)}','${esc(f.key)}',this)">Apply fix: ${esc(lbl)}</button>`;}
   return `<div style="margin-top:7px;padding:8px 10px;border-left:3px solid var(${c});background:var(--hover);border-radius:0 6px 6px 0">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b class="s" style="color:var(--tx)">${esc(f.title||f.key)}</b>
       <span class="s" style="color:var(${c});text-transform:uppercase;font-size:10px">${esc(f.severity||"")}</span>
-      ${f.confidence?`<span class="s">confidence ${esc(f.confidence)}</span>`:""}
+      ${f.confidence?`<span class="s">confidence ${esc(f.confidence)}</span>`:""}${src}
       ${f.escalated?'<span class="s" style="color:var(--idle)">⚠ alerted inbox</span>':'<span class="s" style="color:var(--mut)">observed</span>'}</div>
     <div class="s" style="margin-top:3px">${esc(f.cause||"")}${f.evidence?` <span style="color:var(--mut)">— ${esc(f.evidence)}</span>`:""}</div>
-    ${f.recommendation?`<div class="s" style="margin-top:3px;color:var(--accent)">→ ${esc(f.recommendation)}</div>`:""}</div>`;}
+    ${f.recommendation?`<div class="s" style="margin-top:3px;color:var(--accent)">→ ${esc(f.recommendation)}</div>`:""}
+    ${apply}</div>`;}
+async function monApply(aid,key,btn){if(btn){btn.disabled=true;btn.textContent="applying…";}
+  const r=await postR("/api/monitor/control",{action:"apply",id:aid,key});
+  const m=document.getElementById("monmsg");
+  if(m){m.textContent=r&&r.ok?(aid+": "+r.action+" queued — control_watcher will execute"):("apply failed: "+((r&&r.error)||"?"));}
+  setTimeout(loadMonitor,1800);}
 async function monMode(aid,val){const m=document.getElementById("monmsg");if(m){m.textContent="setting "+aid+" → "+val+"…";}
   const r=await postR("/api/monitor/control",{action:"mode",id:aid,value:val});
   if(m){m.textContent=r&&r.ok?(aid+" → "+val):("error: "+((r&&r.error)||"failed"));}
@@ -1813,9 +1827,41 @@ class H(BaseHTTPRequestHandler):
                     return self._send(200, "application/json", json.dumps({"ok": True, "changed": bool(diff)}))
                 except Exception as e:
                     return self._send(500, "application/json", json.dumps({"error": str(e)}))
+            # (a2) one-click Apply — the operator approves a SUGGEST-mode remediation. Re-validate against
+            # the LIVE heartbeat (the suggestion must currently exist with an intent), then drop the
+            # control-spec into the queue control_watcher drains. The console never touches docker here;
+            # the watcher (the only docker-capable actor) re-validates + executes. HITL by construction.
+            if action == "apply":
+                aid, key = d.get("id", ""), d.get("key", "")
+                if not fleet._SAFE.match(aid or "") or not re.match(r"^[a-z0-9_]+$", key or ""):
+                    return self._send(400, "application/json", '{"error":"bad id or key"}')
+                if not MON_CONTROL_QUEUE:
+                    return self._send(400, "application/json", '{"error":"no control queue configured"}')
+                hb = {}
+                if MON_HEARTBEAT.exists():
+                    try:
+                        hb = json.loads(MON_HEARTBEAT.read_text(errors="ignore") or "{}")
+                    except Exception:
+                        hb = {}
+                fnds = ((hb.get("agents") or {}).get(aid) or {}).get("findings") or []
+                match = next((f for f in fnds if f.get("key") == key and f.get("intent")), None)
+                if not match:
+                    return self._send(409, "application/json",
+                                      '{"error":"no current suggestion for this agent/finding (must be in suggest mode)"}')
+                spec = {"agent": aid, "requested_by": "dashboard-apply", **match["intent"]}
+                try:
+                    inc = pathlib.Path(MON_CONTROL_QUEUE) / "incoming"
+                    inc.mkdir(parents=True, exist_ok=True)
+                    name = f"apply-{aid}-{spec['action']}-{int(time.time() * 1000)}.json"
+                    (inc / name).write_text(json.dumps(spec))
+                    fleet._audit("monitor-apply", aid, f"{key}:{spec['action']}")
+                    return self._send(200, "application/json",
+                                      json.dumps({"ok": True, "queued": name, "action": spec["action"]}))
+                except Exception as e:
+                    return self._send(500, "application/json", json.dumps({"error": str(e)}))
             # (b) lifecycle of the daemon itself — host-side only when a launch command is wired in.
             if action not in ("start", "stop", "restart"):
-                return self._send(400, "application/json", '{"error":"action must be start|stop|restart|mode"}')
+                return self._send(400, "application/json", '{"error":"action must be start|stop|restart|mode|apply"}')
             if not MON_LAUNCH:
                 return self._send(400, "application/json",
                                   '{"error":"monitor control not wired (set ENCLAVE_MONITOR_LAUNCH)"}')

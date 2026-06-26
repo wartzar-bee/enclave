@@ -127,6 +127,36 @@ class MonitorState:
     def mark_remediated(self, aid, now=None):
         self.data["ratelimit"].setdefault(aid, []).append(float(now or time.time()))
 
+    # --- off-Opus LLM hypothesis cache (D2b) -------------------------------------------------
+    # One LLM call per distinct problem (fingerprint), reused until it ages out — so the daemon
+    # never re-pays for the same novel anomaly every cycle.
+    def llm_cached(self, aid, fp, ttl_s=21600, now=None):
+        t = now or time.time()
+        rec = self._agent(aid).get("llm", {}).get(fp)
+        if rec and (t - rec.get("ts", 0)) < ttl_s:
+            return rec.get("finding")
+        return None
+
+    def llm_store(self, aid, fp, finding, now=None):
+        a = self._agent(aid)
+        cache = a.setdefault("llm", {})
+        cache[fp] = {"ts": float(now or time.time()), "finding": finding}
+        # bound the cache: keep the 20 most-recent fingerprints per agent
+        if len(cache) > 20:
+            for k in sorted(cache, key=lambda k: cache[k]["ts"])[:-20]:
+                cache.pop(k, None)
+
+    def push_ok(self, per_hour=10, window_s=3600, now=None):
+        """Global rate limit on critical pushes (Telegram), independent of alert dedup — a backstop so a
+        burst of distinct new high-sev problems can't fan out into a notification storm. Prunes in place."""
+        t = now or time.time()
+        recent = [x for x in self.data.get("pushes", []) if t - x < window_s]
+        self.data["pushes"] = recent
+        if len(recent) < per_hour:
+            recent.append(t)
+            return True
+        return False
+
     def flush(self):
         self.data["updated"] = _iso()
         self.path.parent.mkdir(parents=True, exist_ok=True)

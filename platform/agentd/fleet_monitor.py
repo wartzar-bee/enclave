@@ -36,7 +36,11 @@ import fleet            # snapshot() — agent discovery incl. down/stopped/stan
 import diagnostics      # the detection layer (pure stdlib)
 from monitor import playbooks
 from monitor import state as mstate
+from monitor import intel        # D2b: off-Opus LLM cause/fix for novel anomalies (fail-open)
+from monitor import notify       # D2b: critical-alert push (Telegram), fail-open
 from monitor.policy import Policy, MODES
+
+LLM_CALLS_PER_CYCLE = int(os.environ.get("MONITOR_LLM_MAX_PER_CYCLE", "2"))  # bound cycle latency
 
 
 def _iso(now=None):
@@ -87,6 +91,17 @@ def write_heartbeat(hb, path=None):
         print(f"[monitor] heartbeat write failed: {e}")
 
 
+def push_critical(policy, st, aid, title, detail, now, log):
+    """On a NEW high-severity alert, push a one-liner to Telegram (rate-limited, fail-open). Caller
+    guarantees this is a fresh transition (decision==alert), so this fires once per problem, not per cycle."""
+    if not (policy.push_enabled() and notify.available()):
+        return
+    if not st.push_ok(per_hour=policy.threshold("push_per_hour", 10), now=now):
+        return
+    if notify.push(f"🚨 {aid}: {title}\n{detail}"):
+        log(f"[monitor] PUSHED critical {aid} — {title}")
+
+
 def effective_mode(snap_entry, policy):
     m = playbooks.env_get(snap_entry.get("home"), "MONITOR_MODE")
     return m if m in MODES else policy.default_mode()
@@ -107,6 +122,7 @@ def cycle(policy, st, control_queue, now=None, dryrun=False, log=print):
     now = now or time.time()
     snap = fleet.snapshot()
     hb_agents, fleet_findings = {}, []
+    llm_budget = [LLM_CALLS_PER_CYCLE if intel.available() else 0]   # bound novel-anomaly LLM calls/cycle
 
     # Fleet-level: host-bridge reachability (no single agent home to escalate into → log + state only in D1).
     down = playbooks.check_bridges(os.environ.get("ENCLAVE_DOCTOR_BRIDGES", ""))
@@ -151,11 +167,23 @@ def cycle(policy, st, control_queue, now=None, dryrun=False, log=print):
 
         for pb, dx, sev in findings:
             decision = st.observe(aid, {"key": pb.key, "severity": sev, "cause": dx.get("cause")}, now)
+            # In SUGGEST mode, surface the playbook's remediation as a one-click Apply (the dashboard
+            # drops it into the control queue → control_watcher executes). Only when the playbook is
+            # actually capable of remediating (has an intent). autofix mode applies it automatically below.
+            suggest_intent = None
+            if mode == "suggest":
+                try:
+                    spec = pb.intent(diag, home, a, ctx)
+                    if spec and spec.get("action"):
+                        suggest_intent = spec
+                except Exception:
+                    suggest_intent = None
             entry["findings"].append({
                 "key": pb.key, "title": pb.title, "severity": sev, "cause": dx.get("cause"),
                 "confidence": dx.get("confidence"), "evidence": dx.get("evidence", ""),
                 "recommendation": dx.get("recommendation"),
                 "escalated": not (mode == "observe" or decision != "alert"),
+                "intent": suggest_intent,
             })
             if mode == "observe" or decision != "alert":
                 continue
@@ -163,10 +191,41 @@ def cycle(policy, st, control_queue, now=None, dryrun=False, log=print):
                            f"(confidence {dx['confidence']}; {dx.get('evidence', '')}). "
                            f"→ {dx['recommendation']}")
             log(f"[monitor] ALERT {aid} {pb.key} ({sev}/{dx['confidence']})")
+            if sev == "high":
+                push_critical(policy, st, aid, pb.title, f"{dx['cause']} → {dx['recommendation']}", now, log)
             # Remediation (D1: only when mode=autofix AND policy allowlists it AND the playbook is capable;
             # the default allowlist is empty, so this stays dormant until D3 enables it).
             if mode == "autofix" and pb.safe_to_autofix and policy.autofix_allowed(pb.key):
                 _maybe_autofix(pb, dx, aid, a, home, diag, ctx, st, control_queue, policy, now, dryrun, log)
+
+        # D2b — off-Opus LLM hypothesis for NOVEL high-sev anomalies (no playbook matched). Gated by
+        # policy, cached per problem, and capped per cycle so it never dominates latency or spend.
+        if policy.llm_enabled() and llm_budget[0] > 0:
+            for an in (diag.get("anomalies") or []):
+                if not intel.is_novel(an) or an["key"] in active:
+                    continue
+                fp = mstate.fingerprint(an.get("severity"), "llm_" + an["key"], an.get("evidence"))
+                lf = st.llm_cached(aid, fp, now=now)
+                if lf is None and llm_budget[0] > 0:
+                    llm_budget[0] -= 1
+                    lf = intel.hypothesize(aid, an, diag)
+                    if lf is not None:
+                        st.llm_store(aid, fp, lf, now=now)
+                        log(f"[monitor] LLM hypothesis {aid} {lf['key']} (conf {lf['confidence']})")
+                if not lf:
+                    continue
+                decision = st.observe(aid, {"key": lf["key"], "severity": lf["severity"],
+                                            "cause": lf.get("cause")}, now)
+                escalated = not (mode == "observe" or decision != "alert")
+                entry["findings"].append({**lf, "intent": None, "escalated": escalated})
+                active.add(lf["key"])
+                if escalated:
+                    escalate(home, f"[monitor:{lf['key']}] {aid} — {lf['title']}: {lf.get('cause')} "
+                                   f"(LLM hypothesis, confidence {lf['confidence']}). → {lf.get('recommendation')}")
+                    log(f"[monitor] ALERT {aid} {lf['key']} (llm/{lf['confidence']})")
+                    if lf["severity"] == "high":
+                        push_critical(policy, st, aid, lf["title"],
+                                      f"{lf.get('cause')} → {lf.get('recommendation')} (LLM)", now, log)
 
         for k in st.reconcile_recoveries(aid, active, now):
             escalate(home, f"[monitor:{k}] {aid} — RECOVERED: the '{k}' condition has cleared.")
