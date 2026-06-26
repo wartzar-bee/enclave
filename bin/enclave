@@ -505,6 +505,22 @@ def cmd_init(args):
     # 3) runtime I/O files
     _write(home / "inbox.md", f"# inbox — initialized {time.strftime('%Y-%m-%d')}\n\n")
     _write(home / "work.json", "[]\n")          # BARE list — memory.py requires it (not {"items":[]})
+    # bin/memory.py — shim so the brain's CLAUDE.md `python3 /agent/bin/memory.py …` resolves to the
+    # framework memory.py baked in the image. runtime.sh already falls back; the BRAIN's literal command
+    # needs this too, else every recall/remember/work-list call fails (it was missing → agents ran blind).
+    _write(home / "bin" / "memory.py",
+           '#!/usr/bin/env python3\n'
+           '"""Shim -> the framework memory.py baked in the image (CLAUDE.md calls /agent/bin/memory.py)."""\n'
+           'import os, sys\n'
+           'for _p in ("/workspace/platform/agentd/memory.py",\n'
+           '           os.path.join(os.environ.get("TOOLS_ROOT", "/workspace"), "platform/agentd/memory.py")):\n'
+           '    if os.path.exists(_p):\n'
+           '        os.execv(sys.executable, [sys.executable, _p, *sys.argv[1:]])\n'
+           'sys.stderr.write("memory.py shim: framework memory.py not found\\n"); sys.exit(127)\n')
+    try:
+        os.chmod(home / "bin" / "memory.py", 0o755)
+    except OSError:
+        pass
     _write(home / "state" / "rollup.md", f"# {name} status\n\n(no ticks yet)\n")
     (home / "logs").mkdir(parents=True, exist_ok=True)
     # default working folder (mounted at /work) lives inside the vault unless WORK_DIR points elsewhere
