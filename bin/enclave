@@ -437,6 +437,17 @@ def cmd_init(args):
         src = tdir / rel
         if src.exists():
             _write(home / rel, src.read_text().replace("{AGENT_NAME}", name))
+    # 1a) ship the reusable operating methodology into EVERY agent + point its CLAUDE.md at it
+    princ = REPO / "docs" / "AGENT-PRINCIPLES.md"
+    if princ.exists():
+        (home / "docs").mkdir(exist_ok=True)
+        _write(home / "docs" / "AGENT-PRINCIPLES.md", princ.read_text())
+        clf = home / "CLAUDE.md"
+        if clf.exists() and "AGENT-PRINCIPLES" not in clf.read_text():
+            clf.write_text(clf.read_text().rstrip() + "\n\n## Method (every tick)\n"
+                "Follow `docs/AGENT-PRINCIPLES.md`: **plan → ground → review → build (one pass) → verify "
+                "→ record.** Read code first + cite file:line; never build before the plan is grounded "
+                "(codegraph + qmd) + reviewed; root-cause before any fix (3 failed hypotheses → escalate).\n")
     csrc = tdir / ".claude"
     if csrc.exists():
         shutil.copytree(csrc, home / ".claude", dirs_exist_ok=True)
