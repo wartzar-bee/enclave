@@ -195,9 +195,41 @@ def _tail_lines(path, n):
         return []
 
 
+# Tool-event summaries that are housekeeping, not real work — filtered from the "doing now" stream so
+# the meaningful actions (editing game files, building, gen.py, eval) stand out.
+_EVENT_NOISE = ("tick-status.json", "/state/rollup.md", "/state/activity.log", "DEV-LOG.md",
+                "memory.py", "/bin/memory", "work.json", "recall.md")
+
+
+def _recent_commits(work_dir, n=8):
+    """Most-recent commits across the agent's own repo(s) under WORK_DIR — the clearest 'what shipped'
+    signal. Finds .git at depth 1-2 (WORK_DIR/<repo> or WORK_DIR/work/<repo>), merges + sorts by time."""
+    base = pathlib.Path(work_dir or "")
+    if not base.exists():
+        return []
+    repos, seen = [], set()
+    for g in list(base.glob("*/.git")) + list(base.glob("*/*/.git")):
+        if g.parent not in seen:
+            seen.add(g.parent); repos.append(g.parent)
+    out = []
+    for repo in repos[:4]:
+        try:
+            r = subprocess.run(["git", "-C", str(repo), "log", f"-{n}", "--format=%h%x1f%ct%x1f%s"],
+                               capture_output=True, text=True, timeout=4)
+            for line in r.stdout.splitlines():
+                parts = line.split("\x1f")
+                if len(parts) == 3:
+                    out.append({"hash": parts[0], "ts": int(parts[1]), "msg": parts[2][:140], "repo": repo.name})
+        except Exception:
+            pass
+    out.sort(key=lambda c: c["ts"], reverse=True)
+    return out[:n]
+
+
 def _agent_activity(home):
     """Per-agent LIVE cockpit — what is THIS agent doing right now? Reads its own state files (no docker,
-    no agent call): the live tool-event stream, tick liveness, current focus, work queue, recent ticks."""
+    no agent call): the live tool-event stream, tick liveness, current focus, work queue, recent ticks,
+    and recent commits (the 'what shipped')."""
     st = home / "state"
     out = {"ticking": False, "tick_status": {}, "focus": "", "work": {"doing": [], "todo": [], "done": 0},
            "events": [], "activity": [], "recent_ticks": [], "loop": {}}
@@ -217,11 +249,15 @@ def _agent_activity(home):
     out["last_tick_start"] = last_tick_ts
     # --- live tool-event stream (events.jsonl: {ts,event,tool,summary}) — the "what's it doing NOW" feed ---
     evs = []
-    for ln in _tail_lines(st / "events.jsonl", 40):
+    for ln in _tail_lines(st / "events.jsonl", 70):
         try:
             e = json.loads(ln)
-            if e.get("event") == "tool":
-                evs.append({"ts": e.get("ts"), "tool": e.get("tool"), "summary": (e.get("summary") or "")[:160]})
+            if e.get("event") != "tool":
+                continue
+            summ = (e.get("summary") or "")[:160]
+            if any(nz in summ for nz in _EVENT_NOISE):
+                continue   # drop bookkeeping (rollup/tick-status/memory writes) — keep real actions
+            evs.append({"ts": e.get("ts"), "tool": e.get("tool"), "summary": summ})
         except Exception:
             pass
     out["events"] = evs[-18:][::-1]
@@ -264,12 +300,19 @@ def _agent_activity(home):
                 "model": (r.get("model") or "").replace("claude-", "")})
     except Exception:
         pass
+    work_dir = None
     try:
         import fleet_config
         env = fleet_config.read_config(str(home))["env"]
         out["loop"] = {k: env.get(k) for k in ("INTERVAL_SECONDS", "CONTINUOUS_COOLDOWN", "SUPERVISE", "BRAIN")}
+        work_dir = env.get("WORK_DIR")
     except Exception:
         pass
+    # --- recent commits: the clearest "what shipped" (the agent's own repo) ---
+    try:
+        out["commits"] = _recent_commits(work_dir or str(home / "work"))
+    except Exception:
+        out["commits"] = []
     return out
 
 
@@ -1370,14 +1413,19 @@ async function renderActivity(quiet){const p=document.getElementById("pane");if(
   const evs=(d.events||[]).map(e=>`<div class="s" style="display:flex;gap:8px;padding:2px 0"><span class="mono" style="color:var(--accent);min-width:46px">${esc(e.tool||"")}</span><span style="color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.summary||"")}</span></div>`).join("")||'<div class="s" style="color:var(--mut)">no recent tool events</div>';
   const wk=d.work||{};
   const wrow=(it,col)=>`<div class="s" style="padding:2px 0"><span style="color:var(${col})">●</span> <span style="color:var(--mut)">#${it.id}</span> ${esc(it.text||"")}</div>`;
-  const ticks=(d.recent_ticks||[]).map(t=>{const bad=t.rc!=null&&t.rc!==0||t.subtype&&t.subtype!=="success";
-    return `<tr><td class="mono s">${esc((t.ts||"").slice(5,16).replace("T"," "))}</td><td class="s">${esc(t.reason||"")}</td><td class="s">${t.tool_calls!=null?t.tool_calls+" tools":""}</td><td class="s">${t.dur_s!=null?Math.round(t.dur_s)+"s":""}</td><td class="s" style="color:${bad?"var(--err)":"var(--ok)"}">${bad?esc((t.subtype||"rc"+t.rc)):"ok"}</td></tr>`;}).join("");
+  const ticks=(d.recent_ticks||[]).map(t=>{const capped=(t.subtype||"")==="error_max_turns";
+    const bad=!capped&&(t.rc!=null&&t.rc!==0||t.subtype&&t.subtype!=="success");
+    const oc=capped?"capped":(bad?esc(t.subtype||"rc"+t.rc):"ok");const col=capped?"var(--idle)":(bad?"var(--err)":"var(--ok)");
+    return `<tr><td class="mono s">${esc((t.ts||"").slice(5,16).replace("T"," "))}</td><td class="s">${esc(t.reason||"")}</td><td class="s">${t.tool_calls!=null?t.tool_calls+" tools":""}</td><td class="s">${t.dur_s!=null?Math.round(t.dur_s)+"s":""}</td><td class="s" style="color:${col}">${oc}</td></tr>`;}).join("");
+  const commits=(d.commits||[]).map(c=>`<div class="s" style="display:flex;gap:8px;padding:2px 0"><span class="mono" style="color:var(--accent)">${esc(c.hash||"")}</span><span style="flex:1;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.msg||"")}</span><span style="color:var(--mut);white-space:nowrap">${_agoS(Date.now()/1000-(c.ts||0))}</span></div>`).join("")||'<div class="s" style="color:var(--mut)">no commits found in this repo</div>';
   p.innerHTML=`<div style="padding:14px;overflow:auto;height:100%">
     <div class="card" style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <b style="font-size:14px">${dot}</b>
       <span class="s">${d.last_event_age_s!=null?"last action "+_agoS(d.last_event_age_s):""}</span>
       <span style="flex:1"></span>
       <span class="s" style="color:var(--mut)">loop: every ${lp.CONTINUOUS_COOLDOWN||"?"}s active · ${lp.INTERVAL_SECONDS||"?"}s safeguard · ${esc(lp.BRAIN||"")} · ${esc(lp.SUPERVISE||"")}</span></div></div>
+    <div class="card" style="margin-bottom:10px"><div class="k">✅ recent commits${ic("The agent's own git commits — the clearest record of what it actually SHIPPED, newest first.")}</div>
+      <div style="margin-top:6px;max-height:170px;overflow:auto">${commits}</div></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="card"><div class="k">▶ doing right now${ic("Live tool-call stream from the agent's events.jsonl — the literal actions it is taking this tick (newest first). Refreshes every 3s.")}</div>
         <div style="margin-top:6px;max-height:230px;overflow:auto">${evs}</div></div>
