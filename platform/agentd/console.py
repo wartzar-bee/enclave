@@ -648,6 +648,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
       <span class="tab" data-t="config" onclick="tab('config')">Config</span>
       <span class="tab" data-t="skills" onclick="tab('skills')">Skills</span>
       <span class="tab" data-t="logs" onclick="tab('logs')">Logs</span></div>
+    <div id="agblockers"></div>
     <div id="pane"><div class="empty">Select an agent from the rail.</div></div>
     <div id="dbox"><input id="dtext" placeholder="Send a directive to this agent (wakes its tick)…"><button class="btn" onclick="sendD()">Send</button></div>
   </main>
@@ -767,7 +768,25 @@ function render(){
   document.getElementById("list").innerHTML=h||`<div class="grp" style="color:var(--mut)">no agents discovered</div>`;
 }
 function setBar(a){bm.innerHTML=a?`${statusPill(a)} · <span class="mono">${esc(a.status)}</span> · :${a.port}`:"";}
-function pick(id){sel=id;if(curview!=="agents")view("agents");render();const a=agents[id];bt.textContent=id;setBar(a);tab(curtab);}
+function pick(id){sel=id;if(curview!=="agents")view("agents");render();const a=agents[id];bt.textContent=id;setBar(a);tab(curtab);loadAgBlockers();}
+/* ---------- per-agent blocker strip — visible on EVERY tab of the selected agent ---------- */
+async function loadAgBlockers(){const b=document.getElementById("agblockers");if(!b)return;
+  if(!sel){b.innerHTML="";b.style.cssText="";return;}
+  const aid=sel;let items=[],findings=[];
+  try{items=(((await(await fetch(qs("/api/escalations"))).json()).items)||[]).filter(x=>x.agent===aid);}catch(_){}
+  try{const ag=(((await(await fetch(qs("/api/monitor"))).json()).heartbeat||{}).agents||{})[aid];findings=(ag&&ag.findings)||[];}catch(_){}
+  if(sel!==aid)return;   // selection changed mid-fetch
+  const rows=[];
+  items.forEach(it=>rows.push({col:"--err",lbl:it.kind==="approval"?"Needs your approval":"Escalation",txt:it.text}));
+  findings.filter(f=>f.severity==="high"||f.escalated).forEach(f=>rows.push({
+    col:MONSEV[f.severity]||"--idle",lbl:f.title||f.key,
+    txt:(f.cause||"")+(f.recommendation?" → "+f.recommendation:""),cfg:true}));
+  if(!rows.length){b.innerHTML="";b.style.cssText="";return;}
+  b.style.cssText="padding:8px 12px 0";
+  b.innerHTML=rows.map(x=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:5px;border-left:3px solid var(${x.col});background:var(--hover);border-radius:0 6px 6px 0">
+    <span style="color:var(--idle)">⚠</span><b class="s" style="color:var(--tx);white-space:nowrap">${esc(x.lbl)}</b>
+    <span class="s" style="color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((x.txt||"").slice(0,200))}</span>
+    ${x.cfg?'<span style="flex:1"></span><button class="btn" style="padding:2px 8px;font-size:11px" onclick="tab(\'config\')" title="set how the monitor handles this">⚙ handle</button>':"<span style=\"flex:1\"></span>"}</div>`).join("");}
 function openChat(){if(sel)window.open("http://127.0.0.1:"+agents[sel].port+"/","_blank");}
 function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);window._logTimer=null;}
   document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("sel",e.dataset.t===t));
@@ -871,6 +890,8 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
     <div class="chartcard full"><h3>CONTEXT SIZE per tick — input + cache (the explosion diagnostic)</h3><canvas id="dgCtx"></canvas></div>
     <div class="chartcard"><h3>Cost per tick ($)</h3><canvas id="dgCost"></canvas></div>
     <div class="chartcard"><h3>Tick duration (s)</h3><canvas id="dgDur"></canvas></div></div>`;
+  /* models used — which model actually ran each tick (catches "heartbeats running Opus") */
+  html+=modelsUsedPanel(d);
   /* behaviour & tools (Phase C — only when the runtime block is present) */
   html+=runtimeSection(d.runtime||{});
   /* honesty panel */
@@ -893,6 +914,15 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
   renderInspect(d.inspect||[]);
   loadResources();
 }
+function modelsUsedPanel(d){const rows=d.inspect||[];if(!rows.length)return"";
+  const by={};rows.forEach(r=>{const m=(r.model||"?").replace("claude-","")||"?";(by[m]=by[m]||{n:0,cost:0}).n++;by[m].cost+=(r.cost_usd||0);});
+  const ent=Object.entries(by).sort((a,b)=>b[1].n-a[1].n);const tot=rows.length;
+  const opusHb=rows.filter(r=>/opus/.test(r.model||"")&&/heartbeat|continue/.test(r.reason||"")).length;
+  const rt=d.runtime||{};const dele=rt.total_delegations;
+  return `<div class="card" style="margin-bottom:12px"><div class="k">models &amp; agents used <span class="s" style="font-weight:400">— last ${tot} ticks${ic("Which model actually ran each tick (the tier router picks per tick) and how much sub-agent work was delegated. A routine/heartbeat tick should run the cheaper model — top model is for judgment only.")}</span></div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px">${ent.map(([m,v])=>`<div><div style="font-size:14px;color:var(--tx)">${esc(m)}</div><div class="s" style="color:var(--mut)">${v.n} tick${v.n>1?"s":""} · ${Math.round(v.n/tot*100)}% · ${usd(v.cost)}</div></div>`).join("")}
+      ${dele!=null?`<div><div style="font-size:14px;color:var(--tx)">delegated</div><div class="s" style="color:var(--mut)">${dele} sub-agent task${dele===1?"":"s"} (off-tier workers)</div></div>`:""}</div>
+    ${opusHb?`<div class="s" style="margin-top:7px;color:var(--idle)">⚠ ${opusHb} routine/heartbeat tick${opusHb>1?"s":""} ran on Opus — a pending [tier:top]/judgment item in the inbox is likely force-topping the router (costs ~5×). Check the inbox.</div>`:""}</div>`;}
 function runtimeSection(rt){
   if(!rt.available){return `<div class="card" style="margin-bottom:12px"><div class="k">behaviour &amp; tools</div>
     <div class="s" style="margin-top:3px;color:var(--mut)">No runtime telemetry on these ticks yet. Per-tool latency, failures, files-modified, delegations, compactions &amp; skill-usage appear once the agent runs on an image with Phase-C instrumentation.</div></div>`;}
@@ -961,9 +991,29 @@ async function renderConfig(a){const p=document.getElementById("pane");p.innerHT
   _cfgEnv=cfg.env||cfg;_cfgEditable=cfg.editable||Object.keys(_cfgEnv).filter(k=>!k.startsWith("_")).sort();_pending={};
   let goal="";try{goal=((await(await fetch(qs(`/api/goal?id=${encodeURIComponent(sel)}`))).json()).goal)||"";}catch(e){}
   window._cfgGoal=goal;
-  p.innerHTML='<div style="padding:16px;overflow:auto;height:100%"><div id="cfgmain"></div><div id="cfggoal"></div></div>';
-  drawConfig();drawGoal();
+  p.innerHTML='<div style="padding:16px;overflow:auto;height:100%"><div id="cfgmain"></div><div id="cfgmission"></div><div id="cfggoal"></div></div>';
+  drawConfig();drawGoal();drawMission();
 }
+let _mission={claude_md:"",tick_txt:""};
+async function drawMission(){const g=document.getElementById("cfgmission");if(!g)return;
+  try{_mission=await(await fetch(qs(`/api/mission?id=${encodeURIComponent(sel)}`))).json();}catch(e){_mission={claude_md:"",tick_txt:""};}
+  if(_mission.error){g.innerHTML="";return;}
+  const ta=(id,v,rows)=>`<textarea id="${id}" rows="${rows}" spellcheck="false" oninput="missionDirty()" style="width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.45">${esc(v||"")}</textarea>`;
+  g.innerHTML=`<div class="card" style="margin-top:12px"><div class="k">mission — CLAUDE.md &amp; tick.txt${ic("The agent's SYSTEM PROMPT (CLAUDE.md, appended each tick via --append-system-prompt) and its per-tick instruction (tick.txt). Edited live — re-read on the NEXT tick, no restart. A .bak is saved on each write. ⚠ this is the agent's brain; a bad edit changes its behaviour.")}</div>
+    <div class="s" style="margin:3px 0 7px;color:var(--idle)">⚠ This is the agent's system prompt. Edits take effect on its next tick (no restart); a <span class="mono">.bak</span> is kept.</div>
+    <div class="s" style="color:var(--mut);margin-bottom:3px">CLAUDE.md — mission / operating instructions</div>${ta("missionClaude",_mission.claude_md,16)}
+    <div class="s" style="color:var(--mut);margin:9px 0 3px">tick.txt — the per-tick instruction</div>${ta("missionTick",_mission.tick_txt,5)}
+    <div style="margin-top:9px"><button class="btn danger" id="missionSave" onclick="saveMission()" disabled>Save mission</button>
+      <button class="btn" onclick="drawMission()">Reload</button><span class="s" id="missionMsg" style="margin-left:10px"></span></div></div>`;}
+function missionDirty(){const c=document.getElementById("missionClaude"),t=document.getElementById("missionTick"),b=document.getElementById("missionSave");
+  if(b)b.disabled=((c&&c.value)===_mission.claude_md)&&((t&&t.value)===_mission.tick_txt);}
+async function saveMission(){if(!sel)return;const c=document.getElementById("missionClaude").value,t=document.getElementById("missionTick").value;
+  if(!confirm("Overwrite "+sel+"'s mission (CLAUDE.md / tick.txt)? Takes effect next tick. A .bak is kept."))return;
+  const m=document.getElementById("missionMsg");if(m){m.style.color="var(--mut)";m.textContent="saving…";}
+  const body={id:sel};if(c!==_mission.claude_md)body.claude_md=c;if(t!==_mission.tick_txt)body.tick_txt=t;
+  const r=await postR("/api/mission",body);
+  if(m){if(r&&r.ok){m.style.color="var(--ok)";m.textContent="✓ saved "+(r.wrote||[]).join(", ")+" — live next tick";_mission.claude_md=c;_mission.tick_txt=t;missionDirty();}
+    else{m.style.color="var(--err)";m.textContent="error: "+esc((r&&r.error)||"failed");}}}
 function drawGoal(){const g=document.getElementById("cfggoal");if(!g)return;
   g.innerHTML=`<div class="card" style="margin-top:12px"><div class="k">phase goal — autonomous steering${ic("The work goal the off-Opus supervisor reads each cycle to fill the agent's task queue. Only BRAIN=local/optimize agents use it. Saving writes the goal; it does NOT restart the agent.")}</div>
     <div class="s" style="margin:3px 0 7px">The off-Opus supervisor (BRAIN=local/optimize agents) reads this each cycle to set the work queue. Saving does NOT restart the agent.</div>
@@ -1181,7 +1231,7 @@ async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b
   // --- host services (bridges agents depend on) — populated async by loadServices() ---
   h+=`<div id="monservices"></div>`;
   // --- fleet-level findings (bridges etc.) ---
-  if(fle.length){h+=`<div class="sectit" style="font-size:13px">Fleet-level</div>`+fle.map(f=>monFinding("_fleet",f)).join("");}
+  if(fle.length){h+=`<div class="sectit" style="font-size:13px">Fleet-level</div>`+fle.map(f=>monFinding("_fleet",f,null)).join("");}
   // --- per-agent finding cards ---
   const aids=Object.keys(ags).sort((x,y)=>(ags[y].findings.length-ags[x].findings.length)||x.localeCompare(y));
   h+=`<div class="sectit" style="font-size:13px;margin-top:14px">Agents</div>`;
@@ -1194,7 +1244,7 @@ async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b
       <span style="flex:1"></span>
       <span class="s"><b style="color:var(--tx)">${esc(a.mode||"alert")}</b>${ic(MONMODE_HELP)}</span>
       <span class="s" style="color:var(--accent);cursor:pointer" onclick="pick('${esc(aid)}');tab('config')" title="change the alert mode in this agent's Config tab">⚙</span></div>`;
-    if(fs.length){h+=fs.map(f=>monFinding(aid,f)).join("");}
+    if(fs.length){h+=fs.map(f=>monFinding(aid,f,a.mode)).join("");}
     else{h+=`<div class="s" style="color:var(--ok);margin-top:5px">✓ healthy</div>`;}
     h+=`</div>`;}
   h+=`</div>`;
@@ -1231,11 +1281,21 @@ async function svcRestart(name,btn){if(btn){btn.disabled=true;btn.textContent="�
 async function svcRestartDown(){const d=await(await fetch(qs("/api/services"))).json().catch(()=>({services:[]}));
   for(const s of (d.services||[]).filter(x=>!x.up&&x.restartable)){await postR("/api/services/restart",{name:s.name});}
   setTimeout(loadServices,2500);}
-function monFinding(aid,f){const c=MONSEV[f.severity]||"--mut";
+function monFinding(aid,f,mode){const c=MONSEV[f.severity]||"--mut";
   const src=f.source==="llm"?'<span class="s" style="color:var(--accent)" title="hypothesis from the off-Opus LLM layer, not a deterministic playbook">🤖 LLM</span>':"";
+  const hasFix=!!(f.intent&&f.intent.action)&&aid!=="_fleet";
   let apply="";
-  if(f.intent&&f.intent.action&&aid!=="_fleet"){const lbl=f.intent.action==="set-config"?("set "+Object.keys(f.intent.config||{}).join(",")):f.intent.action;
+  if(hasFix){const lbl=f.intent.action==="set-config"?("set "+Object.keys(f.intent.config||{}).join(",")):f.intent.action;
     apply=`<button class="btn" style="margin-top:6px;padding:3px 9px;font-size:12px" onclick="monApply('${esc(aid)}','${esc(f.key)}',this)">Apply fix: ${esc(lbl)}</button>`;}
+  /* lifecycle — does it disappear on its own, and what (if anything) you must do */
+  let life;
+  if(mode==="autofix"&&hasFix)life='<span style="color:var(--ok)">🤖 auto-fixing — the monitor applies the allowlisted fix; clears once resolved</span>';
+  else if(hasFix)life='<span style="color:var(--idle)">⤳ needs you — Apply the fix below, or Automate it (then it self-heals). Also clears on its own if the condition resolves.</span>';
+  else life='<span style="color:var(--mut)">ℹ auto-clears when the condition resolves — no safe auto-fix; adjust the agent (e.g. mission / config) to address the cause.</span>';
+  /* automate — flip this agent's monitor mode so this class is handled for you from now on */
+  let auto="";
+  if(aid!=="_fleet"&&mode!=="autofix"){const tgt=hasFix?"autofix":"suggest";
+    auto=` <button class="btn" style="margin-top:6px;padding:3px 9px;font-size:12px" onclick="monAutomate('${esc(aid)}','${tgt}',this)" title="${hasFix?"set this agent to autofix — auto-apply allowlisted safe (restart-only, reversible) fixes from now on":"set this agent to suggest — stage one-click fixes for you from now on"}">⚙ Automate (${tgt})</button>`;}
   return `<div style="margin-top:7px;padding:8px 10px;border-left:3px solid var(${c});background:var(--hover);border-radius:0 6px 6px 0">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b class="s" style="color:var(--tx)">${esc(f.title||f.key)}</b>
       <span class="s" style="color:var(${c});text-transform:uppercase;font-size:10px">${esc(f.severity||"")}</span>
@@ -1243,7 +1303,14 @@ function monFinding(aid,f){const c=MONSEV[f.severity]||"--mut";
       ${f.escalated?'<span class="s" style="color:var(--idle)">⚠ alerted inbox</span>':'<span class="s" style="color:var(--mut)">observed</span>'}</div>
     <div class="s" style="margin-top:3px">${esc(f.cause||"")}${f.evidence?` <span style="color:var(--mut)">— ${esc(f.evidence)}</span>`:""}</div>
     ${f.recommendation?`<div class="s" style="margin-top:3px;color:var(--accent)">→ ${esc(f.recommendation)}</div>`:""}
-    ${apply}</div>`;}
+    <div class="s" style="margin-top:4px">${life}</div>
+    ${apply}${auto}</div>`;}
+async function monAutomate(aid,mode,btn){
+  if(!confirm("Set "+aid+"'s monitor mode to '"+mode+"'?\n\n"+(mode==="autofix"?"It will AUTO-APPLY allowlisted safe fixes (restart-only, reversible; an operator-stopped pod is never auto-restarted).":"It will STAGE one-click fixes for you to apply.")+"\n\nApplies live — no restart."))return;
+  if(btn){btn.disabled=true;btn.textContent="…";}
+  const r=await postR("/api/monitor/control",{action:"mode",id:aid,value:mode});
+  const m=document.getElementById("monmsg");if(m){m.style.color=r&&r.ok?"var(--ok)":"var(--err)";m.textContent=r&&r.ok?(aid+" → "+mode+" ✓"):("failed: "+esc((r&&r.error)||"?"));}
+  setTimeout(loadMonitor,900);}
 async function monApply(aid,key,btn){if(btn){btn.disabled=true;btn.textContent="applying…";}
   const r=await postR("/api/monitor/control",{action:"apply",id:aid,key});
   const m=document.getElementById("monmsg");
@@ -1850,6 +1917,21 @@ class H(BaseHTTPRequestHandler):
             gf = pathlib.Path(home) / "state" / "phase-goal.txt" if home else None
             txt = gf.read_text(errors="ignore") if (gf and gf.exists()) else ""
             return self._send(200, "application/json", json.dumps({"goal": txt}))
+        if p == "/api/mission":   # the agent's mission/system-prompt files (CLAUDE.md + tick.txt)
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(400, "application/json", '{"error":"agent has no home on this host"}')
+            hp = pathlib.Path(home)
+            def _rd(name):
+                f = hp / name
+                return f.read_text(errors="ignore")[:60000] if f.exists() else ""
+            return self._send(200, "application/json", json.dumps({
+                "claude_md": _rd("CLAUDE.md"), "tick_txt": _rd("tick.txt")}))
         if p == "/api/skills":   # P5: the agent's learned-memory vault (skills/ + memory index)
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
@@ -2048,6 +2130,36 @@ class H(BaseHTTPRequestHandler):
                 gf.write_text((d.get("text") or "").strip() + "\n")
                 fleet._audit("set-goal", aid, (d.get("text") or "")[:80])
                 return self._send(200, "application/json", json.dumps({"ok": True}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/mission":   # write CLAUDE.md (mission/system prompt) and/or tick.txt — no restart:
+            try:                  # both are re-read each tick (--append-system-prompt "$(cat CLAUDE.md)").
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            aid = d.get("id", "")
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(400, "application/json", '{"error":"agent has no home on this host"}')
+            FILES = {"claude_md": "CLAUDE.md", "tick_txt": "tick.txt"}   # only these two are writable
+            wrote = []
+            try:
+                for key, fname in FILES.items():
+                    if key in d and isinstance(d[key], str):
+                        f = pathlib.Path(home) / fname
+                        if f.exists():                                  # one-shot .bak so a bad edit is recoverable
+                            try: (f.with_suffix(f.suffix + ".bak")).write_text(f.read_text(errors="ignore"))
+                            except Exception: pass
+                        f.write_text(d[key])
+                        wrote.append(fname)
+                if not wrote:
+                    return self._send(400, "application/json", '{"error":"nothing to write (claude_md|tick_txt)"}')
+                fleet._audit("set-mission", aid, ", ".join(wrote))
+                return self._send(200, "application/json", json.dumps({"ok": True, "wrote": wrote}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))
         if p == "/api/create":   # enqueue a new-agent spec for the spawn watcher (P1 create-agent)
