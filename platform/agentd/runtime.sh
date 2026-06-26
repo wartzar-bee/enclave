@@ -323,6 +323,9 @@ MCP=()
 SET=()
 [ -f "$AGENT_DIR/.claude/settings.json" ] && SET=(--settings "$AGENT_DIR/.claude/settings.json")
 
+# MAX_TURNS (optional, unset = no cap): bound the agentic turns in ONE tick. A structural guard against a
+# tick that probe-storms or grinds — it wraps up and the loop continues next tick (smaller ticks = leaner
+# context + no 40-min runaways). Tune per agent in agent.env; leave unset for unbounded ticks.
 # TICK_TIMEOUT (default 40m) hard-caps a tick so a hung `claude -p` can't block the loop. macOS has NO
 # GNU `timeout`; coreutils provides `gtimeout`. Use whichever exists, else run claude DIRECTLY (the
 # per-agent lock + stale-lock reclaim still prevent a permanent wedge). Earlier this line died with
@@ -336,6 +339,7 @@ if [ -f "$CAP" ]; then
   ${TO:+$TO -k 30 ${TICK_TIMEOUT:-2400}} claude -p "$(cat "$AGENT_DIR/tick.txt")" \
     --append-system-prompt "$(cat "$AGENT_DIR/CLAUDE.md")" \
     --model "$MODEL_EFF" \
+    ${MAX_TURNS:+--max-turns $MAX_TURNS} \
     --output-format stream-json --verbose \
     "${ADD_DIRS[@]}" \
     "${MCP[@]}" \
@@ -349,6 +353,7 @@ else
   ${TO:+$TO -k 30 ${TICK_TIMEOUT:-2400}} claude -p "$(cat "$AGENT_DIR/tick.txt")" \
     --append-system-prompt "$(cat "$AGENT_DIR/CLAUDE.md")" \
     --model "$MODEL_EFF" \
+    ${MAX_TURNS:+--max-turns $MAX_TURNS} \
     "${ADD_DIRS[@]}" \
     "${MCP[@]}" \
     "${SET[@]}" \
