@@ -71,6 +71,29 @@ MON_LAUNCH = os.environ.get("ENCLAVE_MONITOR_LAUNCH", "")  # command to (re)star
 # same queue the daemon's autofix path uses. Defaults to <first stacks root>/_control.
 MON_CONTROL_QUEUE = os.environ.get("ENCLAVE_CONTROL_QUEUE",
                                    str(fleet.STACKS_ROOTS[0] / "_control") if fleet.STACKS_ROOTS else "")
+# Host-service (bridge) RESTART map — lets the dashboard restart the host services agents depend on
+# (qmd/mlx/voice/transcribe/…). Studio-specific (keeps the product generic): JSON name→{label} (a launchd
+# label restarted via `launchctl kickstart -k`) or name→{cmd} (a shell command, e.g. a one-time setup
+# script). Absent → the services panel is read-only. Probe endpoints still come from ENCLAVE_DOCTOR_BRIDGES.
+try:
+    MON_BRIDGE_CONTROL = json.loads(os.environ.get("ENCLAVE_BRIDGE_CONTROL", "") or "{}")
+    if not isinstance(MON_BRIDGE_CONTROL, dict):
+        MON_BRIDGE_CONTROL = {}
+except Exception:
+    MON_BRIDGE_CONTROL = {}
+_LAUNCHD_LABEL = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _bridges():
+    """Parse ENCLAVE_DOCTOR_BRIDGES ('name:host:port,…') → [{name,host,port}]. The single source the
+    doctor, the monitor and the services panel all read, so they never disagree on what a 'bridge' is."""
+    out = []
+    for spec in (os.environ.get("ENCLAVE_DOCTOR_BRIDGES", "") or "").split(","):
+        spec = spec.strip()
+        if spec and spec.count(":") >= 2:
+            name, host, port = spec.rsplit(":", 2)
+            out.append({"name": name, "host": host, "port": port})
+    return out
 _cache = {"agents": {}, "ts": 0}
 _lock = threading.Lock()
 _sessions = {}   # token -> expiry (process-local; re-auth is one POST)
@@ -1050,6 +1073,8 @@ async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b
     <button class="btn" onclick="monCtl('stop')" ${running||d.pid_alive?"":"disabled"}>Stop</button>`;}
   else{h+=`<span style="flex:1"></span><span class="s" style="color:var(--mut)">control not wired (read-only)</span>`;}
   h+=`<span id="monmsg" class="s" style="color:var(--mut)"></span></div>`;
+  // --- host services (bridges agents depend on) — populated async by loadServices() ---
+  h+=`<div id="monservices"></div>`;
   // --- fleet-level findings (bridges etc.) ---
   if(fle.length){h+=`<div class="sectit" style="font-size:13px">Fleet-level</div>`+fle.map(f=>monFinding("_fleet",f)).join("");}
   // --- per-agent finding cards ---
@@ -1073,7 +1098,33 @@ async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b
   const hist=d.history||{};const histAids=Object.keys(hist);
   if(histAids.length){h+=`<div class="sectit" style="font-size:13px;margin-top:14px">Remediation history</div><div class="card">`+
     histAids.map(aid=>hist[aid].map(r=>`<div class="s"><b>${esc(aid)}</b> · ${esc(r.action||"")} <span style="color:var(--mut)">(${esc(r.playbook||"")}, ${esc(r.result||"")}${r.dryrun?", dry-run":""})</span> <span style="color:var(--mut)">${esc((r.ts||"").replace("T"," ").replace("Z",""))}</span></div>`).join("")).join("")+`</div>`;}
-  b.innerHTML=h;}
+  b.innerHTML=h;loadServices();}
+async function loadServices(){const el=document.getElementById("monservices");if(!el)return;
+  let d={};try{d=await(await fetch(qs("/api/services"))).json();}catch(e){return;}
+  const svcs=d.services||[];if(!svcs.length){return;}
+  const down=svcs.filter(s=>!s.up).length;
+  let h=`<div class="sectit" style="font-size:13px;margin-top:14px">Host services <span class="s" style="font-weight:400">— the bridges agents depend on${down?` · <span style="color:var(--err)">${down} down</span>`:" · all up"}${ic("Host-side services (qmd/mlx/voice/transcribe/…) the agents call. Restart runs launchctl kickstart (or the service\\'s setup script) on the Mac. Wired via ENCLAVE_BRIDGE_CONTROL.")}</span>`;
+  if(d.controllable&&down>1)h+=` <button class="btn" style="padding:2px 8px;font-size:11px" onclick="svcRestartDown()">Restart all down</button>`;
+  h+=`</div><div class="card" style="padding:6px 10px">`;
+  h+=svcs.map(s=>{const c=s.up?"--ok":"--err";
+    const btn=s.restartable?`<button class="btn" style="padding:2px 9px;font-size:11px" onclick="svcRestart('${esc(s.name)}',this)">${s.up?"Restart":"Start"}</button>`
+      :`<span class="s" style="color:var(--mut)" title="no restart wired for this service">—</span>`;
+    return `<div style="display:flex;align-items:center;gap:9px;padding:4px 0">
+      <span style="width:8px;height:8px;border-radius:50%;background:var(${c});display:inline-block"></span>
+      <b class="s" style="color:var(--tx);min-width:90px">${esc(s.name)}</b>
+      <span class="s" style="color:var(--mut)">${esc(s.host)}:${esc(s.port)}</span>
+      <span class="s" style="color:var(${c})">${s.up?"up":"down"}</span>
+      <span style="flex:1"></span>${btn}</div>`;}).join("");
+  h+=`<div id="svcmsg" class="s" style="color:var(--mut);padding-top:4px"></div></div>`;
+  el.innerHTML=h;}
+async function svcRestart(name,btn){if(btn){btn.disabled=true;btn.textContent="…";}
+  const m=document.getElementById("svcmsg");if(m)m.textContent="restarting "+name+"…";
+  const r=await postR("/api/services/restart",{name});
+  if(m)m.textContent=r&&r.ok?(name+" restarted ✓"):("restart failed: "+((r&&r.error)||r&&r.out||"?"));
+  setTimeout(loadServices,2500);}
+async function svcRestartDown(){const d=await(await fetch(qs("/api/services"))).json().catch(()=>({services:[]}));
+  for(const s of (d.services||[]).filter(x=>!x.up&&x.restartable)){await postR("/api/services/restart",{name:s.name});}
+  setTimeout(loadServices,2500);}
 function monFinding(aid,f){const c=MONSEV[f.severity]||"--mut";
   const src=f.source==="llm"?'<span class="s" style="color:var(--accent)" title="hypothesis from the off-Opus LLM layer, not a deterministic playbook">🤖 LLM</span>':"";
   let apply="";
@@ -1729,6 +1780,15 @@ class H(BaseHTTPRequestHandler):
                 "controllable": bool(MON_LAUNCH), "heartbeat": hb,
                 "history": history, "recovered": recovered[:30],
             }))
+        if p == "/api/services":   # host bridges agents depend on — live up/down + restartability
+            svcs = []
+            for b in _bridges():
+                ctl = MON_BRIDGE_CONTROL.get(b["name"]) or {}
+                svcs.append({**b, "up": _probe(b["port"]),
+                             "restartable": bool(ctl.get("label") or ctl.get("cmd")),
+                             "how": "launchd" if ctl.get("label") else ("script" if ctl.get("cmd") else None)})
+            return self._send(200, "application/json", json.dumps(
+                {"services": svcs, "controllable": bool(MON_BRIDGE_CONTROL)}))
         if p == "/api/stream":
             return self._stream()
         return self._send(404, "application/json", '{"error":"not found"}')
@@ -1972,6 +2032,32 @@ class H(BaseHTTPRequestHandler):
                 fleet._audit("monitor-" + action, "_fleet", "dryrun" if d.get("dryrun") else "live")
                 return self._send(200, "application/json", json.dumps(
                     {"ok": r.returncode == 0, "action": action, "out": (r.stdout or r.stderr)[-400:]}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/services/restart":   # restart a host bridge (launchctl kickstart / setup script)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            name = d.get("name", "")
+            ctl = MON_BRIDGE_CONTROL.get(name)
+            if not ctl:
+                return self._send(400, "application/json", '{"error":"unknown or non-controllable service"}')
+            import shlex
+            try:
+                if ctl.get("label"):
+                    label = str(ctl["label"])
+                    if not _LAUNCHD_LABEL.match(label):
+                        return self._send(400, "application/json", '{"error":"bad launchd label"}')
+                    cmd = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"]
+                elif ctl.get("cmd"):
+                    cmd = shlex.split(str(ctl["cmd"]))
+                else:
+                    return self._send(400, "application/json", '{"error":"service has no restart action"}')
+                r = subprocess.run(cmd, timeout=120, capture_output=True, text=True)
+                fleet._audit("service-restart", name, ("ok" if r.returncode == 0 else f"rc{r.returncode}"))
+                return self._send(200, "application/json", json.dumps(
+                    {"ok": r.returncode == 0, "service": name, "out": (r.stdout or r.stderr)[-300:]}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))
         return self._send(404, "application/json", '{"error":"not found"}')
