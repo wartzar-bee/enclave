@@ -72,13 +72,13 @@ def _parse_ts(s):
     """Parse an ISO-8601 'Z' timestamp → local-naive epoch seconds. Tolerant."""
     if not s:
         return None
-    try:
-        # Stored as UTC 'Z'; compare in epoch seconds (tz-agnostic).
-        dt = datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")
-        # treat as UTC
-        return time.mktime(dt.timetuple()) - time.timezone
-    except (ValueError, TypeError):
-        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):   # tolerate optional milliseconds
+        try:
+            dt = datetime.strptime(s, fmt)               # stored as UTC 'Z'
+            return time.mktime(dt.timetuple()) - time.timezone
+        except (ValueError, TypeError):
+            continue
+    return None
 
 
 def _blank():

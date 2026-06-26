@@ -412,6 +412,23 @@ iframe{flex:1;border:0;width:100%;background:var(--bg)}
 .gauge{width:66px;height:66px}.gv{font-size:20px;font-weight:800}
 .glabel{font-size:10px;color:var(--tx);font-weight:600;margin-top:3px;text-align:center}
 .gsub{font-size:9.5px;color:var(--mut);margin-top:1px;text-align:center}
+.capmeter{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:9px 12px;min-width:148px;flex:1}
+.caprow{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.caplabel{font-size:11px;color:var(--tx);font-weight:600}
+.cappct{font-size:19px;font-weight:800;line-height:1}
+.capbar{height:8px;background:var(--bd);border-radius:5px;overflow:hidden;margin:7px 0 4px}
+.capfill{height:100%;border-radius:5px;transition:width .3s ease}
+.capsub{font-size:9.5px;color:var(--mut)}
+#bellwrap{position:relative;display:inline-block}
+#bellbadge{position:absolute;top:-5px;right:-5px;background:var(--err);color:#fff;font-size:9px;font-weight:800;min-width:15px;height:15px;line-height:15px;border-radius:8px;padding:0 3px;text-align:center;display:none}
+#notifpanel{display:none;position:absolute;right:0;top:34px;width:360px;max-height:60vh;overflow:auto;background:var(--card);border:1px solid var(--bd);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.4);z-index:60;padding:6px}
+.nitem{display:flex;gap:8px;align-items:flex-start;padding:7px 8px;border-radius:7px;font-size:12px}
+.nitem:hover{background:var(--hover)}
+.nitem.dim{opacity:.5}
+.nitem .nx{cursor:pointer;color:var(--mut);font-weight:700;flex:0 0 auto;margin-left:auto}.nitem .nx:hover{color:var(--err)}
+.nhead{display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid var(--bd);margin-bottom:4px}
+.nhead b{font-size:12px}.nhead a{font-size:11px;color:var(--accent);cursor:pointer}
+.alert .ax{cursor:pointer;margin-left:10px;font-weight:700;opacity:.6}.alert .ax:hover{opacity:1}
 .ovgrid{flex:1;min-width:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
 @media(max-width:720px){.toprow{flex-wrap:wrap}.ovgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:9px 11px}
@@ -452,6 +469,8 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <button class="btn" onclick="exportCsv()" title="Download usage as CSV">⬇ CSV</button></span>
   <span class="stale" id="stale"></span>
   <button class="btn" onclick="openNew()" title="Create a new agent">+ New Agent</button>
+  <span id="bellwrap"><button class="btn" id="bellbtn" title="Notifications" onclick="toggleNotif(event)">🔔<span id="bellbadge"></span></button>
+    <div id="notifpanel"></div></span>
   <button class="btn" id="themebtn" title="Toggle light/dark" onclick="toggleTheme()">🌙</button>
 </nav>
 <div id="newmodal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50">
@@ -943,8 +962,33 @@ async function submitNew(){const g=id=>document.getElementById(id).value.trim();
   else{msg.style.color="var(--err)";msg.textContent="error: "+esc((r&&(r.error||r.out))||"failed");}}
 async function load(){try{const j=await(await fetch(qs("/api/fleet"))).json();agents=j.agents||{};renderAlerts(j.alerts||[]);if(curview==="agents"){render();if(sel&&agents[sel]){setBar(agents[sel]);}}else{renderOverview();}}catch(e){}}
 /* ---------- alerts ---------- */
-function renderAlerts(al){const b=document.getElementById("alertbar");if(!al||!al.length){b.innerHTML="";return;}
-  b.innerHTML=al.map(a=>`<div class="alert ${a.level==="crit"?"crit":"warn"}">${a.level==="crit"?"⛔":"⚠"} ${esc(a.msg)}</div>`).join("");}
+/* ---------- Notifications: dismissable alerts + bell menu ---------- */
+let _alerts=[];
+let _dismissed=(()=>{try{return new Set(JSON.parse(localStorage.getItem("console_dismissed")||"[]"));}catch(e){return new Set();}})();
+function _saveDismissed(){try{localStorage.setItem("console_dismissed",JSON.stringify([..._dismissed]));}catch(e){}}
+function alertKey(a){return (a.level||"")+"|"+(a.msg||"");}   // text-stable: re-dismissing the SAME alert sticks until its wording changes
+function dismissAlert(k){_dismissed.add(k);_saveDismissed();renderAlerts(_alerts);renderNotif();}
+function restoreAlert(k){_dismissed.delete(k);_saveDismissed();renderAlerts(_alerts);renderNotif();}
+function clearAllAlerts(){_alerts.forEach(a=>_dismissed.add(alertKey(a)));_saveDismissed();renderAlerts(_alerts);renderNotif();}
+function restoreAll(){_dismissed.clear();_saveDismissed();renderAlerts(_alerts);renderNotif();}
+function renderAlerts(al){_alerts=al||[];const b=document.getElementById("alertbar");
+  const active=_alerts.filter(a=>!_dismissed.has(alertKey(a)));
+  b.innerHTML=active.map(a=>{const k=alertKey(a);return `<div class="alert ${a.level==="crit"?"crit":"warn"}">${a.level==="crit"?"⛔":"⚠"} ${esc(a.msg)}<span class="ax" title="dismiss" onclick="dismissAlert('${esc(k).replace(/'/g,"\\'")}')">✕</span></div>`;}).join("");
+  renderBell();}
+function renderBell(){const badge=document.getElementById("bellbadge");if(!badge)return;
+  const n=_alerts.filter(a=>!_dismissed.has(alertKey(a))).length;
+  badge.textContent=n;badge.style.display=n?"block":"none";}
+function renderNotif(){const p=document.getElementById("notifpanel");if(!p||p.style.display!=="block")return;
+  if(!_alerts.length){p.innerHTML='<div class="s" style="padding:12px;text-align:center;color:var(--mut)">No notifications</div>';return;}
+  const ndis=_alerts.filter(a=>_dismissed.has(alertKey(a))).length;
+  let h=`<div class="nhead"><b>Notifications</b><span>${ndis?`<a onclick="restoreAll()">restore all</a> · `:""}<a onclick="clearAllAlerts()">dismiss all</a></span></div>`;
+  h+=_alerts.map(a=>{const k=alertKey(a),dis=_dismissed.has(k);
+    return `<div class="nitem${dis?" dim":""}"><span>${a.level==="crit"?"⛔":"⚠"}</span><span>${esc(a.msg)}</span>
+      <span class="nx" title="${dis?"restore":"dismiss"}" onclick="${dis?"restoreAlert":"dismissAlert"}('${esc(k).replace(/'/g,"\\'")}')">${dis?"↺":"✕"}</span></div>`;}).join("");
+  p.innerHTML=h;}
+function toggleNotif(ev){if(ev)ev.stopPropagation();const p=document.getElementById("notifpanel");
+  p.style.display=p.style.display==="block"?"none":"block";renderNotif();}
+document.addEventListener("click",e=>{const w=document.getElementById("bellwrap");if(w&&!w.contains(e.target)){const p=document.getElementById("notifpanel");if(p)p.style.display="none";}});
 /* ---------- Overview view ---------- */
 async function loadOverview(){try{ov=await(await fetch(qs("/api/overview"))).json();}catch(e){}renderOverview();loadEscalations();}
 let _escOpen=false;
@@ -1072,16 +1116,15 @@ async function viewSkill(name,head){const b=head.parentElement.querySelector(".s
   try{const t=await(await fetch(qs(`/api/skillfile?id=${encodeURIComponent(sel)}&name=${encodeURIComponent(name)}`))).text();
     b.innerHTML=`<pre class="s" style="white-space:pre-wrap;margin:8px 0 0;border-top:1px solid var(--bd);padding-top:8px;font-family:inherit">${esc(t)}</pre>`;b.dataset.open="1";}catch(e){b.innerHTML='<div class="s" style="color:var(--err)">failed to load</div>';}}
 function gauge(w,label){const pct=w&&w.pct!=null?w.pct:null;const warn=label.indexOf("5h")>=0?70:85;
-  /* resolve to real hex — Chrome does NOT substitute var() inside SVG presentation attributes
-     (fill=/stroke=), so passing "var(--ok)" there renders black/invisible. */
-  const col=cssv(pct==null?"--mut":pct>=90?"--err":pct>=warn?"--idle":"--ok"),track=cssv("--bd");
-  const r=42,c=2*Math.PI*r,off=pct==null?c:c*(1-Math.min(pct,100)/100);
+  const col=cssv(pct==null?"--mut":pct>=90?"--err":pct>=warn?"--idle":"--ok");
   let eta="resets —";if(w&&w.reset_epoch){const s=Math.max(0,w.reset_epoch-Date.now()/1000);eta="resets "+Math.floor(s/3600)+"h"+String(Math.floor(s%3600/60)).padStart(2,"0")+"m";}
-  return `<div class="gaugecard" title="Claude subscription ${label} usage — defers at 90%"><svg class="gauge" width="66" height="66" viewBox="0 0 100 100">
-    <circle cx=50 cy=50 r=${r} fill=none stroke="${track}" stroke-width=10/>
-    <circle cx=50 cy=50 r=${r} fill=none stroke="${col}" stroke-width=10 stroke-linecap=round stroke-dasharray="${c}" stroke-dashoffset="${off}" transform="rotate(-90 50 50)"/>
-    <text x=50 y=56 text-anchor=middle class=gv fill="${col}">${pct==null?"n/a":pct+"%"}</text></svg>
-    <div class="glabel">${label}</div><div class="gsub">${eta}</div></div>`;
+  /* horizontal usage bar — reads clearly at any value (the donut looked empty at low %). Min 2% width
+     so a small-but-nonzero reading is still a visible sliver. */
+  const fillw=pct==null?0:Math.max(pct>0?2:0,Math.min(pct,100));
+  return `<div class="capmeter" title="Claude subscription ${label} — usage vs your cap; auto-defers at 90%">
+    <div class="caprow"><span class="caplabel">${label}</span><span class="cappct" style="color:${col}">${pct==null?"n/a":pct+"%"}</span></div>
+    <div class="capbar"><div class="capfill" style="width:${fillw}%;background:${col}"></div></div>
+    <div class="capsub">${eta} · of your subscription cap</div></div>`;
 }
 function renderFleetHealth(){
   /* fleet state at a glance — same status model + colors as the rail/graph. Counts the LIVE snapshot. */
