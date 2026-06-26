@@ -151,7 +151,35 @@ def _alerts(snap, wtd, cap):
     for aid, a in snap.items():
         if a.get("up") and a.get("reachable") is False:
             al.append({"level": "warn", "msg": f"{aid}: container up but chat port unreachable"})
+    al.extend(_monitor_alerts())
     return al
+
+
+def _monitor_alerts():
+    """Surface the fleet health monitor's findings in the Overview banner (not just the Monitor tab /
+    per-agent inbox). High-sev escalated findings → named warn; otherwise a one-line count. Fail-soft."""
+    try:
+        hb = json.loads(MON_HEARTBEAT.read_text(errors="ignore") or "{}") if MON_HEARTBEAT.exists() else {}
+    except Exception:
+        return []
+    out, highs, actionable = [], [], 0
+    # Respect per-agent MONITOR_MODE: agents the operator set to observe/off are intentionally silenced,
+    # so they don't belong in the Overview banner — only count agents in an alerting mode.
+    for aid, e in (hb.get("agents") or {}).items():
+        fs = e.get("findings") or []
+        if not fs or e.get("mode") in ("observe", "off"):
+            continue
+        actionable += 1
+        for f in fs:
+            if f.get("severity") == "high":
+                highs.append(f"{aid} ({f.get('title') or f.get('key')})")
+    if highs:
+        out.append({"level": "crit" if len(highs) > 1 else "warn",
+                    "msg": "Monitor: " + "; ".join(highs[:4]) + (" …" if len(highs) > 4 else "") + " — see Monitor tab"})
+    elif actionable:
+        out.append({"level": "warn",
+                    "msg": f"Monitor: {actionable} agent(s) need attention — see Monitor tab"})
+    return out
 
 
 _PEER_RE = re.compile(r"via comms \((?:peer|ceo):([a-z0-9][a-z0-9_-]*)\)", re.I)
@@ -1086,18 +1114,19 @@ function renderOverview(){
   const days=daily.length||1,avg=daily.reduce((a,b)=>a+b,0)/days;
   const exToday=(((ov.external||{}).today||{}).fleet||{}).usd||0;
   const provs=Object.keys(exF.by_model||{});
+  const NOTE=ic("Claude runs on a flat SUBSCRIPTION — usage is bound by the 5h/7d caps above, NOT billed per token. Any Claude $ here is a NOTIONAL ≈API-list-price equivalent (what the same tokens would cost pay-as-you-go), shown only to compare agents — it is NOT money leaving your account. The only real out-of-pocket spend is External LLM (OpenRouter/NVIDIA).");
   const cards=[
-    ["External LLM spend ("+win+")",usd(exF.usd||0),(provs.length?provs.length+" model(s) · ":"")+"real $ out-of-pocket (OpenRouter/NVIDIA/pools)"],
-    ["Claude usage ("+win+")",usd(F.cost_usd),num(F.tokens)+" tok · subscription, cap-bound (not $ out)"],
-    ["Today",usd(exToday)+" ext",usd((((ov.usage||{}).today||{}).fleet||{}).cost_usd)+" Claude"],
-    ["Daily burn (Claude 7d avg)",usd(avg),"projected week "+usd(avg*7)],
+    ["💸 External LLM spend ("+win+")"+ic("REAL money out of pocket — pay-as-you-go calls to external providers (OpenRouter, NVIDIA, etc.) from each agent's api_spending.jsonl."),usd(exF.usd||0),(provs.length?provs.length+" provider(s) · ":"")+"REAL $ out-of-pocket"],
+    ["Claude usage ("+win+")"+NOTE,"≈"+usd(F.cost_usd),num(F.tokens)+" tok · subscription — cap-bound, NOT $ out"],
+    ["Today — real $ out"+NOTE,usd(exToday),"external only · Claude ≈"+usd((((ov.usage||{}).today||{}).fleet||{}).cost_usd)+" notional"],
+    ["Claude daily usage (7d avg)"+NOTE,"≈"+usd(avg),"notional ≈list-price — watch the cap gauges, not this"],
   ];
   document.getElementById("cards").innerHTML=cards.map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${esc(c[2])}</div></div>`).join("");
   renderCostTable(u.agents||{},ex.agents||{});
   drawCharts(u,win);
 }
 function renderCostTable(ag,agext){
-  const cols=[["id","Agent"],["status","Status"],["brain","Brain"],["claude","Claude $"],["external","Ext $"],["tokens","Tokens"],["last","Last tick"]];
+  const cols=[["id","Agent"],["status","Status"],["brain","Brain"],["claude","Claude ≈$"],["external","Ext $ (real)"],["tokens","Tokens"],["last","Last tick"]];
   const ids=new Set([...Object.keys(agents||{}),...Object.keys(ag||{}),...Object.keys(agext||{})]);
   const rows=[...ids].map(id=>{
     const live=agents[id]||{},a=ag[id]||{},e=agext[id]||{},lr=(ov.last||{})[id]||{};

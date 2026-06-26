@@ -50,18 +50,23 @@ PROBE_MODEL = "claude-haiku-4-5-20251001"  # cheapest; max_tokens=1
 
 
 def _secrets_token():
-    """Read CLAUDE_CODE_OAUTH_TOKEN from .secrets/anthropic.env (never logged)."""
+    """Read CLAUDE_CODE_OAUTH_TOKEN from anthropic.env (never logged). Searches, in order: env var,
+    $SECRETS_DIR, $ENCLAVE_SECRETS_LIB (the console's own secrets-library env), then REPO_ROOT/.secrets.
+    The fallbacks matter when the agentd code lives in a subdir whose ./.secrets isn't the real one (e.g.
+    the studio mounts the workspace .secrets, not businesses/enclave/.secrets)."""
     tok = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
     if tok:
         return tok.strip()
-    secrets_dir = pathlib.Path(os.environ.get("SECRETS_DIR", REPO_ROOT / ".secrets"))
-    env = secrets_dir / "anthropic.env"
-    try:
-        for line in env.read_text().splitlines():
-            if line.startswith("CLAUDE_CODE_OAUTH_TOKEN="):
-                return line.split("=", 1)[1].strip()
-    except OSError:
-        pass
+    for d in (os.environ.get("SECRETS_DIR"), os.environ.get("ENCLAVE_SECRETS_LIB"),
+              str(REPO_ROOT / ".secrets")):
+        if not d:
+            continue
+        try:
+            for line in (pathlib.Path(d) / "anthropic.env").read_text().splitlines():
+                if line.startswith("CLAUDE_CODE_OAUTH_TOKEN="):
+                    return line.split("=", 1)[1].strip()
+        except OSError:
+            pass
     return None
 
 
