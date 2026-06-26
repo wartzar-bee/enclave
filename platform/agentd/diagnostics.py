@@ -176,10 +176,23 @@ def _anomalies(records, now, window):
         ev = f"~{_human(ctx_now)} tokens this tick" + (
             f", {'up' if grew >= 0 else 'down'} {abs(grew):.0f}% vs {'last week' if win == 'week' else 'earlier'}"
             if grew is not None else "")
+        # Diagnose the DRIVER from telemetry, not a guess. Most of the context is usually cache_read; if
+        # the latest tick also ran many tool calls, the prompt is accumulating ACROSS a long tool-heavy
+        # tick (re-read each turn) — NOT static files, so "trim memory/inbox" is the wrong fix.
+        rt_l = latest.get("runtime") if isinstance(latest.get("runtime"), dict) else {}
+        tcalls = int(rt_l.get("tool_calls") or 0)
+        cr_share = (_i(latest, "cache_read") / ctx_now) if ctx_now else 0
+        if tcalls >= 25 and cr_share >= 0.7:
+            c_cause = (f"the prompt accumulates across a long, tool-heavy tick (~{tcalls} tool calls this "
+                       "tick), re-read from cache each turn — this is the driver, not auto-loaded files")
+            c_fix = ("reduce tool calls per tick (batch shell commands), delegate heavy build/test work to "
+                     "the off-Opus worker, or scope ticks smaller. Trimming memory/inbox won't help — "
+                     "they're a tiny fraction of this context.")
+        else:
+            c_cause = "context has grown sharply over time" if (grew or 0) >= 150 else None
+            c_fix = "compact memory / trim auto-loaded files & inbox; this is the main cost driver"
         add(sev, "context_explosion", "Large context being re-sent every tick", ev,
-            "high" if grew is not None else "med",
-            cause=("context has grown sharply over time" if (grew or 0) >= 150 else None),
-            fix="compact memory / trim auto-loaded files & inbox; this is the main cost driver")
+            "high" if grew is not None else "med", cause=c_cause, fix=c_fix)
 
     # 2) Prompt growing EVERY tick — slow context creep (distinct from a single spike).
     tail = [_context(r) for r in records[-6:]]
@@ -254,9 +267,20 @@ def _anomalies(records, now, window):
     failed = [r for r in records[-10:] if _i(r, "rc") != 0 or (r.get("subtype") or "success") != "success"]
     if failed:
         sev = "high" if len(failed) >= 3 else "med"
+        # A 'no_result' subtype = the tick produced no final result, almost always because it hit its
+        # time limit and was killed (the loop recovers next tick). Name that specifically — it's a
+        # too-much-work-per-tick signal, not a crash to grep for.
+        timeouts = sum(1 for r in failed if (r.get("subtype") or "") == "no_result")
+        if timeouts:
+            f_cause = (f"{timeouts} tick(s) ended with no result — the tick hit its time limit and was "
+                       "killed (the loop recovers on the next tick)")
+            f_fix = ("one tick is doing too much — break the work into smaller ticks or delegate the heavy "
+                     "build/test loop off-Opus; open Logs (Raw) for the killed tick to see where it stalled")
+        else:
+            f_cause = None
+            f_fix = "open Logs for the failing ticks to see the error"
         add(sev, "failures", f"{len(failed)} failed tick(s) in the last {min(10, len(records))}",
-            "non-zero rc or non-success subtype", "high",
-            fix="open Logs for the failing ticks to see the error")
+            "non-zero rc or non-success subtype", "high", cause=f_cause, fix=f_fix)
 
     sev_order = {"high": 0, "med": 1, "low": 2}
     out.sort(key=lambda a: sev_order.get(a["severity"], 3))

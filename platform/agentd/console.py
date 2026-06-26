@@ -452,6 +452,9 @@ iframe{flex:1;border:0;width:100%;background:var(--bg)}
 .nhead{display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid var(--bd);margin-bottom:4px}
 .nhead b{font-size:12px}.nhead a{font-size:11px;color:var(--accent);cursor:pointer}
 .alert .ax{cursor:pointer;margin-left:10px;font-weight:700;opacity:.6}.alert .ax:hover{opacity:1}
+.mongrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(262px,1fr));gap:8px;align-items:start}
+.moncard{padding:8px 10px;margin-bottom:0}.moncard .s{font-size:11px}
+.moncard b{font-size:12px}
 .ovgrid{flex:1;min-width:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
 @media(max-width:720px){.toprow{flex-wrap:wrap}.ovgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:9px 11px}
@@ -1095,16 +1098,18 @@ async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b
   const aids=Object.keys(ags).sort((x,y)=>(ags[y].findings.length-ags[x].findings.length)||x.localeCompare(y));
   h+=`<div class="sectit" style="font-size:13px;margin-top:14px">Agents</div>`;
   if(!aids.length){h+=`<div class="card"><div class="s">no agents scanned yet — start the monitor (or wait one cycle)</div></div>`;}
+  h+=`<div class="mongrid">`;
   for(const aid of aids){const a=ags[aid],fs=a.findings||[];
     const stat=a.up?'<span style="color:var(--ok)">●</span> up':'<span style="color:var(--off)">●</span> '+esc(a.status||"down");
-    h+=`<div class="card" style="margin-bottom:8px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    h+=`<div class="card moncard"><div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
       <b style="color:var(--tx)">${esc(aid)}</b><span class="s">${stat}</span>
       <span style="flex:1"></span>
-      <span class="s">mode: <b style="color:var(--tx)">${esc(a.mode||"alert")}</b>${ic(MONMODE_HELP)}</span>
-      <span class="s" style="color:var(--accent);cursor:pointer" onclick="pick('${esc(aid)}');tab('config')" title="change the alert mode in this agent's Config tab">⚙ Config</span></div>`;
+      <span class="s"><b style="color:var(--tx)">${esc(a.mode||"alert")}</b>${ic(MONMODE_HELP)}</span>
+      <span class="s" style="color:var(--accent);cursor:pointer" onclick="pick('${esc(aid)}');tab('config')" title="change the alert mode in this agent's Config tab">⚙</span></div>`;
     if(fs.length){h+=fs.map(f=>monFinding(aid,f)).join("");}
-    else{h+=`<div class="s" style="color:var(--ok);margin-top:6px">✓ healthy — no findings</div>`;}
+    else{h+=`<div class="s" style="color:var(--ok);margin-top:5px">✓ healthy</div>`;}
     h+=`</div>`;}
+  h+=`</div>`;
   // --- recovered + remediation history ---
   if((d.recovered||[]).length){h+=`<div class="sectit" style="font-size:13px;margin-top:14px">Recently recovered</div><div class="card">`+
     d.recovered.map(r=>`<div class="s"><span style="color:var(--ok)">✓</span> <b>${esc(r.agent)}</b> — ${esc(r.key)} cleared <span style="color:var(--mut)">${esc((r.recovered_at||"").replace("T"," ").replace("Z",""))}</span></div>`).join("")+`</div>`;}
