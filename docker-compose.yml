@@ -99,12 +99,13 @@ services:
     profiles: [qmd]
     restart: unless-stopped
 
-  # Optional codegraph code-memory in SHARED mode (one HTTP MCP bridge, many agents):
-  #   docker compose run --rm -e CODEGRAPH_MODE=reembed codegraph   # build the shared index first
-  #   docker compose --profile codegraph up -d --build codegraph    # serve the bridge
-  # Then point agents at it:  home/.mcp.json →
-  #   { "mcpServers": { "codegraph": { "type": "http", "url": "http://codegraph:18184/mcp" } } }
-  # (Agents need NOTHING baked — they just hit the network bridge. Set CODE_CORPUS to your repos dir.)
+  # Optional codegraph code-memory — PER-AGENT + ISOLATED. It runs inside THIS agent's compose project,
+  # so it sits on the project's PRIVATE network: reachable only by this agent (service name `codegraph`),
+  # never host-published, so no other agent's container can reach it or the repo it indexes. Set
+  # CODE_CORPUS to this agent's repo. `enclave run` brings it up; or by hand:
+  #   docker compose run --rm -e CODEGRAPH_MODE=reembed codegraph   # build the index first
+  #   docker compose --profile codegraph up -d codegraph            # serve it (private to this agent)
+  # The agent's home/.mcp.json points at:  http://codegraph:18184/mcp
   codegraph:
     build:
       context: .

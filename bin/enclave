@@ -44,7 +44,9 @@ Flags for non-interactive init (CI / scripted):
   --name N --brain claude|api|local|optimize --model M --template T
                    (optimize = start on Claude, shift to the cheapest reachable policy.json pool as the cap fills)
   --cred TOKEN     the model credential (Claude OAuth / API key) — what the wizard prompts for
-  --codegraph PATH code memory over a repo folder (an HTTP bridge `run` starts; twin of qmd)
+  --codegraph PATH code memory over a repo folder — `run` starts it as this agent's OWN compose service,
+                   PRIVATE to the agent's network (no host port, no cross-agent reach); reached at
+                   http://codegraph:18184/mcp. Twin of qmd.
   --qmd URL        a knowledge-search qmd MCP gateway URL (blank = none)
   --work-dir PATH  the host project tree the agent works in (mounted rw at /work; blank = home/work)
   --bind 127.0.0.1:8888  --port 8888  --token TOK (optional web-UI ?token= gate)  --yes  --force
@@ -64,7 +66,8 @@ REPO = HERE.parent  # bin/ -> repo root
 # from REPO. This split is what lets ONE canonical checkout create and operate many shared-image agents
 # under a fleet root — so a runtime improvement (rebuild the image once) reaches every deployment.
 DEPLOY = REPO
-CODEGRAPH_PORT = "18183"  # host port for the codegraph HTTP bridge (twin of qmd's :18182)
+# (codegraph runs as the agent's own compose service on its PRIVATE network — service name `codegraph`,
+#  port 18184 inside the project, never host-published. No shared host port → no cross-agent reach.)
 
 # Brain presets: default model + the secret file/key the runtime reads from ./secrets/.
 BRAINS = {
@@ -467,7 +470,9 @@ def cmd_init(args):
     if qmd_url:
         mcp_servers["qmd"] = {"type": "http", "url": qmd_url}
     if cg_corpus:
-        mcp_servers["codegraph"] = {"type": "http", "url": f"http://host.docker.internal:{CODEGRAPH_PORT}/mcp"}
+        # codegraph runs as THIS agent's own compose service → reached by service name on the agent's
+        # PRIVATE compose network (never host-published), so no other agent's container can touch it.
+        mcp_servers["codegraph"] = {"type": "http", "url": "http://codegraph:18184/mcp"}
     _write(home / ".mcp.json", json.dumps({"mcpServers": mcp_servers}, indent=2) + "\n")
     # 1c) BRAIN=optimize: the editable pool config route_brain reads (agent-dir policy.json wins over baked).
     if brain == "optimize":
@@ -688,35 +693,29 @@ def _wait_reachable(url, timeout=40):
     return False
 
 def _ensure_codegraph_bridge():
-    """If CODE_CORPUS is set in .env, bring up the codegraph HTTP bridge over it (idempotent) so the
-    agent's .mcp.json codegraph entry resolves — the twin of the qmd gateway, started with the stack."""
+    """If CODE_CORPUS is set in .env, bring up THIS agent's codegraph as its OWN compose SERVICE (profile
+    'codegraph') over that repo. Running it inside the agent's compose project puts it on the project's
+    PRIVATE network — reachable ONLY by this agent, by service name `codegraph` (http://codegraph:18184/mcp),
+    NEVER host-published. So one agent's codegraph (and the repo it indexes) can't be reached by any other
+    agent's container — isolation is structural, per-agent, by construction. Idempotent."""
     corpus = os.path.expanduser(_read_env("CODE_CORPUS", "") or "")
     if not corpus:
         return
     if not os.path.isdir(corpus):
-        print(f"  ⚠ CODE_CORPUS={corpus} not found — codegraph bridge not started."); return
-    # idempotent: if a codegraph bridge is ALREADY serving the port (a shared/standalone one), reuse it —
-    # don't start a duplicate that would collide on the port (like the agent reuses the host qmd gateway).
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{CODEGRAPH_PORT}/health", timeout=2) as r:
-            if r.status < 500:
-                print(f"  codegraph bridge already serving on :{CODEGRAPH_PORT} — reusing it (no duplicate)."); return
-    except Exception:
-        pass
-    name = (_read_env("AGENT_ID", "enclave-agent") or "enclave-agent") + "-codegraph"
+        print(f"  ⚠ CODE_CORPUS={corpus} not found — codegraph not started."); return
     img = "enclave-codegraph:latest"
     if subprocess.run(["docker", "image", "inspect", img], capture_output=True).returncode != 0:
         print("  building codegraph image…")
         subprocess.run(["docker", "build", "-f", "Dockerfile.codegraph", "-t", img, "."], cwd=REPO)
+    # First run: build the index (reembed) via the SAME compose service (so the corpus mount matches serve).
     if not os.path.isdir(os.path.join(corpus, ".codegraph")):
         print(f"  indexing {corpus} for codegraph (first run — a few minutes)…")
-        subprocess.run(["docker", "run", "--rm", "-e", "CODEGRAPH_MODE=reembed", "-v", f"{corpus}:/corpus", img])
-    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
-    r = subprocess.run(["docker", "run", "-d", "--name", name, "--restart", "unless-stopped",
-                        "-v", f"{corpus}:/corpus", "-p", f"127.0.0.1:{CODEGRAPH_PORT}:18184", img],
-                       capture_output=True, text=True)
-    print(f"  codegraph bridge up → host.docker.internal:{CODEGRAPH_PORT} (corpus: {corpus})" if r.returncode == 0
-          else f"  ⚠ codegraph bridge failed: {r.stderr.strip()[:160]}")
+        subprocess.run(["docker", "compose", "run", "--rm", "-e", "CODEGRAPH_MODE=reembed", "codegraph"], cwd=DEPLOY)
+    # Serve it on the agent's PRIVATE compose network (no host port; reachable only within the project).
+    r = subprocess.run(["docker", "compose", "--profile", "codegraph", "up", "-d", "codegraph"],
+                       cwd=DEPLOY, capture_output=True, text=True)
+    print(f"  codegraph up → http://codegraph:18184/mcp (PRIVATE to this agent; corpus: {corpus})"
+          if r.returncode == 0 else f"  ⚠ codegraph failed: {r.stderr.strip()[:160]}")
 
 def _check_chat_js():
     """Build-time guard: run check_chat_js.py so a JS syntax error in the rendered chat PAGE
