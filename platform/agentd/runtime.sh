@@ -29,6 +29,10 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PA
 
 LOG="$AGENT_DIR/logs/runner.log"
 USAGE_LOG="$AGENT_DIR/state/usage.jsonl"   # per-tick first-party usage (usage_capture.py)
+# REAL out-of-pocket spend ledger (out-of-pocket $: image-gen + paid LLM routing). Exported so ANY tool
+# the brain runs in-tick (tools/image/gen.py, tools/llm/route.mjs) appends here; the dashboard's
+# "External LLM spend" card sums it. Distinct from usage.jsonl (Claude subscription, cap-bound).
+[ -z "${SPEND_LOG:-}" ] && export SPEND_LOG="$AGENT_DIR/state/api_spending.jsonl"
 CAP="$SCRIPT_DIR/usage_capture.py"; [ -f "$CAP" ] || CAP="${TOOLS_ROOT:-/workspace}/platform/agentd/usage_capture.py"
 HEARTBEAT="$AGENT_DIR/state/.heartbeat"
 LOCK="${TMPDIR:-/tmp}/agent-${AGENT_ID}.lock"
