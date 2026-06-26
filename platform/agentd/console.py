@@ -784,7 +784,7 @@ async function loadAgBlockers(){const b=document.getElementById("agblockers");if
     const key=(it.kind==="approval"?"appr:":"esc:")+(tag?tag[1]:t.slice(0,40));
     const e=map.get(key)||{col:"--err",lbl:it.kind==="approval"?"Needs your approval":"Escalation",txt:t,ts:it.ts||"",n:0,cfg:tag&&/^monitor:/.test(tag[1])};
     e.n++;if((it.ts||"")>=e.ts){e.ts=it.ts||"";e.txt=t;}map.set(key,e);});
-  findings.filter(f=>f.severity==="high"||f.escalated).forEach(f=>{   // monitor findings are already keyed
+  findings.filter(f=>f.severity==="high").forEach(f=>{   // strip = real blockers only; med advisories live in Monitor/Diag
     map.set("mon:"+f.key,{col:MONSEV[f.severity]||"--idle",lbl:f.title||f.key,
       txt:(f.cause||"")+(f.recommendation?" → "+f.recommendation:""),ts:"~",n:1,cfg:true});});
   const rows=[...map.values()].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
@@ -1890,19 +1890,24 @@ class H(BaseHTTPRequestHandler):
                 if not home:
                     continue
                 st = pathlib.Path(home) / "state"
-                # escalations.log: blocks beginning "<ts> ESCALATE :: <text>" (+ indented continuations)
+                # escalations.log: blocks beginning "<ts> ESCALATE :: <text>" (+ indented continuations).
+                # SKIP monitor-advisory lines ("[monitor:…") — those are the fleet monitor's recurring
+                # alerts (context_bloat etc.), surfaced LIVE in the Monitor view with dedup + lifecycle;
+                # this HITL channel is for genuine "needs a human decision" items (agent ESCALATE: + approvals).
+                def _hitl(t):
+                    return bool(t) and not t.lstrip().startswith("[monitor:")
                 ef = st / "escalations.log"
                 if ef.exists():
                     cur = None
                     for ln in ef.read_text(errors="ignore").splitlines():
                         m = re.match(r"^(\d{4}-\d\d-\d\dT[\d:]+Z)\s+(\w+)\s*::\s*(.*)", ln)
                         if m:
-                            if cur and cur["kind"] == "ESCALATE":
+                            if cur and cur["kind"] == "ESCALATE" and _hitl(cur["text"]):
                                 items.append({"agent": aid, "ts": cur["ts"], "kind": "escalation", "text": cur["text"][:400]})
                             cur = {"ts": m.group(1), "kind": m.group(2), "text": m.group(3)}
                         elif cur and ln.strip():
                             cur["text"] += " " + ln.strip()
-                    if cur and cur["kind"] == "ESCALATE":
+                    if cur and cur["kind"] == "ESCALATE" and _hitl(cur["text"]):
                         items.append({"agent": aid, "ts": cur["ts"], "kind": "escalation", "text": cur["text"][:400]})
                 # approvals.json: a non-empty array = pending approval requests
                 aj = st / "approvals.json"
