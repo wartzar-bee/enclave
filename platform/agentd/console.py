@@ -478,9 +478,9 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
 @media(max-width:760px){.chartsgrid{grid-template-columns:1fr}}
 .stale{font-size:11px;color:var(--mut);margin-left:auto}
 /* ---- Graph view ---- */
-#graphbox{position:absolute;inset:0}
-#glegend{position:absolute;left:14px;bottom:12px;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:9px 12px;font-size:11.5px;color:var(--mut);z-index:5}
-#glegend b{color:var(--tx)}#glegend .li{display:flex;align-items:center;gap:7px;margin-top:4px}
+#graphbox canvas{border-radius:12px 12px 0 0}
+#glegend{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;background:var(--card);border:1px solid var(--bd);border-top:none;border-radius:0 0 12px 12px;padding:7px 12px;font-size:11px;color:var(--mut)}
+#glegend b{color:var(--tx)}#glegend .li{display:inline-flex;align-items:center;gap:5px}
 #glegend .sw{width:10px;height:10px;border-radius:50%}
 </style></head><body>
 <nav id="nav">
@@ -524,15 +524,16 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <div class="sectit">Fleet status</div>
   <div class="fleetstrip" id="fleethealth"></div>
   <div class="sectit" style="cursor:pointer" onclick="toggleFleetMap()">Fleet map <span class="s" id="fmtoggle" style="font-weight:400">— topology · click a node to open an agent (hide)</span></div>
-  <div id="fleetmapwrap" style="position:relative;height:330px;background:var(--card);border:1px solid var(--bd);border-radius:12px;margin-bottom:10px">
-    <div id="graphbox"></div>
+  <div id="fleetmapwrap" style="margin-bottom:10px">
+    <div id="graphbox" style="position:relative;height:320px;background:var(--card);border:1px solid var(--bd);border-radius:12px 12px 0 0"></div>
     <div id="glegend"><b>Fleet topology</b> · node size = wtd spend
-      <div class="li"><span class="sw" style="background:var(--ok)"></span>working</div>
-      <div class="li"><span class="sw" style="background:var(--idle)"></span>idle</div>
-      <div class="li"><span class="sw" style="background:var(--err)"></span>unreachable</div>
-      <div class="li"><span class="sw" style="background:var(--off)"></span>offline</div>
-      <div class="li"><span style="color:var(--accent)">♛</span> manager</div>
-      <div class="li"><span class="sw" style="background:#c9a23f;border-radius:2px"></span>manager link · <span class="sw" style="background:#56b6c2;border-radius:2px"></span>peer comms</div>
+      <span class="li"><span class="sw" style="background:var(--ok)"></span>working</span>
+      <span class="li"><span class="sw" style="background:var(--idle)"></span>idle</span>
+      <span class="li"><span class="sw" style="background:var(--err)"></span>unreachable</span>
+      <span class="li"><span class="sw" style="background:var(--off)"></span>offline</span>
+      <span class="li"><span style="color:var(--accent)">♛</span>manager</span>
+      <span class="li"><span class="sw" style="background:#c9a23f;border-radius:2px"></span>manager link</span>
+      <span class="li"><span class="sw" style="background:#56b6c2;border-radius:2px"></span>peer comms</span>
     </div>
   </div>
   <div class="sectit">Spend &amp; subscription</div>
@@ -1324,10 +1325,15 @@ function renderGraph(d){
         const fs=10/scale;ctx.font=`${mgr?"bold ":""}${fs}px -apple-system,system-ui,sans-serif`;ctx.fillStyle=mgr?cssv("--accent"):cssv("--tx");ctx.textAlign="center";ctx.textBaseline="top";
         ctx.fillText(n.id,n.x,n.y+r+2);
       })
-      .onNodeClick(n=>pick(n.id));
-    try{G.d3Force("charge").strength(-240);}catch(e){}     // spread nodes so they don't overlap
-    try{G.d3Force("link").distance(70);}catch(e){}
+      .onNodeClick(n=>pick(n.id))
+      .onEngineStop(()=>{if(G._needFit){G._needFit=false;try{G.zoomToFit(500,45);}catch(e){}}});  // auto zoom-to-fit on settle
+    try{G.d3Force("charge").strength(-120);}catch(e){}    // gentler repulsion
+    try{G.d3Force("link").distance(60);}catch(e){}
+    // Pull EVERY node toward centre (≈forceX(0)+forceY(0)) so a DISCONNECTED node — e.g. a standalone
+    // agent with no manager link — stays in the cluster instead of drifting off. Custom force = no d3 dep.
+    try{let _ns;const pull=a=>{if(_ns)for(const n of _ns){n.vx-=n.x*0.08*a;n.vy-=n.y*0.08*a;}};pull.initialize=ns=>_ns=ns;G.d3Force("centerPull",pull);}catch(e){}
   }
+  G._needFit=true;   // re-fit on the next settle (covers open + data changes)
   G.width(box.clientWidth).height(box.clientHeight).graphData(d);
 }
 window.addEventListener("resize",()=>{if(G&&curview==="overview"&&_fleetMapOpen){const b=document.getElementById("graphbox");if(b)G.width(b.clientWidth).height(b.clientHeight);}});
