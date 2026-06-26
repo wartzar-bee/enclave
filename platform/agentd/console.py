@@ -67,6 +67,16 @@ _CFGDIR = pathlib.Path.home() / ".config" / "enclave"
 MON_HEARTBEAT = pathlib.Path(os.environ.get("ENCLAVE_MONITOR_HEARTBEAT", str(_CFGDIR / "monitor-heartbeat.json")))
 MON_STATE = pathlib.Path(os.environ.get("ENCLAVE_MONITOR_STATE", str(_CFGDIR / "monitor-state.json")))
 MON_LAUNCH = os.environ.get("ENCLAVE_MONITOR_LAUNCH", "")  # command to (re)start the daemon; "" = read-only
+# Diagnostics anomaly → one-click SAFE config fix. Only agent.env-ONLY keys (read fresh each tick) →
+# applied LIVE = next tick, no container recreate. (MODEL is dual-homed with .env, needs a restart →
+# NOT a quick-fix; switch the model in the Config tab, which recreates the container.)
+DIAG_FIX = {
+    "context_explosion": ({"COMPACT_ENFORCE": "1"}, "Enable compactor"),
+    "prompt_creep":      ({"COMPACT_ENFORCE": "1"}, "Enable compactor"),
+    "duration_spike":    ({"MAX_TURNS": "40"}, "Cap turns/tick"),
+    "wake_spike":        ({"CONTINUOUS_COOLDOWN": "600"}, "Slow tick cadence"),
+}
+_SEV_RANK = {"high": 3, "med": 2, "low": 1}
 # One-click Apply drops a control-spec here for control_watcher (the docker-capable actor) to execute —
 # same queue the daemon's autofix path uses. Defaults to <first stacks root>/_control.
 MON_CONTROL_QUEUE = os.environ.get("ENCLAVE_CONTROL_QUEUE",
@@ -879,11 +889,14 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
     html+=d.anomalies.map(an=>`<div class="card" style="margin-bottom:8px;border-left:4px solid ${SEVC[an.severity]||"var(--mut)"}">
       <div style="display:flex;align-items:baseline;gap:8px"><div class="v" style="font-size:13.5px">${esc(an.title)}</div>
         <span style="flex:1"></span><span class="s" style="text-transform:uppercase;letter-spacing:.04em;color:${SEVC[an.severity]}">${esc(an.severity)}</span>
-        <span class="s" title="how sure we are this reading is real">conf: ${esc(an.confidence||"—")}</span></div>
+        <span class="s" title="how sure we are this reading is real">conf: ${esc(an.confidence||"—")}</span>
+        <span class="s" style="cursor:pointer;color:var(--mut);font-size:16px;line-height:1;margin-left:2px" title="hide this — re-appears only if it gets worse" onclick="diagMute('${esc(an.key)}','${esc(an.severity)}')">×</span></div>
       <div class="s" style="margin-top:3px;color:var(--tx)">📊 ${esc(an.evidence||"")}</div>
       ${an.cause?`<div class="s" style="margin-top:2px">↳ likely cause: ${esc(an.cause)}</div>`:""}
-      ${an.fix?`<div class="s" style="margin-top:2px;color:var(--accent)">→ try: ${esc(an.fix)}</div>`:""}</div>`).join("");}
-  else{html+=`<div class="card" style="margin-bottom:10px"><div class="s">✓ No anomalies in recent telemetry. Charts below show the trends.</div></div>`;}
+      ${an.fix?`<div class="s" style="margin-top:2px;color:var(--accent)">→ try: ${esc(an.fix)}</div>`:""}
+      ${an.quickfix?`<button class="btn" style="margin-top:6px;padding:3px 9px;font-size:12px" onclick="diagFix('${esc(an.key)}',this)" title="apply this fix to the agent now — live next tick, no restart">⚡ ${esc(an.quickfix)}</button>`:""}</div>`).join("");
+    if(d.muted_keys&&d.muted_keys.length){html+=`<div class="s" style="margin:0 2px 8px;color:var(--mut)">${d.muted_keys.length} muted · <span style="cursor:pointer;color:var(--accent)" onclick="diagUnmuteAll()">show all</span></div>`;}}
+  else{html+=`<div class="card" style="margin-bottom:10px"><div class="s">✓ No active anomalies${(d.muted_keys&&d.muted_keys.length)?` (${d.muted_keys.length} muted · <span style="cursor:pointer;color:var(--accent)" onclick="diagUnmuteAll()">show all</span>)`:" in recent telemetry"}. Charts below show the trends.</div></div>`;}
   /* KPI strip */
   html+=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
     ${kpi("context / tick",num(ctx.latest),trendBadge(ctx.trend_pct,false),"input+cache re-sent")}
@@ -924,6 +937,14 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
   renderInspect(d.inspect||[]);
   loadResources();
 }
+async function diagMute(key,sev){if(!sel)return;await postR("/api/diag-mute",{id:sel,key,severity:sev});renderDiag(agents[sel]);}
+async function diagUnmuteAll(){if(!sel)return;
+  for(const k of ((_diag&&_diag.muted_keys)||[])) await postR("/api/diag-mute",{id:sel,key:k,op:"unmute"});
+  renderDiag(agents[sel]);}
+async function diagFix(key,btn){if(!sel)return;if(btn){btn.disabled=true;btn.textContent="applying…";}
+  const r=await postR("/api/diag-fix",{id:sel,key});
+  if(r&&r.ok){if(btn){btn.textContent="✓ "+(r.label||"applied")+" — live next tick";}setTimeout(()=>renderDiag(agents[sel]),1500);}
+  else{if(btn){btn.disabled=false;btn.textContent="⚡ retry";}alert("fix failed: "+esc((r&&r.error)||"?"));}}
 function modelsUsedPanel(d){const rows=d.inspect||[];if(!rows.length)return"";
   const by={};rows.forEach(r=>{const m=(r.model||"?").replace("claude-","")||"?";(by[m]=by[m]||{n:0,cost:0}).n++;by[m].cost+=(r.cost_usd||0);});
   const ent=Object.entries(by).sort((a,b)=>b[1].n-a[1].n);const tot=rows.length;
@@ -1693,7 +1714,32 @@ class H(BaseHTTPRequestHandler):
                     {"error": "no home dir on this host (telemetry lives in the agent's home/state)"}))
             try:
                 import diagnostics
-                return self._send(200, "application/json", json.dumps(diagnostics.from_home(home)))
+                d = diagnostics.from_home(home)
+                # per-agent anomaly mutes (state/.diag-mute.json: {key: severity_at_mute}); a quick-fix
+                # label is attached for any anomaly with a known safe config fix.
+                muted = {}
+                mf = pathlib.Path(home) / "state" / ".diag-mute.json"
+                if mf.exists():
+                    try: muted = json.loads(mf.read_text() or "{}")
+                    except Exception: muted = {}
+                kept, hidden = [], 0
+                for an in (d.get("anomalies") or []):
+                    k = an.get("key")
+                    if k in DIAG_FIX:
+                        an["quickfix"] = DIAG_FIX[k][1]
+                    # hidden if muted AND it hasn't worsened beyond the muted severity
+                    if k in muted and _SEV_RANK.get(an.get("severity"), 0) <= _SEV_RANK.get(muted.get(k), 0):
+                        hidden += 1; continue
+                    kept.append(an)
+                if hidden:
+                    d["anomalies"], d["muted_count"] = kept, hidden
+                    lvl = ("orange", "Degraded") if any(x["severity"] == "high" for x in kept) \
+                        else ("yellow", "Watch") if kept else ("green", "Healthy")
+                    d["health"] = {"level": lvl[0], "label": lvl[1],
+                                   "reason": kept[0]["title"] if kept else "no active anomalies (others muted)"}
+                if muted:
+                    d["muted_keys"] = list(muted)
+                return self._send(200, "application/json", json.dumps(d))
             except Exception as e:
                 return self._send(200, "application/json", json.dumps({"error": str(e)}))
         if p == "/api/activity":   # per-agent LIVE cockpit: what is this agent doing right now?
@@ -2175,6 +2221,59 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, "application/json", '{"error":"nothing to write (claude_md|tick_txt)"}')
                 fleet._audit("set-mission", aid, ", ".join(wrote))
                 return self._send(200, "application/json", json.dumps({"ok": True, "wrote": wrote}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/diag-mute":   # hide/acknowledge a diagnostics anomaly (re-shows if it WORSENS)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            aid, key = d.get("id", ""), d.get("key", "")
+            if not fleet._SAFE.match(aid or "") or not re.match(r"^[a-z_]{2,40}$", key or ""):
+                return self._send(400, "application/json", '{"error":"bad id/key"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(400, "application/json", '{"error":"agent has no home on this host"}')
+            mf = pathlib.Path(home) / "state" / ".diag-mute.json"
+            try:
+                cur = json.loads(mf.read_text()) if mf.exists() else {}
+                if not isinstance(cur, dict): cur = {}
+            except Exception:
+                cur = {}
+            if d.get("op") == "unmute":
+                cur.pop(key, None)
+            else:
+                cur[key] = d.get("severity") or "high"   # mute AT this severity → re-appears if it worsens
+            try:
+                mf.parent.mkdir(parents=True, exist_ok=True); mf.write_text(json.dumps(cur))
+                fleet._audit("diag-mute", aid, f"{d.get('op', 'mute')} {key}")
+                return self._send(200, "application/json", json.dumps({"ok": True, "muted": list(cur)}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/diag-fix":   # apply the anomaly's one-click safe fix to agent.env (live next tick, no restart)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            aid, key = d.get("id", ""), d.get("key", "")
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            if key not in DIAG_FIX:
+                return self._send(400, "application/json", '{"error":"no quick-fix for this anomaly"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(400, "application/json", '{"error":"agent has no home on this host"}')
+            updates, label = DIAG_FIX[key]
+            try:
+                import fleet_config
+                fleet_config.patch_agent_env(home, updates, aid)   # allowlist-checked; no container recreate
+                fleet._audit("diag-fix", aid, f"{key}: " + ",".join(f"{k}={v}" for k, v in updates.items()))
+                return self._send(200, "application/json", json.dumps(
+                    {"ok": True, "applied": updates, "label": label, "note": "live on the next tick (no restart)"}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))
         if p == "/api/create":   # enqueue a new-agent spec for the spawn watcher (P1 create-agent)
