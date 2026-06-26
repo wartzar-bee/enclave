@@ -475,7 +475,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
 @media(max-width:760px){.chartsgrid{grid-template-columns:1fr}}
 .stale{font-size:11px;color:var(--mut);margin-left:auto}
 /* ---- Graph view ---- */
-#view-graph{display:none}#graphbox{position:absolute;inset:0}
+#graphbox{position:absolute;inset:0}
 #glegend{position:absolute;left:14px;bottom:12px;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:9px 12px;font-size:11.5px;color:var(--mut);z-index:5}
 #glegend b{color:var(--tx)}#glegend .li{display:flex;align-items:center;gap:7px;margin-top:4px}
 #glegend .sw{width:10px;height:10px;border-radius:50%}
@@ -484,7 +484,6 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <span class="brand">ENCLAVE FLEET</span>
   <span class="navtab sel" data-v="overview" onclick="view('overview')">Overview</span>
   <span class="navtab" data-v="agents" onclick="view('agents')">Agents</span>
-  <span class="navtab" data-v="graph" onclick="view('graph')">Graph</span>
   <span class="navtab" data-v="monitor" onclick="view('monitor')">Monitor</span>
   <span class="navtab" data-v="activity" onclick="view('activity')">Audit</span>
   <span class="navtab" data-v="models" onclick="view('models')">Models</span>
@@ -521,6 +520,18 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <div id="escbox"></div>
   <div class="sectit">Fleet status</div>
   <div class="fleetstrip" id="fleethealth"></div>
+  <div class="sectit" style="cursor:pointer" onclick="toggleFleetMap()">Fleet map <span class="s" id="fmtoggle" style="font-weight:400">— topology · click a node to open an agent (hide)</span></div>
+  <div id="fleetmapwrap" style="position:relative;height:330px;background:var(--card);border:1px solid var(--bd);border-radius:12px;margin-bottom:10px">
+    <div id="graphbox"></div>
+    <div id="glegend"><b>Fleet topology</b> · node size = wtd spend
+      <div class="li"><span class="sw" style="background:var(--ok)"></span>working</div>
+      <div class="li"><span class="sw" style="background:var(--idle)"></span>idle</div>
+      <div class="li"><span class="sw" style="background:var(--err)"></span>unreachable</div>
+      <div class="li"><span class="sw" style="background:var(--off)"></span>offline</div>
+      <div class="li"><span style="color:var(--accent)">♛</span> manager</div>
+      <div class="li"><span class="sw" style="background:#c9a23f;border-radius:2px"></span>manager link · <span class="sw" style="background:#56b6c2;border-radius:2px"></span>peer comms</div>
+    </div>
+  </div>
   <div class="sectit">Spend &amp; subscription</div>
   <div class="toprow"><div class="gaugewrap" id="gauges"></div><div class="ovgrid" id="cards"></div></div>
   <div class="sectit">Per-agent consumption</div>
@@ -550,17 +561,6 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <div id="pane"><div class="empty">Select an agent from the rail.</div></div>
     <div id="dbox"><input id="dtext" placeholder="Send a directive to this agent (wakes its tick)…"><button class="btn" onclick="sendD()">Send</button></div>
   </main>
-</section>
-<section id="view-graph" class="view">
-  <div id="graphbox"></div>
-  <div id="glegend"><b>Fleet topology</b> · node size = wtd spend
-    <div class="li"><span class="sw" style="background:var(--ok)"></span>working</div>
-    <div class="li"><span class="sw" style="background:var(--idle)"></span>idle</div>
-    <div class="li"><span class="sw" style="background:var(--err)"></span>unreachable</div>
-    <div class="li"><span class="sw" style="background:var(--off)"></span>offline</div>
-    <div class="li"><span style="color:var(--accent)">♛</span> manager (runs a fleet of sub-agents)</div>
-    <div class="li"><span class="sw" style="background:#c9a23f;border-radius:2px"></span>manager link · <span class="sw" style="background:#56b6c2;border-radius:2px"></span>peer comms</div>
-  </div>
 </section>
 <section id="view-activity" class="view"><div class="ovwrap">
   <div class="sectit">Audit log <span class="s" style="font-weight:400">— control-plane actions (spawn / lifecycle / config), who &amp; when, newest first</span></div>
@@ -611,14 +611,18 @@ function view(v){curview=v;
   document.querySelectorAll(".navtab").forEach(e=>e.classList.toggle("sel",e.dataset.v===v));
   document.getElementById("view-overview").style.display=v==="overview"?"block":"none";
   document.getElementById("view-agents").style.display=v==="agents"?"flex":"none";
-  document.getElementById("view-graph").style.display=v==="graph"?"block":"none";
   document.getElementById("view-activity").style.display=v==="activity"?"block":"none";
   document.getElementById("view-models").style.display=v==="models"?"block":"none";
   document.getElementById("view-monitor").style.display=v==="monitor"?"block":"none";
   document.getElementById("winwrap").style.display=v==="overview"?"":"none";
   try{localStorage.setItem("console_view",v);}catch(e){}
-  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else if(v==="activity"){loadActivity();}else if(v==="models"){loadModels();}else if(v==="monitor"){loadMonitor();}else{render();}
+  if(v==="overview"){loadOverview();}else if(v==="activity"){loadActivity();}else if(v==="models"){loadModels();}else if(v==="monitor"){loadMonitor();}else{render();}
 }
+let _fleetMapOpen=(()=>{try{return localStorage.getItem("console_fleetmap")!=="0";}catch(e){return true;}})();
+function toggleFleetMap(){_fleetMapOpen=!_fleetMapOpen;try{localStorage.setItem("console_fleetmap",_fleetMapOpen?"1":"0");}catch(e){}
+  document.getElementById("fleetmapwrap").style.display=_fleetMapOpen?"block":"none";
+  document.getElementById("fmtoggle").textContent=_fleetMapOpen?"— topology · click a node to open an agent (hide)":"(show)";
+  if(_fleetMapOpen)loadGraph();}
 /* ---------- canonical status model (ONE source of truth — rail, detail, table, graph) ---------- */
 const STATUS={
   working:{label:"Working",col:"--ok"},      // up + mid-tick
@@ -878,6 +882,9 @@ async function saveGoal(){if(!sel)return;const t=document.getElementById("goalIn
   if(m){m.style.color="var(--mut)";m.textContent="saving…";}
   const r=await postR("/api/goal",{id:sel,text:t});
   if(m){if(r&&r.ok){m.style.color="var(--ok)";m.textContent="✓ goal saved (applies next supervisor cycle)";window._cfgGoal=t;}else{m.style.color="var(--err)";m.textContent="error: "+esc((r&&r.error)||"failed");}}}
+async function saveMonitorMode(val){if(!sel)return;const m=document.getElementById("monModeMsg");if(m){m.style.color="var(--mut)";m.textContent="applying…";}
+  const r=await postR("/api/monitor/control",{action:"mode",id:sel,value:val});   // no-restart: daemon re-reads agent.env each cycle
+  if(m){if(r&&r.ok){m.style.color="var(--ok)";m.textContent="✓ applied (live)";_cfgEnv.MONITOR_MODE=val;}else{m.style.color="var(--err)";m.textContent="error: "+esc((r&&r.error)||"failed");}}}
 function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;const mode=effMode();
   const brainOpts=_cfgMeta.brains.map(b=>`<option ${effV("BRAIN")===b?"selected":""}>${b}</option>`).join("");
   const known=(_cfgMeta.models&&_cfgMeta.models[effV("BRAIN")])||[];const curM=effV("MODEL");
@@ -886,7 +893,9 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
   const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
   /* BRAIN/MODEL/SUPERVISE are set by the cards above (dropdowns/buttons) — don't repeat them as free
      text here. Model-valued keys (MODEL_ROUTINE→claude tier, LOCAL_BRAIN_MODEL→local) render as dropdowns. */
-  const HIDE=["BRAIN","MODEL","SUPERVISE"],MODELKEYS={MODEL_ROUTINE:"claude",LOCAL_BRAIN_MODEL:"local"};
+  const HIDE=["BRAIN","MODEL","SUPERVISE","MONITOR_MODE"],MODELKEYS={MODEL_ROUTINE:"claude",LOCAL_BRAIN_MODEL:"local"};
+  const mm=effV("MONITOR_MODE")||"alert";
+  const mmOpts=["off","observe","alert","suggest","autofix"].map(m=>`<option ${m===mm?"selected":""}>${m}</option>`).join("");
   const rows=_cfgEditable.filter(k=>!HIDE.includes(k)).map(k=>{const ch=_pending[k]!==undefined;const cur=effV(k);let field;
     if(MODELKEYS[k]!==undefined){const lst=(_cfgMeta.models&&_cfgMeta.models[MODELKEYS[k]])||[];
       const opts=[...new Set([...(cur?[cur]:[]),...lst])].map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("")+(cur?"":'<option value="" selected>(none)</option>')+'<option value="__custom__">✏️ custom…</option>';
@@ -902,6 +911,11 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
     <div class="card" style="margin-bottom:12px"><div class="k">run mode${ic("How the agent runs. Autonomous = continuous work loop (SUPERVISE=auto). Chat = only wakes when you message it. Scheduled = wakes on a fixed heartbeat interval.")}</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${modeBtns}</div>
       <div class="s" style="margin-top:5px">${esc(MODE_HELP[mode]||"")}</div></div>
+    <div class="card" style="margin-bottom:12px"><div class="k">monitoring — alert mode${ic("How the fleet health monitor treats THIS agent. off=ignore · observe=watch silently (no inbox alert) · alert=notify the inbox on a new problem · suggest=also offer a one-click fix · autofix=auto-apply allowlisted safe restarts. Applies LIVE — the daemon re-reads it each cycle; does NOT restart the agent.")}</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <select id="monModeSel" onchange="saveMonitorMode(this.value)">${mmOpts}</select>
+        <span class="s" id="monModeMsg" style="color:var(--mut)"></span></div>
+      <div class="s" style="margin-top:5px">Shown read-only in the Monitor view; set it here. Applies immediately — no restart.</div></div>
     <div class="card" style="margin-bottom:12px"><div class="k">presets${ic("One-click config profiles. Clicking one FILLS the fields below (brain/mode/etc.) for you to review — nothing is applied until you Save.")}</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${presetBtns||"<span class='s'>none</span>"}</div></div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><span class="seg"><button class="segb ${_cfgAdvanced?"":"sel"}" onclick="setCfgAdv(false)">Simple</button><button class="segb ${_cfgAdvanced?"sel":""}" onclick="setCfgAdv(true)">Advanced</button></span>
@@ -1086,9 +1100,8 @@ async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b
     h+=`<div class="card" style="margin-bottom:8px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <b style="color:var(--tx)">${esc(aid)}</b><span class="s">${stat}</span>
       <span style="flex:1"></span>
-      <span class="s">mode${ic(MONMODE_HELP)}</span>
-      <select class="seg" onchange="monMode('${esc(aid)}',this.value)" ${d.controllable?"":"disabled"} style="padding:3px 6px">
-        ${MONMODES.map(m=>`<option value="${m}"${a.mode===m?" selected":""}>${m}</option>`).join("")}</select></div>`;
+      <span class="s">mode: <b style="color:var(--tx)">${esc(a.mode||"alert")}</b>${ic(MONMODE_HELP)}</span>
+      <span class="s" style="color:var(--accent);cursor:pointer" onclick="pick('${esc(aid)}');tab('config')" title="change the alert mode in this agent's Config tab">⚙ Config</span></div>`;
     if(fs.length){h+=fs.map(f=>monFinding(aid,f)).join("");}
     else{h+=`<div class="s" style="color:var(--ok);margin-top:6px">✓ healthy — no findings</div>`;}
     h+=`</div>`;}
@@ -1192,6 +1205,11 @@ function renderFleetHealth(){
 function renderOverview(){
   if(curview!=="overview")return;
   renderFleetHealth();
+  // fleet map (topology folded into the cockpit) — render when shown
+  const fmw=document.getElementById("fleetmapwrap");
+  if(fmw){fmw.style.display=_fleetMapOpen?"block":"none";
+    const ft=document.getElementById("fmtoggle");if(ft)ft.textContent=_fleetMapOpen?"— topology · click a node to open an agent (hide)":"(show)";
+    if(_fleetMapOpen)loadGraph();}
   const win=document.getElementById("win").value;
   const u=((ov.usage||{})[win])||{fleet:{},agents:{}};
   const F=u.fleet||{};const cap=ov.cap||{};
@@ -1307,7 +1325,7 @@ function renderGraph(d){
   }
   G.width(box.clientWidth).height(box.clientHeight).graphData(d);
 }
-window.addEventListener("resize",()=>{if(G&&curview==="graph"){const b=document.getElementById("graphbox");G.width(b.clientWidth).height(b.clientHeight);}});
+window.addEventListener("resize",()=>{if(G&&curview==="overview"&&_fleetMapOpen){const b=document.getElementById("graphbox");if(b)G.width(b.clientWidth).height(b.clientHeight);}});
 /* ---------- theme / chrome ---------- */
 function applyThemeBtn(){const b=document.getElementById("themebtn");if(b)b.textContent=theme()==="light"?"🌙":"☀";}
 function toggleTheme(){document.body.classList.toggle("light");try{localStorage.setItem("console_theme",theme());}catch(e){}applyThemeBtn();
@@ -1319,7 +1337,8 @@ function toggleRail(){const c=document.body.classList.toggle("railcollapsed");tr
 try{if(localStorage.getItem("rail_collapsed"))document.body.classList.add("railcollapsed");}catch(e){}
 document.getElementById("search").addEventListener("input",render);
 const _urlView=new URLSearchParams(location.search).get("view");
-try{view((["overview","agents","graph"].includes(_urlView)?_urlView:null)||localStorage.getItem("console_view")||"overview");}catch(e){view("overview");}
+const _VIEWS=["overview","agents","monitor","activity","models"];   // "graph" folded into overview
+try{let _v=(_VIEWS.includes(_urlView)?_urlView:null)||localStorage.getItem("console_view")||"overview";if(!_VIEWS.includes(_v))_v="overview";view(_v);}catch(e){view("overview");}
 load();
 setInterval(()=>{if(curview==="overview")loadOverview();},15000);
 let _lastA="";
