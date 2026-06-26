@@ -1107,10 +1107,13 @@ def cmd_fleet(args):
     Usage: enclave fleet [list] [--json] | open|up|down|restart|kick|logs <id> | send <id> <text>
            enclave fleet watch <queue-dir> [--stacks-root D] [--interval S] [--once]
            enclave fleet control-watch <queue-dir> [--interval S] [--once]
+           enclave fleet monitor [<control-queue>] [--interval S] [--once] [--dry-run]
     `watch` runs the spawn watcher: a host daemon that turns specs dropped in <queue-dir>/incoming into
     running deployments (the manager-spawns-agents pattern — see docs/SPAWN.md).
     `control-watch` runs the control watcher: the lifecycle twin — specs request up|down|restart|kick|
-    logs|send against an EXISTING agent (the manager-controls-pods pattern — see docs/CONTROL.md)."""
+    logs|send against an EXISTING agent (the manager-controls-pods pattern — see docs/CONTROL.md).
+    `monitor` runs the fleet health monitor (Agent SRE): off-Opus daemon that detects when an agent is
+    off, troubleshoots to a root cause, and per MONITOR_MODE alerts/suggests/auto-fixes (see docs/MONITOR.md)."""
     if args and args[0] == "watch":
         script = REPO / "platform" / "agentd" / "spawn_watcher.py"
         if not script.exists():
@@ -1120,6 +1123,11 @@ def cmd_fleet(args):
         script = REPO / "platform" / "agentd" / "control_watcher.py"
         if not script.exists():
             sys.exit("control_watcher.py not found in this build.")
+        sys.exit(subprocess.run([sys.executable, str(script), *args[1:]]).returncode)
+    if args and args[0] == "monitor":
+        script = REPO / "platform" / "agentd" / "fleet_monitor.py"
+        if not script.exists():
+            sys.exit("fleet_monitor.py not found in this build.")
         sys.exit(subprocess.run([sys.executable, str(script), *args[1:]]).returncode)
     script = REPO / "platform" / "agentd" / "fleet.py"
     if not script.exists():

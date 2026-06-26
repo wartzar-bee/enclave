@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.enclave.monitor — the fleet health monitor (Agent SRE) host daemon.
+
+  Off-Opus by construction: it imports the pure-stdlib diagnostics engine + a runbook of deterministic
+  playbooks, watches every agent, and per each agent's MONITOR_MODE (off|observe|alert|suggest|autofix)
+  writes alerts to that agent's state/escalations.log (→ the dashboard "Needs your decision" inbox) and,
+  when allowlisted, stages a remediation into the SAME __FLEET_ROOT__/_control queue org.enclave.control
+  drains. It NEVER touches docker itself — control_watcher is the only docker-capable actor.
+
+  Install (operator, on the host):
+    1. Edit the three __PLACEHOLDER__ paths below to match this host.
+    2. cp deploy/launchd/org.enclave.monitor.plist ~/Library/LaunchAgents/
+    3. launchctl load -w ~/Library/LaunchAgents/org.enclave.monitor.plist
+    4. Tail the StandardOutPath .out file below.
+  Unload:  launchctl unload -w ~/Library/LaunchAgents/org.enclave.monitor.plist
+
+  Tuning lives in policies/monitor.json (env ENCLAVE_MONITOR_POLICY); host bridges to probe come from
+  ENCLAVE_DOCTOR_BRIDGES (same env /api/doctor uses). Start with MONITOR_DRYRUN=1 to observe with zero
+  side effects, then remove it.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.enclave.monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>__ENCLAVE_REPO__/bin/enclave</string>
+        <string>fleet</string>
+        <string>monitor</string>
+        <string>__FLEET_ROOT__/_control</string>
+        <string>--interval</string>
+        <string>60</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Same stacks roots fleet.py/spawn/control use, so snapshot() discovers the whole fleet. -->
+        <key>ENCLAVE_STACKS_ROOTS</key>
+        <string>__FLEET_ROOT__</string>
+        <!-- Host bridges to health-check (name:host:port,…); leave unset for none. -->
+        <key>ENCLAVE_DOCTOR_BRIDGES</key>
+        <string></string>
+        <!-- Uncomment to observe with zero side effects (no enqueue) while you tune the policy: -->
+        <!-- <key>MONITOR_DRYRUN</key><string>1</string> -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/org.enclave.monitor.out</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/org.enclave.monitor.err</string>
+</dict>
+</plist>

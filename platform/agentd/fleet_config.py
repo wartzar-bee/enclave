@@ -31,7 +31,9 @@ ALLOWED_KEYS = {
     "DELEGATION_ENFORCE", "DELEGATION_MAX_CHARS", "PERMISSION", "WORKDIR",
     "LOCAL_BRAIN_MODEL", "LOCAL_BRAIN_BASE", "LOCAL_REQ_TIMEOUT",
     "GUARD_ALLOW_GIT", "GUARD_EGRESS_ENFORCE",
+    "MONITOR_MODE",   # fleet health monitor policy for this agent (off|observe|alert|suggest|autofix)
 }
+MONITOR_MODES = {"off", "observe", "alert", "suggest", "autofix"}
 BRAINS = {"claude", "api", "local", "optimize"}
 MODES = {"autonomous", "chat", "scheduled"}
 
@@ -131,6 +133,8 @@ def _validate(updates):
         raise ValueError(f"BRAIN must be one of {sorted(BRAINS)}")
     if "SUPERVISE" in updates and updates["SUPERVISE"] not in ("auto", "off"):
         raise ValueError("SUPERVISE must be 'auto' or 'off'")
+    if "MONITOR_MODE" in updates and updates["MONITOR_MODE"] not in MONITOR_MODES:
+        raise ValueError(f"MONITOR_MODE must be one of {sorted(MONITOR_MODES)}")
     for intk in ("INTERVAL_SECONDS", "CONTINUOUS_COOLDOWN", "TICK_TIMEOUT", "LOCAL_REQ_TIMEOUT",
                  "DELEGATION_MAX_CHARS"):
         if intk in updates:
