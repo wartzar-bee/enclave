@@ -58,6 +58,15 @@ def _uptime_s(started):
 TOKEN = os.environ.get("CONSOLE_TOKEN", "")
 PROBE_SECS = 4.0
 COST_SECS = float(os.environ.get("CONSOLE_COST_SECS", "45"))  # cost changes per-tick (minutes), not per-4s
+
+# Fleet health monitor (the Agent SRE daemon) — the console READS its heartbeat/state and, when the host
+# wires a launch command, can start/stop it. Paths default next to ~/.config/enclave; the studio launcher
+# overrides them. ENCLAVE_MONITOR_LAUNCH = the shell command that (re)starts the daemon detached (e.g.
+# `bash …/tools/studio-monitor.sh`); absent → the Monitor view is read-only (product stays generic).
+_CFGDIR = pathlib.Path.home() / ".config" / "enclave"
+MON_HEARTBEAT = pathlib.Path(os.environ.get("ENCLAVE_MONITOR_HEARTBEAT", str(_CFGDIR / "monitor-heartbeat.json")))
+MON_STATE = pathlib.Path(os.environ.get("ENCLAVE_MONITOR_STATE", str(_CFGDIR / "monitor-state.json")))
+MON_LAUNCH = os.environ.get("ENCLAVE_MONITOR_LAUNCH", "")  # command to (re)start the daemon; "" = read-only
 _cache = {"agents": {}, "ts": 0}
 _lock = threading.Lock()
 _sessions = {}   # token -> expiry (process-local; re-auth is one POST)
@@ -385,6 +394,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <span class="navtab sel" data-v="overview" onclick="view('overview')">Overview</span>
   <span class="navtab" data-v="agents" onclick="view('agents')">Agents</span>
   <span class="navtab" data-v="graph" onclick="view('graph')">Graph</span>
+  <span class="navtab" data-v="monitor" onclick="view('monitor')">Monitor</span>
   <span class="navtab" data-v="activity" onclick="view('activity')">Audit</span>
   <span class="navtab" data-v="models" onclick="view('models')">Models</span>
   <span id="winwrap"><select id="win" onchange="renderOverview()"><option value="today">Today</option><option value="wtd" selected>Week-to-date</option><option value="7d">Last 7 days</option></select>
@@ -464,6 +474,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <table class="cost"><thead><tr><th>when</th><th>who</th><th>action</th><th>agent</th><th>detail</th></tr></thead><tbody id="auditbody"></tbody></table>
 </div></section>
 <section id="view-models" class="view"><div class="ovwrap"><div id="modelsbox"></div></div></section>
+<section id="view-monitor" class="view"><div class="ovwrap"><div id="monitorbox"></div></div></section>
 </div>
 <script>
 const TOK=new URLSearchParams(location.search).get("token")||"";
@@ -510,9 +521,10 @@ function view(v){curview=v;
   document.getElementById("view-graph").style.display=v==="graph"?"block":"none";
   document.getElementById("view-activity").style.display=v==="activity"?"block":"none";
   document.getElementById("view-models").style.display=v==="models"?"block":"none";
+  document.getElementById("view-monitor").style.display=v==="monitor"?"block":"none";
   document.getElementById("winwrap").style.display=v==="overview"?"":"none";
   try{localStorage.setItem("console_view",v);}catch(e){}
-  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else if(v==="activity"){loadActivity();}else if(v==="models"){loadModels();}else{render();}
+  if(v==="overview"){loadOverview();}else if(v==="graph"){loadGraph();}else if(v==="activity"){loadActivity();}else if(v==="models"){loadModels();}else if(v==="monitor"){loadMonitor();}else{render();}
 }
 /* ---------- canonical status model (ONE source of truth — rail, detail, table, graph) ---------- */
 const STATUS={
@@ -914,6 +926,75 @@ async function loadModels(){const b=document.getElementById("modelsbox");if(!b)r
       (info.ranked||[]).map(s=>`<tr><td style="text-align:left" class="mono">${esc(s.model)}${s.model===info.recommend?' <span style="color:var(--ok)">★</span>':""}</td><td>${s.score}</td><td>${s.p50}s</td><td style="text-align:left" class="s">${Object.keys(s.cats||{}).map(c=>c+":"+Math.round(s.cats[c])).join("  ")}</td></tr>`).join("")+
       `</tbody></table></div>`;}
   b.innerHTML=h;}
+/* ---------- Monitor view (D2a: the Agent SRE — daemon liveness, live findings, mode control) ---------- */
+const MONSEV={high:"--err",med:"--idle",low:"--mut"};
+const MONMODES=["off","observe","alert","suggest","autofix"];
+const MONMODE_HELP="off: ignore · observe: watch silently (no inbox alert) · alert: notify on a new problem · suggest: also stage a one-click fix · autofix: auto-apply allowlisted fixes";
+function monAgo(s){if(s==null)return"never";s=Math.round(s);if(s<90)return s+"s ago";if(s<5400)return Math.round(s/60)+"m ago";return Math.round(s/3600)+"h ago";}
+let _monTimer=null;
+async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b)return;
+  if(!b.dataset.init)b.innerHTML='<div class="sectit">loading…</div>';
+  let d={};try{d=await(await fetch(qs("/api/monitor"))).json();}catch(e){b.innerHTML='<div class="sectit">Fleet health monitor</div><div class="card"><div class="s" style="color:var(--err)">monitor API unavailable</div></div>';return;}
+  b.dataset.init="1";
+  const hb=d.heartbeat||{},ags=hb.agents||{},fle=hb.fleet_findings||[];
+  const running=d.running,col=running?"--ok":(d.pid_alive?"--idle":"--err");
+  const label=running?"running":(d.pid_alive?"stale":"stopped");
+  const attn=hb.agents_need_attention||0,scanned=hb.agents_scanned||0;
+  // --- status pill + controls ---
+  let h=`<div class="sectit">Fleet health monitor <span class="s" style="font-weight:400">— the Agent SRE: detects problems, says the likely cause &amp; fix, alerts the inbox${ic("An off-Opus daemon that polls every agent each cycle, matches anomalies against a runbook of root-cause playbooks, and (per each agent\\'s MONITOR_MODE) alerts the dashboard inbox. It detects + enqueues only — a separate watcher is the only actor that touches docker.")}</span></div>`;
+  h+=`<div class="card" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px">
+    <span style="display:flex;align-items:center;gap:7px"><span style="width:9px;height:9px;border-radius:50%;background:var(${col});display:inline-block"></span><b style="text-transform:uppercase;font-size:12px;letter-spacing:.04em">${label}</b></span>
+    <span class="s">${attn} need attention</span><span class="s">·</span>
+    <span class="s">${scanned} agents scanned</span><span class="s">·</span>
+    <span class="s">last cycle ${monAgo(d.age_s)}</span><span class="s">·</span>
+    <span class="s">mode: <b>${hb.dryrun?"dry-run":"live"}</b></span>
+    <span class="s">·</span><span class="s">every ${hb.interval_s||"?"}s</span>`;
+  if(d.controllable){h+=`<span style="flex:1"></span>
+    <button class="btn" onclick="monCtl('start',false)">${running?"Restart":"Start"}</button>
+    <button class="btn" onclick="monCtl('start',true)" title="run alert-only with zero side effects">Start dry-run</button>
+    <button class="btn" onclick="monCtl('stop')" ${running||d.pid_alive?"":"disabled"}>Stop</button>`;}
+  else{h+=`<span style="flex:1"></span><span class="s" style="color:var(--mut)">control not wired (read-only)</span>`;}
+  h+=`<span id="monmsg" class="s" style="color:var(--mut)"></span></div>`;
+  // --- fleet-level findings (bridges etc.) ---
+  if(fle.length){h+=`<div class="sectit" style="font-size:13px">Fleet-level</div>`+fle.map(f=>monFinding("_fleet",f)).join("");}
+  // --- per-agent finding cards ---
+  const aids=Object.keys(ags).sort((x,y)=>(ags[y].findings.length-ags[x].findings.length)||x.localeCompare(y));
+  h+=`<div class="sectit" style="font-size:13px;margin-top:14px">Agents</div>`;
+  if(!aids.length){h+=`<div class="card"><div class="s">no agents scanned yet — start the monitor (or wait one cycle)</div></div>`;}
+  for(const aid of aids){const a=ags[aid],fs=a.findings||[];
+    const stat=a.up?'<span style="color:var(--ok)">●</span> up':'<span style="color:var(--off)">●</span> '+esc(a.status||"down");
+    h+=`<div class="card" style="margin-bottom:8px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <b style="color:var(--tx)">${esc(aid)}</b><span class="s">${stat}</span>
+      <span style="flex:1"></span>
+      <span class="s">mode${ic(MONMODE_HELP)}</span>
+      <select class="seg" onchange="monMode('${esc(aid)}',this.value)" ${d.controllable?"":"disabled"} style="padding:3px 6px">
+        ${MONMODES.map(m=>`<option value="${m}"${a.mode===m?" selected":""}>${m}</option>`).join("")}</select></div>`;
+    if(fs.length){h+=fs.map(f=>monFinding(aid,f)).join("");}
+    else{h+=`<div class="s" style="color:var(--ok);margin-top:6px">✓ healthy — no findings</div>`;}
+    h+=`</div>`;}
+  // --- recovered + remediation history ---
+  if((d.recovered||[]).length){h+=`<div class="sectit" style="font-size:13px;margin-top:14px">Recently recovered</div><div class="card">`+
+    d.recovered.map(r=>`<div class="s"><span style="color:var(--ok)">✓</span> <b>${esc(r.agent)}</b> — ${esc(r.key)} cleared <span style="color:var(--mut)">${esc((r.recovered_at||"").replace("T"," ").replace("Z",""))}</span></div>`).join("")+`</div>`;}
+  const hist=d.history||{};const histAids=Object.keys(hist);
+  if(histAids.length){h+=`<div class="sectit" style="font-size:13px;margin-top:14px">Remediation history</div><div class="card">`+
+    histAids.map(aid=>hist[aid].map(r=>`<div class="s"><b>${esc(aid)}</b> · ${esc(r.action||"")} <span style="color:var(--mut)">(${esc(r.playbook||"")}, ${esc(r.result||"")}${r.dryrun?", dry-run":""})</span> <span style="color:var(--mut)">${esc((r.ts||"").replace("T"," ").replace("Z",""))}</span></div>`).join("")).join("")+`</div>`;}
+  b.innerHTML=h;}
+function monFinding(aid,f){const c=MONSEV[f.severity]||"--mut";
+  return `<div style="margin-top:7px;padding:8px 10px;border-left:3px solid var(${c});background:var(--hover);border-radius:0 6px 6px 0">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b class="s" style="color:var(--tx)">${esc(f.title||f.key)}</b>
+      <span class="s" style="color:var(${c});text-transform:uppercase;font-size:10px">${esc(f.severity||"")}</span>
+      ${f.confidence?`<span class="s">confidence ${esc(f.confidence)}</span>`:""}
+      ${f.escalated?'<span class="s" style="color:var(--idle)">⚠ alerted inbox</span>':'<span class="s" style="color:var(--mut)">observed</span>'}</div>
+    <div class="s" style="margin-top:3px">${esc(f.cause||"")}${f.evidence?` <span style="color:var(--mut)">— ${esc(f.evidence)}</span>`:""}</div>
+    ${f.recommendation?`<div class="s" style="margin-top:3px;color:var(--accent)">→ ${esc(f.recommendation)}</div>`:""}</div>`;}
+async function monMode(aid,val){const m=document.getElementById("monmsg");if(m){m.textContent="setting "+aid+" → "+val+"…";}
+  const r=await postR("/api/monitor/control",{action:"mode",id:aid,value:val});
+  if(m){m.textContent=r&&r.ok?(aid+" → "+val):("error: "+((r&&r.error)||"failed"));}
+  setTimeout(loadMonitor,600);}
+async function monCtl(action,dryrun){const m=document.getElementById("monmsg");if(m){m.textContent=action+(dryrun?" (dry-run)":"")+"…";}
+  const r=await postR("/api/monitor/control",{action,dryrun:!!dryrun});
+  if(m){m.textContent=r&&r.ok?("monitor "+action+" ok"):("error: "+((r&&r.error)||"failed"));}
+  setTimeout(loadMonitor,1500);}
 /* ---------- Skills tab (P5: learned-memory vault) ---------- */
 async function renderSkills(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading…</div>';
   let d={};try{d=await(await fetch(qs(`/api/skills?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">skills unavailable (agent has no home on this host)</div>';return;}
@@ -1501,6 +1582,48 @@ class H(BaseHTTPRequestHandler):
             if not str(f).startswith(str(skdir) + os.sep) or not f.is_file():
                 return self._send(404, "text/plain", "not found")
             return self._send(200, "text/plain; charset=utf-8", f.read_text(errors="ignore")[:20000])
+        if p == "/api/monitor":   # D2a: fleet health monitor (Agent SRE) — daemon liveness + live findings
+            hb = {}
+            if MON_HEARTBEAT.exists():
+                try:
+                    hb = json.loads(MON_HEARTBEAT.read_text(errors="ignore") or "{}")
+                except Exception:
+                    hb = {}
+            # daemon liveness: the recorded pid is alive AND the heartbeat is fresh (within a few cycles).
+            pid = hb.get("pid")
+            alive = False
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    os.kill(pid, 0); alive = True          # process exists and is ours
+                except PermissionError:
+                    alive = True                            # exists, owned by another user
+                except (ProcessLookupError, OSError):
+                    alive = False                           # no such process
+            age = (time.time() - hb["epoch"]) if isinstance(hb.get("epoch"), (int, float)) else None
+            interval = hb.get("interval_s", 60) or 60
+            stale = age is None or age > max(interval * 3, 180)
+            # recovery history + remediations from the dedup state machine
+            history, recovered = {}, []
+            if MON_STATE.exists():
+                try:
+                    sd = json.loads(MON_STATE.read_text(errors="ignore") or "{}")
+                    for aid, rec in (sd.get("agents") or {}).items():
+                        rem = rec.get("remediations") or []
+                        if rem:
+                            history[aid] = rem[-10:][::-1]
+                        for key, al in (rec.get("alerts") or {}).items():
+                            if al.get("state") == "recovered":
+                                recovered.append({"agent": aid, "key": key,
+                                                  "recovered_at": al.get("recovered_at", "")})
+                except Exception:
+                    pass
+            recovered.sort(key=lambda x: x["recovered_at"], reverse=True)
+            return self._send(200, "application/json", json.dumps({
+                "running": alive and not stale, "pid_alive": alive, "stale": stale,
+                "age_s": round(age, 1) if age is not None else None,
+                "controllable": bool(MON_LAUNCH), "heartbeat": hb,
+                "history": history, "recovered": recovered[:30],
+            }))
         if p == "/api/stream":
             return self._stream()
         return self._send(404, "application/json", '{"error":"not found"}')
@@ -1664,6 +1787,50 @@ class H(BaseHTTPRequestHandler):
                 note = "queued — spawn watcher will build + start it" if watching else \
                        f"queued at {dest} — NOTE: no spawn watcher detected on this queue (run `enclave fleet watch {qroot}`)"
                 return self._send(200, "application/json", json.dumps({"ok": True, "queued": str(dest), "note": note}))
+            except Exception as e:
+                return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/monitor/control":   # D2a: start/stop the SRE daemon + per-agent MONITOR_MODE (no restart)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            action = d.get("action", "")
+            # (a) set a single agent's MONITOR_MODE — patches agent.env WITHOUT a restart (the daemon
+            # re-reads it live every cycle), so flipping a running agent's mode never bounces it.
+            if action == "mode":
+                import fleet_config
+                aid, val = d.get("id", ""), str(d.get("value", ""))
+                if not fleet._SAFE.match(aid or "") or val not in fleet_config.MONITOR_MODES:
+                    return self._send(400, "application/json", '{"error":"bad id or mode"}')
+                with _lock:
+                    a = (_cache.get("agents") or {}).get(aid)
+                home = a.get("home") if a else None
+                if not home:
+                    return self._send(400, "application/json", '{"error":"agent has no home on this host"}')
+                try:
+                    diff = fleet_config.patch_agent_env(home, {"MONITOR_MODE": val}, agent=aid)
+                    fleet._audit("monitor-mode", aid, val)
+                    return self._send(200, "application/json", json.dumps({"ok": True, "changed": bool(diff)}))
+                except Exception as e:
+                    return self._send(500, "application/json", json.dumps({"error": str(e)}))
+            # (b) lifecycle of the daemon itself — host-side only when a launch command is wired in.
+            if action not in ("start", "stop", "restart"):
+                return self._send(400, "application/json", '{"error":"action must be start|stop|restart|mode"}')
+            if not MON_LAUNCH:
+                return self._send(400, "application/json",
+                                  '{"error":"monitor control not wired (set ENCLAVE_MONITOR_LAUNCH)"}')
+            import shlex
+            try:
+                if action == "stop":
+                    subprocess.run(["pkill", "-f", "fleet_monitor.py"], timeout=15)
+                    fleet._audit("monitor-stop", "_fleet", "")
+                    return self._send(200, "application/json", json.dumps({"ok": True, "action": "stop"}))
+                # start / restart — the launcher pkills any existing daemon then relaunches detached.
+                cmd = shlex.split(MON_LAUNCH) + (["--dry-run"] if d.get("dryrun") else [])
+                r = subprocess.run(cmd, timeout=60, capture_output=True, text=True)
+                fleet._audit("monitor-" + action, "_fleet", "dryrun" if d.get("dryrun") else "live")
+                return self._send(200, "application/json", json.dumps(
+                    {"ok": r.returncode == 0, "action": action, "out": (r.stdout or r.stderr)[-400:]}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))
         return self._send(404, "application/json", '{"error":"not found"}')

@@ -39,8 +39,8 @@ from monitor import state as mstate
 from monitor.policy import Policy, MODES
 
 
-def _iso():
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+def _iso(now=None):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
 
 
 def escalate(home, msg):
@@ -65,6 +65,28 @@ def enqueue(control_queue, spec):
     (inc / name).write_text(json.dumps(spec))
 
 
+def heartbeat_path():
+    """Where the daemon publishes its liveness + live-findings snapshot for the dashboard to read.
+    Defaults next to the monitor state so the studio launcher's single env override covers both."""
+    p = os.environ.get("ENCLAVE_MONITOR_HEARTBEAT")
+    if p:
+        return pathlib.Path(p).expanduser()
+    return pathlib.Path(mstate.STATE_PATH).expanduser().parent / "monitor-heartbeat.json"
+
+
+def write_heartbeat(hb, path=None):
+    """Atomic-replace the heartbeat JSON (single writer = the daemon). Fail-soft: a heartbeat write
+    must never take the monitor loop down."""
+    path = pathlib.Path(path or heartbeat_path())
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(hb, indent=1))
+        os.replace(tmp, path)
+    except Exception as e:
+        print(f"[monitor] heartbeat write failed: {e}")
+
+
 def effective_mode(snap_entry, policy):
     m = playbooks.env_get(snap_entry.get("home"), "MONITOR_MODE")
     return m if m in MODES else policy.default_mode()
@@ -79,15 +101,21 @@ def probe_reachable(snap_entry):
 
 
 def cycle(policy, st, control_queue, now=None, dryrun=False, log=print):
-    """One monitoring pass over the whole fleet. Fail-soft per agent — one bad agent never stops the rest."""
+    """One monitoring pass over the whole fleet. Fail-soft per agent — one bad agent never stops the rest.
+    Returns a heartbeat snapshot (live findings per agent) — the daemon publishes it for the dashboard;
+    tests ignore it (the return is side-effect-free)."""
     now = now or time.time()
     snap = fleet.snapshot()
+    hb_agents, fleet_findings = {}, []
 
     # Fleet-level: host-bridge reachability (no single agent home to escalate into → log + state only in D1).
     down = playbooks.check_bridges(os.environ.get("ENCLAVE_DOCTOR_BRIDGES", ""))
     if down:
-        if st.observe("_fleet", {"key": "bridge_down", "severity": "med",
-                                 "cause": "host bridge(s) down: " + ", ".join(down)}, now) == "alert":
+        cause = "host bridge(s) down: " + ", ".join(down)
+        fleet_findings.append({"key": "bridge_down", "title": "Host bridge down", "severity": "med",
+                               "cause": cause, "confidence": "high", "evidence": ", ".join(down),
+                               "recommendation": "restart the bridge service(s) host-side"})
+        if st.observe("_fleet", {"key": "bridge_down", "severity": "med", "cause": cause}, now) == "alert":
             log(f"[monitor] FLEET ALERT bridge(s) down: {', '.join(down)}")
     else:
         for k in st.reconcile_recoveries("_fleet", set(), now):
@@ -95,6 +123,9 @@ def cycle(policy, st, control_queue, now=None, dryrun=False, log=print):
 
     for aid, a in snap.items():
         mode = effective_mode(a, policy)
+        entry = {"mode": mode, "up": bool(a.get("up")), "status": a.get("status"),
+                 "port": a.get("port"), "findings": []}
+        hb_agents[aid] = entry
         if mode == "off":
             continue
         home = a.get("home")
@@ -120,6 +151,12 @@ def cycle(policy, st, control_queue, now=None, dryrun=False, log=print):
 
         for pb, dx, sev in findings:
             decision = st.observe(aid, {"key": pb.key, "severity": sev, "cause": dx.get("cause")}, now)
+            entry["findings"].append({
+                "key": pb.key, "title": pb.title, "severity": sev, "cause": dx.get("cause"),
+                "confidence": dx.get("confidence"), "evidence": dx.get("evidence", ""),
+                "recommendation": dx.get("recommendation"),
+                "escalated": not (mode == "observe" or decision != "alert"),
+            })
             if mode == "observe" or decision != "alert":
                 continue
             escalate(home, f"[monitor:{pb.key}] {aid} — {pb.title}: {dx['cause']} "
@@ -136,6 +173,13 @@ def cycle(policy, st, control_queue, now=None, dryrun=False, log=print):
             log(f"[monitor] RECOVERED {aid} {k}")
 
     st.flush()
+    agents_attn = sum(1 for e in hb_agents.values() if e["findings"]) + (1 if fleet_findings else 0)
+    open_alerts = sum(len(e["findings"]) for e in hb_agents.values()) + len(fleet_findings)
+    return {
+        "ts": _iso(now), "epoch": float(now), "dryrun": bool(dryrun),
+        "agents_scanned": len(snap), "agents_need_attention": agents_attn,
+        "open_alerts": open_alerts, "fleet_findings": fleet_findings, "agents": hb_agents,
+    }
 
 
 def _maybe_autofix(pb, dx, aid, a, home, diag, ctx, st, control_queue, policy, now, dryrun, log):
@@ -175,14 +219,20 @@ def main():
     once = "--once" in args
     dryrun = "--dry-run" in args or os.environ.get("MONITOR_DRYRUN") == "1"
     st = mstate.MonitorState.load()
+    hb_path = heartbeat_path()
     print(f"fleet_monitor: control_queue={control_queue} interval={interval}s once={once} "
-          f"dryrun={dryrun}")
+          f"dryrun={dryrun} heartbeat={hb_path}")
     while True:
         policy = Policy.load()   # reload each cycle so policy edits take effect without a restart
+        hb = {"ts": _iso(), "error": "cycle did not complete"}
         try:
-            cycle(policy, st, control_queue, dryrun=dryrun)
+            hb = cycle(policy, st, control_queue, dryrun=dryrun)
         except Exception as e:
             print(f"[monitor] cycle error: {e}")
+            hb["error"] = str(e)
+        hb.update({"interval_s": interval, "pid": os.getpid(), "once": once,
+                   "default_mode": policy.default_mode()})
+        write_heartbeat(hb, hb_path)
         if once:
             break
         time.sleep(interval)
