@@ -1236,7 +1236,7 @@ async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b
     <button class="btn" onclick="monCtl('start',false)">${running?"Restart":"Start"}</button>
     <button class="btn" onclick="monCtl('start',true)" title="run alert-only with zero side effects">Start dry-run</button>
     <button class="btn" onclick="monCtl('stop')" ${running||d.pid_alive?"":"disabled"}>Stop</button>`;}
-  else{h+=`<span style="flex:1"></span><span class="s" style="color:var(--mut)">control not wired (read-only)</span>`;}
+  else{h+=`<span style="flex:1"></span><span class="s" style="color:var(--mut)">${running?"managed by <span class=\"mono\">enclave console</span> — Start/Stop here disabled":"not running — launch with <span class=\"mono\">enclave console</span> (or set ENCLAVE_MONITOR_LAUNCH)"}</span>`;}
   h+=`<span id="monmsg" class="s" style="color:var(--mut)"></span></div>`;
   // --- host services (bridges agents depend on) — populated async by loadServices() ---
   h+=`<div id="monservices"></div>`;

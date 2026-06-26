@@ -7,6 +7,11 @@ even if prompt-injected.
 
 > Status: **team-private alpha.** Internal team use while we harden it. See "Known gaps" below.
 
+## Requirements
+- **Docker** (Desktop or Engine) — **running**. The agent runs in a container. (`enclave run`/`console` check this and tell you if it's not.)
+- **Python 3** — runs `bin/enclave`. **Git** + access to this private repo.
+- Brain credential: `BRAIN=claude` → the **`claude` CLI** (the `init` wizard runs `claude setup-token`) + a Claude subscription · `api` → an OpenAI-compatible key (e.g. OpenRouter) · `local` → a model server on the host (Ollama/MLX).
+
 ## Quick start
 The repo is **private** — clone with your GitHub access to the org:
 ```bash
@@ -29,6 +34,7 @@ Everything runs through `./bin/enclave` from the deployment folder:
 | Want to… | Command |
 |----------|---------|
 | Start / open the chat | `enclave run` (builds if needed, opens the browser) |
+| Open the dashboard (all agents) | `enclave console` (self-wires; opens the browser) |
 | Stop the agent | `enclave stop` |
 | Watch the runner log | `enclave logs` |
 | Health + recent activity | `enclave status` |
@@ -72,13 +78,16 @@ Every deployment is independent, but you manage them all from one place — no p
   `docker compose ls`): `fleet list` (status / brain / model / chat-port / open-work / liveness, grouped
   by manager), `fleet up|down|restart|logs|send <id>`, `fleet open <id>`. Every mutation is validated
   (id + the compose file must live under `ENCLAVE_STACKS_ROOTS`) and written to an append-only audit log.
-- **`enclave console`** — a web panel: a left **rail of agents** (grouped under their manager — the
-  master-agent→sub-agents hierarchy — with live status dots), a **detail pane** (the agent's real chat
-  embedded, plus Status/Logs), and a **directive box** that wakes the agent's tick. One background thread
-  reads all state off disk into a cached snapshot (it never hammers the agents), pushed to the browser
-  over SSE. Binds `127.0.0.1` only (reach it remotely via an SSH tunnel); optional `CONSOLE_TOKEN` gate;
-  mutations go through the validated `fleet` helper, never direct docker calls.
-  Design notes: `docs/FLEET-CONSOLE-PLAN.md`.
+- **`enclave console`** — a web panel, **fully wired from one command**: it also starts the background
+  services its buttons need (create-agent, apply-fix, health monitor), so you don't run any daemons by
+  hand. Per agent: **Chat · Status · Diagnostics** (cost/context/tools/models, anomalies) **· Config**
+  (brain/mode, and edit the agent's mission/CLAUDE.md live) **· Skills · Logs**, a left **rail** grouped
+  by manager with live status, a per-agent **blocker strip**, a fleet **Monitor** (detect→cause→fix,
+  with one-click Apply / Automate), and a **+ New Agent** form. Binds `127.0.0.1` only (tunnel for
+  remote); optional `CONSOLE_TOKEN` gate; every mutation goes through the validated `fleet` helper, never
+  direct docker. Flags: `--no-watchers` (console only), `--no-monitor`. Agents are discovered under
+  `ENCLAVE_STACKS_ROOTS` (default: this checkout's parent — where `enclave new` puts siblings). Design
+  notes: `docs/FLEET-CONSOLE-PLAN.md`.
 
 ## Running several agents at once
 Each deployment is keyed to its **agent name** (`AGENT_ID`), not its folder — the compose project,

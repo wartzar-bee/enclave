@@ -729,9 +729,18 @@ def _check_chat_js():
         sys.exit("Aborting build — fix the chat UI JavaScript above before deploying.")
 
 
+def _docker_ok():
+    """Preflight: Docker installed AND the daemon reachable — a friendly message, not a raw stack trace."""
+    if not shutil.which("docker"):
+        sys.exit("Docker isn't installed. Install Docker Desktop (https://www.docker.com) and start it, then retry.")
+    if subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+        sys.exit("Docker is installed but the daemon isn't running. Start Docker Desktop (or `dockerd`), then retry.")
+
+
 def cmd_run(args):
     if not (DEPLOY / "docker-compose.yml").exists():
         sys.exit("No docker-compose.yml in the deployment — is this an Enclave checkout/deployment?")
+    _docker_ok()
     home = DEPLOY / "home"
     if not home.exists() or not any(p.name != ".gitkeep" for p in home.iterdir()):
         sys.exit("./home is not configured — run 'enclave init' first.")
@@ -1084,21 +1093,66 @@ def cmd_update(args):
 
 
 def cmd_console(args):
-    """Launch the web fleet console (rail + detail for ALL deployments on this host) + open the browser.
-    Usage: enclave console [--port N] [--no-open]   Env: CONSOLE_TOKEN (optional loopback gate)."""
+    """Launch the web fleet console PLUS the background services that make its buttons work
+    (create-agent, apply-fix, health monitor) — one command = a fully-wired dashboard.
+
+    Usage: enclave console [--port N] [--no-open] [--no-watchers] [--no-monitor]
+      --no-watchers  console only — create-agent & apply-fix stay inert (you run the watchers yourself)
+      --no-monitor   run the watchers but not the health-monitor daemon (Monitor view stays empty)
+    Env: CONSOLE_TOKEN (loopback gate). Agents are discovered under ENCLAVE_STACKS_ROOTS
+    (default: this checkout's parent dir, where `enclave new` puts sibling deployments)."""
+    _docker_ok()
     script = REPO / "platform" / "agentd" / "console.py"
     if not script.exists():
         sys.exit("console.py not found in this build.")
-    port = _flag(args, "--port") or os.environ.get("CONSOLE_PORT") or str(_free_port(8700))
-    url = f"http://127.0.0.1:{port}/"
-    tok = os.environ.get("CONSOLE_TOKEN", "")
-    if tok:
-        url += f"?token={tok}"
+    agentd = REPO / "platform" / "agentd"
+    env = os.environ.copy()
+    # Self-contained defaults so the dashboard is fully wired out of the box (override via env).
+    stacks = env.get("ENCLAVE_STACKS_ROOTS") or str(REPO.parent)   # sibling deployments live here
+    env["ENCLAVE_STACKS_ROOTS"] = stacks
+    root0 = pathlib.Path(stacks.split(":")[0]).expanduser()
+    spawn_q = env.get("ENCLAVE_SPAWN_QUEUE") or str(root0 / "_queue")
+    control_q = env.get("ENCLAVE_CONTROL_QUEUE") or str(root0 / "_control")
+    env["ENCLAVE_SPAWN_QUEUE"], env["ENCLAVE_CONTROL_QUEUE"] = spawn_q, control_q
+    cfgdir = pathlib.Path(env.get("XDG_CONFIG_HOME") or (pathlib.Path.home() / ".config")) / "enclave"
+    env.setdefault("ENCLAVE_MONITOR_HEARTBEAT", str(cfgdir / "monitor-heartbeat.json"))
+    env.setdefault("ENCLAVE_MONITOR_STATE", str(cfgdir / "monitor-state.json"))
+    for q in (spawn_q, control_q):
+        for sub in ("incoming", "processed", "failed"):
+            pathlib.Path(q, sub).mkdir(parents=True, exist_ok=True)
+
+    procs = []   # background services, terminated when the console exits
+
+    def _bg(label, name, *a):
+        try:
+            procs.append((label, subprocess.Popen([sys.executable, str(agentd / name), *a], env=env,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)))
+            return True
+        except Exception as e:
+            print(f"  (couldn't start {name}: {e})"); return False
+
+    if not _has(args, "--no-watchers"):
+        started = []
+        if _bg("create-agent", "spawn_watcher.py", spawn_q): started.append("create-agent")
+        if _bg("apply-fix", "control_watcher.py", control_q): started.append("apply-fix/lifecycle")
+        if not _has(args, "--no-monitor") and _bg("monitor", "fleet_monitor.py", control_q, "--interval", "60"):
+            started.append("health-monitor")
+        if started:
+            print("Background services started: " + ", ".join(started))
+
+    port = _flag(args, "--port") or env.get("CONSOLE_PORT") or str(_free_port(8700))
+    tok = env.get("CONSOLE_TOKEN", "")
+    url = f"http://127.0.0.1:{port}/" + (f"?token={tok}" if tok else "")
     if not _has(args, "--no-open"):
         import threading as _t
         _t.Timer(1.5, lambda: _open_browser(url)).start()
     print(f"Fleet console → {url}  (Ctrl-C to stop)")
-    subprocess.run([sys.executable, str(script), "--port", str(port)])
+    try:
+        subprocess.run([sys.executable, str(script), "--port", str(port)], env=env)
+    finally:
+        for _label, p in procs:
+            try: p.terminate()
+            except Exception: pass
 
 
 def cmd_fleet(args):
