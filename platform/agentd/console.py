@@ -770,23 +770,33 @@ function render(){
 function setBar(a){bm.innerHTML=a?`${statusPill(a)} · <span class="mono">${esc(a.status)}</span> · :${a.port}`:"";}
 function pick(id){sel=id;if(curview!=="agents")view("agents");render();const a=agents[id];bt.textContent=id;setBar(a);tab(curtab);loadAgBlockers();}
 /* ---------- per-agent blocker strip — visible on EVERY tab of the selected agent ---------- */
+/* DEDUPED by class (a recurring monitor alert like context_bloat fires every tick → collapse to one
+   row + ×count), capped + height-bounded so it never buries the tab content (e.g. the chat iframe). */
+let _blkOpen=false;
 async function loadAgBlockers(){const b=document.getElementById("agblockers");if(!b)return;
   if(!sel){b.innerHTML="";b.style.cssText="";return;}
   const aid=sel;let items=[],findings=[];
   try{items=(((await(await fetch(qs("/api/escalations"))).json()).items)||[]).filter(x=>x.agent===aid);}catch(_){}
   try{const ag=(((await(await fetch(qs("/api/monitor"))).json()).heartbeat||{}).agents||{})[aid];findings=(ag&&ag.findings)||[];}catch(_){}
   if(sel!==aid)return;   // selection changed mid-fetch
-  const rows=[];
-  items.forEach(it=>rows.push({col:"--err",lbl:it.kind==="approval"?"Needs your approval":"Escalation",txt:it.text}));
-  findings.filter(f=>f.severity==="high"||f.escalated).forEach(f=>rows.push({
-    col:MONSEV[f.severity]||"--idle",lbl:f.title||f.key,
-    txt:(f.cause||"")+(f.recommendation?" → "+f.recommendation:""),cfg:true}));
+  const map=new Map();   // class-key -> {col,lbl,txt,ts,n,cfg}
+  items.forEach(it=>{const t=it.text||"";const tag=t.match(/\[([^\]]+)\]/);   // e.g. [monitor:context_bloat]
+    const key=(it.kind==="approval"?"appr:":"esc:")+(tag?tag[1]:t.slice(0,40));
+    const e=map.get(key)||{col:"--err",lbl:it.kind==="approval"?"Needs your approval":"Escalation",txt:t,ts:it.ts||"",n:0,cfg:tag&&/^monitor:/.test(tag[1])};
+    e.n++;if((it.ts||"")>=e.ts){e.ts=it.ts||"";e.txt=t;}map.set(key,e);});
+  findings.filter(f=>f.severity==="high"||f.escalated).forEach(f=>{   // monitor findings are already keyed
+    map.set("mon:"+f.key,{col:MONSEV[f.severity]||"--idle",lbl:f.title||f.key,
+      txt:(f.cause||"")+(f.recommendation?" → "+f.recommendation:""),ts:"~",n:1,cfg:true});});
+  const rows=[...map.values()].sort((a,b)=>(b.ts||"").localeCompare(a.ts||""));
   if(!rows.length){b.innerHTML="";b.style.cssText="";return;}
-  b.style.cssText="padding:8px 12px 0";
-  b.innerHTML=rows.map(x=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:5px;border-left:3px solid var(${x.col});background:var(--hover);border-radius:0 6px 6px 0">
-    <span style="color:var(--idle)">⚠</span><b class="s" style="color:var(--tx);white-space:nowrap">${esc(x.lbl)}</b>
-    <span class="s" style="color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((x.txt||"").slice(0,200))}</span>
-    ${x.cfg?'<span style="flex:1"></span><button class="btn" style="padding:2px 8px;font-size:11px" onclick="tab(\'config\')" title="set how the monitor handles this">⚙ handle</button>':"<span style=\"flex:1\"></span>"}</div>`).join("");}
+  const show=_blkOpen?rows:rows.slice(0,3),more=rows.length-show.length;
+  b.style.cssText="padding:8px 12px 0;max-height:30vh;overflow:auto";
+  b.innerHTML=show.map(x=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:5px;border-left:3px solid var(${x.col});background:var(--hover);border-radius:0 6px 6px 0">
+    <span style="color:var(--idle)">⚠</span><b class="s" style="color:var(--tx);white-space:nowrap">${esc(x.lbl)}${x.n>1?` <span style="color:var(--idle)">×${x.n}</span>`:""}</b>
+    <span class="s" style="color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((x.txt||"").slice(0,160))}</span>
+    <span style="flex:1"></span>${x.cfg?'<button class="btn" style="padding:2px 8px;font-size:11px" onclick="tab(\'config\')" title="set how the monitor handles this">⚙ handle</button>':""}</div>`).join("")
+    +(more>0?`<div class="s" style="padding:2px 10px 6px;cursor:pointer;color:var(--mut)" onclick="_blkOpen=true;loadAgBlockers()">+${more} more issue${more>1?"s":""}…</div>`
+      :(_blkOpen&&rows.length>3?`<div class="s" style="padding:2px 10px 6px;cursor:pointer;color:var(--mut)" onclick="_blkOpen=false;loadAgBlockers()">collapse</div>`:""));}
 function openChat(){if(sel)window.open("http://127.0.0.1:"+agents[sel].port+"/","_blank");}
 function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);window._logTimer=null;}
   document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("sel",e.dataset.t===t));
