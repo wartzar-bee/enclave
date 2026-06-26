@@ -178,6 +178,91 @@ def _alerts(snap, wtd, cap):
     return al
 
 
+def _tail_lines(path, n):
+    try:
+        return path.read_text(errors="ignore").splitlines()[-n:]
+    except Exception:
+        return []
+
+
+def _agent_activity(home):
+    """Per-agent LIVE cockpit — what is THIS agent doing right now? Reads its own state files (no docker,
+    no agent call): the live tool-event stream, tick liveness, current focus, work queue, recent ticks."""
+    st = home / "state"
+    out = {"ticking": False, "tick_status": {}, "focus": "", "work": {"doing": [], "todo": [], "done": 0},
+           "events": [], "activity": [], "recent_ticks": [], "loop": {}}
+    now = time.time()
+    # --- live tick state: last 'tick start' with no 'tick end' after it = a tick is running ---
+    rl = home / "logs" / "runner.log"
+    starts = ends = 0
+    last_tick_ts = None
+    for ln in _tail_lines(rl, 400):
+        if "tick start" in ln:
+            starts += 1; ends = 0
+            m = re.match(r"^(\S+)", ln)
+            last_tick_ts = m.group(1) if m else last_tick_ts
+        elif "tick end" in ln or "tick TIMED OUT" in ln:
+            ends += 1
+    out["ticking"] = starts > 0 and ends == 0
+    out["last_tick_start"] = last_tick_ts
+    # --- live tool-event stream (events.jsonl: {ts,event,tool,summary}) — the "what's it doing NOW" feed ---
+    evs = []
+    for ln in _tail_lines(st / "events.jsonl", 40):
+        try:
+            e = json.loads(ln)
+            if e.get("event") == "tool":
+                evs.append({"ts": e.get("ts"), "tool": e.get("tool"), "summary": (e.get("summary") or "")[:160]})
+        except Exception:
+            pass
+    out["events"] = evs[-18:][::-1]
+    if evs and isinstance(evs[-1].get("ts"), (int, float)):
+        out["last_event_age_s"] = round(now - evs[-1]["ts"], 1)
+    # --- current focus: the rollup head (the agent's own "what I'm working on") ---
+    rollup = st / "rollup.md"
+    if rollup.exists():
+        txt = rollup.read_text(errors="ignore")
+        # skip a leading title line, take the first ~700 chars of real content
+        body = re.sub(r"^#.*\n", "", txt, count=1).strip()
+        out["focus"] = body[:700]
+    # --- tick-status (continue / idle + waiting_on) ---
+    try:
+        out["tick_status"] = json.loads((st / "tick-status.json").read_text() or "{}")
+    except Exception:
+        out["tick_status"] = {}
+    # --- work queue (work.json = list of {id,text,status}) ---
+    try:
+        work = json.loads((home / "work.json").read_text())
+        if isinstance(work, list):
+            out["work"]["doing"] = [{"id": w.get("id"), "text": (w.get("text") or "")[:200]}
+                                    for w in work if w.get("status") == "doing"][:8]
+            out["work"]["todo"] = [{"id": w.get("id"), "text": (w.get("text") or "")[:200]}
+                                   for w in work if w.get("status") == "todo"][:8]
+            out["work"]["done"] = sum(1 for w in work if w.get("status") == "done")
+    except Exception:
+        pass
+    # --- activity timeline (the agent's own timestamped progress lines) ---
+    out["activity"] = _tail_lines(st / "activity.log", 14)[::-1]
+    # --- recent ticks (from usage.jsonl) + loop config for context ---
+    try:
+        recs = [json.loads(l) for l in _tail_lines(st / "usage.jsonl", 8) if l.strip()]
+        for r in recs[::-1]:
+            rt = r.get("runtime") or {}
+            out["recent_ticks"].append({
+                "ts": r.get("ts"), "reason": r.get("reason"),
+                "rc": r.get("rc"), "subtype": r.get("subtype"),
+                "dur_s": r.get("duration_s"), "tool_calls": rt.get("tool_calls"),
+                "model": (r.get("model") or "").replace("claude-", "")})
+    except Exception:
+        pass
+    try:
+        import fleet_config
+        env = fleet_config.read_config(str(home))["env"]
+        out["loop"] = {k: env.get(k) for k in ("INTERVAL_SECONDS", "CONTINUOUS_COOLDOWN", "SUPERVISE", "BRAIN")}
+    except Exception:
+        pass
+    return out
+
+
 def _monitor_alerts():
     """Surface the fleet health monitor's findings in the Overview banner (not just the Monitor tab /
     per-agent inbox). High-sev escalated findings → named warn; otherwise a one-line count. Fail-soft."""
@@ -557,6 +642,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
       <button class="btn" onclick="act('up')">Start</button>
       <button class="btn" onclick="openChat()">↗ Chat tab</button></div>
     <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
+      <span class="tab" data-t="activity" onclick="tab('activity')">Activity</span>
       <span class="tab" data-t="status" onclick="tab('status')">Status</span>
       <span class="tab" data-t="diag" onclick="tab('diag')">Diagnostics</span>
       <span class="tab" data-t="config" onclick="tab('config')">Config</span>
@@ -688,6 +774,7 @@ function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);wi
   const p=document.getElementById("pane");if(!sel){p.innerHTML='<div class="empty">Select an agent.</div>';return;}
   const a=agents[sel];
   if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/?theme=${theme()}" allow="microphone; clipboard-write"></iframe>`;}
+  else if(t==="activity"){renderActivity();window._logTimer=setInterval(()=>{if(curtab==="activity")renderActivity(true);},3000);}
   else if(t==="status"){
     const lr=(ov.last||{})[sel]||{};const c=(((ov.usage||{}).wtd||{}).agents||{})[sel]||{};
     p.innerHTML=`<div style="padding:16px;overflow:auto">
@@ -1171,6 +1258,41 @@ async function monCtl(action,dryrun){const m=document.getElementById("monmsg");i
   if(m){m.textContent=r&&r.ok?("monitor "+action+" ok"):("error: "+((r&&r.error)||"failed"));}
   setTimeout(loadMonitor,1500);}
 /* ---------- Skills tab (P5: learned-memory vault) ---------- */
+/* ---------- Activity tab — per-agent LIVE cockpit: what is it doing right now? ---------- */
+function _agoS(s){if(s==null)return"";s=Math.round(s);return s<90?s+"s ago":s<5400?Math.round(s/60)+"m ago":Math.round(s/3600)+"h ago";}
+async function renderActivity(quiet){const p=document.getElementById("pane");if(!sel)return;
+  if(!quiet&&p.dataset.act!==sel){p.innerHTML='<div style="padding:16px">loading…</div>';}
+  let d={};try{d=await(await fetch(qs(`/api/activity?id=${encodeURIComponent(sel)}`))).json();}catch(e){if(!quiet)p.innerHTML='<div style="padding:16px;color:var(--err)">activity unavailable</div>';return;}
+  if(d.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(d.error)+'</div>';return;}
+  p.dataset.act=sel;
+  const ts=d.tick_status||{},live=d.ticking;
+  const dot=live?'<span style="color:var(--ok)">●</span> ticking now':(ts.status==="idle"?'<span style="color:var(--idle)">●</span> idle'+(ts.waiting_on?" — waiting on "+esc(ts.waiting_on):""):'<span style="color:var(--off)">●</span> between ticks');
+  const lp=d.loop||{};
+  const evs=(d.events||[]).map(e=>`<div class="s" style="display:flex;gap:8px;padding:2px 0"><span class="mono" style="color:var(--accent);min-width:46px">${esc(e.tool||"")}</span><span style="color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.summary||"")}</span></div>`).join("")||'<div class="s" style="color:var(--mut)">no recent tool events</div>';
+  const wk=d.work||{};
+  const wrow=(it,col)=>`<div class="s" style="padding:2px 0"><span style="color:var(${col})">●</span> <span style="color:var(--mut)">#${it.id}</span> ${esc(it.text||"")}</div>`;
+  const ticks=(d.recent_ticks||[]).map(t=>{const bad=t.rc!=null&&t.rc!==0||t.subtype&&t.subtype!=="success";
+    return `<tr><td class="mono s">${esc((t.ts||"").slice(5,16).replace("T"," "))}</td><td class="s">${esc(t.reason||"")}</td><td class="s">${t.tool_calls!=null?t.tool_calls+" tools":""}</td><td class="s">${t.dur_s!=null?Math.round(t.dur_s)+"s":""}</td><td class="s" style="color:${bad?"var(--err)":"var(--ok)"}">${bad?esc((t.subtype||"rc"+t.rc)):"ok"}</td></tr>`;}).join("");
+  p.innerHTML=`<div style="padding:14px;overflow:auto;height:100%">
+    <div class="card" style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <b style="font-size:14px">${dot}</b>
+      <span class="s">${d.last_event_age_s!=null?"last action "+_agoS(d.last_event_age_s):""}</span>
+      <span style="flex:1"></span>
+      <span class="s" style="color:var(--mut)">loop: every ${lp.CONTINUOUS_COOLDOWN||"?"}s active · ${lp.INTERVAL_SECONDS||"?"}s safeguard · ${esc(lp.BRAIN||"")} · ${esc(lp.SUPERVISE||"")}</span></div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="card"><div class="k">▶ doing right now${ic("Live tool-call stream from the agent\\'s events.jsonl — the literal actions it is taking this tick (newest first). Refreshes every 3s.")}</div>
+        <div style="margin-top:6px;max-height:230px;overflow:auto">${evs}</div></div>
+      <div class="card"><div class="k">focus${ic("The head of the agent\\'s own state/rollup.md — its summary of what it is working on.")}</div>
+        <div class="s" style="margin-top:6px;white-space:pre-wrap;max-height:230px;overflow:auto;color:var(--tx)">${esc(d.focus||"—")}</div></div>
+    </div>
+    <div class="card" style="margin-top:10px"><div class="k">work queue${ic("The agent\\'s own work items (work.json): doing / todo, and a count of completed.")} <span class="s" style="font-weight:400">— ${wk.done||0} done</span></div>
+      <div style="margin-top:6px">${(wk.doing||[]).map(it=>wrow(it,"--ok")).join("")}${(wk.todo||[]).map(it=>wrow(it,"--idle")).join("")||((wk.doing||[]).length?"":'<div class="s" style="color:var(--mut)">queue empty</div>')}</div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+      <div class="card"><div class="k">recent progress${ic("The agent\\'s own timestamped activity.log — what it has shipped recently.")}</div>
+        <div style="margin-top:6px;max-height:220px;overflow:auto">${(d.activity||[]).map(l=>`<div class="s" style="padding:2px 0;color:var(--mut)">${esc(l)}</div>`).join("")||'<div class="s" style="color:var(--mut)">—</div>'}</div></div>
+      <div class="card"><div class="k">recent ticks${ic("The last few ticks: reason, tool-calls, duration, outcome.")}</div>
+        <table class="cost" style="margin-top:6px"><tbody>${ticks||'<tr><td class="s">—</td></tr>'}</tbody></table></div>
+    </div></div>`;}
 async function renderSkills(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading…</div>';
   let d={};try{d=await(await fetch(qs(`/api/skills?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">skills unavailable (agent has no home on this host)</div>';return;}
   if(d.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(d.error)+'</div>';return;}
@@ -1497,6 +1619,16 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, "application/json", json.dumps(diagnostics.from_home(home)))
             except Exception as e:
                 return self._send(200, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/activity":   # per-agent LIVE cockpit: what is this agent doing right now?
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(200, "application/json", json.dumps({"error": "no home dir on this host"}))
+            return self._send(200, "application/json", json.dumps(_agent_activity(pathlib.Path(home))))
         if p == "/api/config":
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
