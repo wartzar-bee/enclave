@@ -231,7 +231,12 @@ def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
     turn = msg
     if images:
         turn = "User attached image(s); read them with the Read tool:\n" + "\n".join(f"- {p}" for p in images) + "\n\n" + msg
-    base = ["claude", "--model", model, "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
+    # --disallowedTools AskUserQuestion: it's INTERACTIVE — in a headless `claude -p` chat turn nothing
+    # can answer it, so the turn stalls until CHAT_TURN_TIMEOUT and the user sees "timed out / failed to
+    # start". Blocking it forces the agent to answer (or ask its clarifying question) in TEXT instead.
+    base = ["claude", "--model", model, "--dangerously-skip-permissions",
+            "--disallowedTools", "AskUserQuestion",
+            "--output-format", "stream-json", "--verbose"]
     stop_file = agent_dir / "state" / "chat-stop"
     log(f"chat turn start (conv={conv_id or '-'}, model={model}): {' '.join((msg or '').split())[:80]}")
     t0 = time.time()
