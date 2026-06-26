@@ -50,6 +50,19 @@ def _i(r, k):
         return 0
 
 
+# Subtypes that are an INTENTIONAL stop, not a failure. error_max_turns = the tick hit its
+# MAX_TURNS budget (rc=1) and stopped on purpose — it did productive work and resumes next tick.
+# Counting it as a "failed tick" makes a deliberate cost cap read as breakage (false Degraded).
+_EXPECTED_STOPS = {"error_max_turns"}
+
+
+def _tick_failed(r):
+    """True only for a REAL process failure — excludes intentional MAX_TURNS caps."""
+    if (r.get("subtype") or "success") in _EXPECTED_STOPS:
+        return False
+    return _i(r, "rc") != 0 or (r.get("subtype") or "success") != "success"
+
+
 def parse_ts(s):
     """ISO-8601 ('2026-06-25T20:14:44Z') or epoch seconds → epoch float. None on failure."""
     if s is None:
@@ -264,7 +277,7 @@ def _anomalies(records, now, window):
                 fix="trim auto-loaded files / memory so the prompt fits without compaction")
 
     # 7) Recent failures (process-level: rc!=0 or non-success subtype).
-    failed = [r for r in records[-10:] if _i(r, "rc") != 0 or (r.get("subtype") or "success") != "success"]
+    failed = [r for r in records[-10:] if _tick_failed(r)]
     if failed:
         sev = "high" if len(failed) >= 3 else "med"
         # A 'no_result' subtype = the tick produced no final result, almost always because it hit its
@@ -411,10 +424,12 @@ def compute(records, now=None, series_n=60, inspect_n=25):
         "turns": [_i(r, "turns") for r in tail],
     }
 
-    failed = [r for r in records if _i(r, "rc") != 0 or (r.get("subtype") or "success") != "success"]
+    failed = [r for r in records if _tick_failed(r)]
+    capped = sum(1 for r in records if (r.get("subtype") or "") in _EXPECTED_STOPS)
     honesty = {
         "ticks_total": total,
         "ticks_failed": len(failed),
+        "ticks_capped": capped,   # hit MAX_TURNS on purpose — counted as success, surfaced separately
         "process_success_pct": round((total - len(failed)) / total * 100.0, 1),
         "verification": "Unknown",
         "verification_note": ("semantic 'did the work pass?' is only tracked for supervised "

@@ -591,6 +591,8 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <button class="btn" onclick="openNew()" title="Create a new agent">+ New Agent</button>
   <span id="bellwrap"><button class="btn" id="bellbtn" title="Notifications" onclick="toggleNotif(event)">🔔<span id="bellbadge"></span></button>
     <div id="notifpanel"></div></span>
+  <button class="btn" id="refreshbtn" title="Refresh now" onclick="refreshNow()">↻</button>
+  <button class="btn" id="pausebtn" title="Pause auto-refresh (read/scroll without the view changing)" onclick="togglePause()">⏸</button>
   <button class="btn" id="themebtn" title="Toggle light/dark" onclick="toggleTheme()">🌙</button>
 </nav>
 <div id="newmodal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50">
@@ -653,8 +655,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
       <button class="btn" onclick="openChat()">↗ Chat tab</button></div>
     <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
       <span class="tab" data-t="activity" onclick="tab('activity')">Activity</span>
-      <span class="tab" data-t="status" onclick="tab('status')">Status</span>
-      <span class="tab" data-t="diag" onclick="tab('diag')">Diagnostics</span>
+      <span class="tab" data-t="diag" onclick="tab('diag')">Status</span>
       <span class="tab" data-t="config" onclick="tab('config')">Config</span>
       <span class="tab" data-t="skills" onclick="tab('skills')">Skills</span>
       <span class="tab" data-t="logs" onclick="tab('logs')">Logs</span></div>
@@ -674,7 +675,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
 const TOK=new URLSearchParams(location.search).get("token")||"";
 const qs=p=>TOK?(p+(p.includes("?")?"&":"?")+"token="+encodeURIComponent(TOK)):p;
 const PAL=["#d97757","#79c0ff","#3fbf6f","#c9a23f","#b58cf0","#e06c9f","#56b6c2","#d0a35c","#8fbf6f","#f08a8a"];
-let agents={},sel=null,curtab="chat",curview="overview",ov={},sortKey="claude",sortDir=-1;
+let agents={},sel=null,curtab="chat",curview="overview",ov={},sortKey="claude",sortDir=-1,_paused=false;
 function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 /* ---------- click (i) -> explanation popover ---------- */
 function showInfo(ev,text){ev.stopPropagation();const old=document.getElementById("infopop");if(old)old.remove();
@@ -683,7 +684,14 @@ function showInfo(ev,text){ev.stopPropagation();const old=document.getElementByI
   p.style.left=Math.max(8,Math.min(r.left,window.innerWidth-p.offsetWidth-12))+"px";
   p.style.top=(r.bottom+window.innerHeight-r.bottom>p.offsetHeight+10?r.bottom+6:r.top-p.offsetHeight-6)+"px";
   setTimeout(()=>document.addEventListener("click",()=>{const e=document.getElementById("infopop");if(e)e.remove();},{once:true}),0);}
-function ic(text){return `<span class="info" onclick="showInfo(event,'${esc(text).replace(/'/g,"\\'")}')">i</span>`;}
+function ic(text){return `<span class="info" data-info="${esc(text)}" onclick="showInfo(event,this.dataset.info)">i</span>`;}
+/* ---------- auto-refresh pause + manual refresh (operator: stop reloading the view I'm reading) ---------- */
+function togglePause(){_paused=!_paused;const b=document.getElementById("pausebtn");
+  if(b){b.textContent=_paused?"▶":"⏸";b.title=_paused?"Auto-refresh PAUSED — click to resume live updates":"Pause auto-refresh (read/scroll without the view changing)";b.classList.toggle("pausedon",_paused);}}
+function refreshNow(){if(curview==="overview"){loadOverview();return;}
+  if(curview==="agents"&&sel){tab(curtab);return;}
+  if(curview==="monitor"){loadMonitor&&loadMonitor();return;}
+  view(curview);}
 const KEY_HELP={
   BRAIN:"Model tier that runs the agent: claude | api (OpenAI-compatible, e.g. NVIDIA free) | local (MLX/Ollama on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).",
   MODEL:"The top model id for this brain — e.g. claude-opus-4-8, or an NVIDIA model id for api.",
@@ -813,23 +821,8 @@ function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);wi
   const p=document.getElementById("pane");if(!sel){p.innerHTML='<div class="empty">Select an agent.</div>';return;}
   const a=agents[sel];
   if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/?theme=${theme()}" allow="microphone; clipboard-write"></iframe>`;}
-  else if(t==="activity"){renderActivity();window._logTimer=setInterval(()=>{if(curtab==="activity")renderActivity(true);},3000);}
-  else if(t==="status"){
-    const lr=(ov.last||{})[sel]||{};const c=(((ov.usage||{}).wtd||{}).agents||{})[sel]||{};
-    p.innerHTML=`<div style="padding:16px;overflow:auto">
-      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
-        <div class="card"><div class="k">status</div><div class="v" style="font-size:15px">${statusPill(a)}</div><div class="s"><span class="mono">${esc(a.status)}</span> · ${esc(a.brain)}/${esc(shortModel(a.model))} · :${a.port}<br>${a.kind==="standalone"?"standalone (independent enclave)":(isManager(a.id)?"♛ fleet master · manages "+kidsOf(a.id).length+" sub-agent(s)":"fleet · ↳ managed by "+esc(a.manager||"—"))}</div></div>
-        <div class="card"><div class="k">wtd spend</div><div class="v">${usd(c.cost_usd)}</div><div class="s">${num(c.tokens)} tokens · ${c.ticks||0} ticks · ${c.cost_share_pct||0}% of fleet</div></div>
-        <div class="card"><div class="k">last tick</div><div class="v">${lr.cost_usd!=null?usd(lr.cost_usd):"—"}</div><div class="s">${esc(lr.reason||"")}${lr.model?(" · "+lr.model.replace("claude-","")):""}${lr.rc!=null&&lr.rc!==0?" · rc "+lr.rc:""}</div></div>
-      </div>
-      ${a.headline?`<div class="card" style="margin-bottom:12px"><div class="k">headline</div><div class="s" style="font-size:12.5px;color:var(--tx);margin-top:3px">${esc(a.headline)}</div></div>`:""}
-      <div class="chartcard" style="max-width:580px;margin-bottom:12px"><h3>This agent — cost over time (7d, $)</h3><canvas id="miniChart"></canvas></div>
-      <div class="card"><div class="k">runtime</div><div class="s" style="margin-top:4px">
-        chat ${a.reachable?"reachable":"<span style='color:var(--err)'>unreachable</span>"} · open work ${a.work_open||0} · home <span class="mono">${esc(a.home||"—")}</span></div>
-        <div style="margin-top:9px"><button class="btn" onclick="runDoctor()">🩺 Health check</button><span class="s" id="docout" style="margin-left:10px"></span></div>
-        <div id="docchecks" style="margin-top:8px"></div></div></div>`;
-    ensureOv().then(()=>drawMini(sel));
-  }
+  else if(t==="activity"){renderActivity();window._logTimer=setInterval(()=>{if(curtab==="activity"&&!_paused)renderActivity(true);},3000);}
+  else if(t==="status"){renderDiag(a);}   /* Status merged into Diagnostics (2026-06-27) */
   else if(t==="diag"){renderDiag(a);}
   else if(t==="config"){renderConfig(a);}
   else if(t==="skills"){renderSkills(a);}
@@ -838,7 +831,7 @@ function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);wi
       <span class="seg"><button class="segb sel" id="logActivity" onclick="setLogKind('activity')">Activity</button><button class="segb" id="logRaw" onclick="setLogKind('raw')">Raw</button></span>
       <label class="s"><input type="checkbox" id="logfollow" checked> live tail</label><span class="s" id="logstamp"></span>
       <span style="flex:1"></span><span class="s" id="logkindhint" style="color:var(--mut)">narrative — what the agent did</span></div><div id="logs">loading…</div>`;
-    loadLogs(true);window._logTimer=setInterval(()=>{if(curtab==="logs"&&document.getElementById("logfollow")&&document.getElementById("logfollow").checked)loadLogs(false);},2000);
+    loadLogs(true);window._logTimer=setInterval(()=>{if(curtab==="logs"&&!_paused&&document.getElementById("logfollow")&&document.getElementById("logfollow").checked)loadLogs(false);},2000);
   }
 }
 let _logKind="activity";
@@ -878,7 +871,15 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
   const ctx=m.context||{},cost=m.cost||{},dur=m.duration||{},cache=m.cache_pct||{},turns=m.turns||{};
   const winLbl=d.window==="week"?"vs last week":d.window==="split"?"vs earlier ticks":"building history";
   /* health banner */
+  const lr=(ov.last||{})[sel]||{};const c=(((ov.usage||{}).wtd||{}).agents||{})[sel]||{};
   let html=`<div style="padding:14px 16px;overflow:auto">
+    <div class="card" style="margin-bottom:12px"><div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
+      <div><div class="v" style="font-size:15px">${statusPill(a)}</div><div class="s" style="margin-top:2px"><span class="mono">${esc(a.status)}</span> · ${esc(a.brain)}/${esc(shortModel(a.model))} · :${a.port}<br>${a.kind==="standalone"?"standalone enclave":(isManager(a.id)?"♛ manages "+kidsOf(a.id).length+" sub-agent(s)":"fleet · ↳ "+esc(a.manager||"—"))} · chat ${a.reachable?"reachable":"<span style='color:var(--err)'>unreachable</span>"} · open work ${a.work_open||0}</div></div>
+      <span style="flex:1"></span>
+      <div class="s" style="text-align:right"><b>${usd(c.cost_usd)}</b> wtd · ${c.ticks||0} ticks<br>last: ${lr.cost_usd!=null?usd(lr.cost_usd):"—"} ${esc(lr.reason||"")}${lr.rc!=null&&lr.rc!==0?" · rc "+lr.rc:""}</div>
+      <button class="btn" onclick="runDoctor()" title="Run host-side health checks">🩺 Health</button></div>
+      <span class="s" id="docout" style="display:block;margin-top:6px"></span><div id="docchecks" style="margin-top:4px"></div>
+      ${a.headline?`<div class="s" style="margin-top:8px;color:var(--tx);border-top:1px solid var(--bd);padding-top:6px">${esc(a.headline)}</div>`:""}</div>
     <div class="card" style="margin-bottom:12px;border-left:4px solid ${HEALTHC[h.level]||"var(--mut)"}">
       <div style="display:flex;align-items:center;gap:10px"><span style="font-size:20px">${HEALTHDOT[h.level]||"⚪"}</span>
         <div><div class="v" style="font-size:16px;color:${HEALTHC[h.level]||"var(--tx)"}">${esc(h.label||"")}</div>
@@ -904,7 +905,7 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
     ${kpi("duration (avg)",dur.avg!=null?(dur.avg>=60?(dur.avg/60).toFixed(1)+"m":Math.round(dur.avg)+"s"):"—",trendBadge(dur.trend_pct,false),"")}
     ${kpi("cache hit",cache.latest!=null?Math.round(cache.latest*100)+"%":"—",trendBadge(cache.trend_pct,false),"of context")}
     ${kpi("turns (avg)",turns.avg!=null?Math.round(turns.avg):"—","","per tick")}
-    ${kpi("process success",ho.process_success_pct!=null?ho.process_success_pct+"%":"—","",`${ho.ticks_failed||0} failed`)}
+    ${kpi("process success",ho.process_success_pct!=null?ho.process_success_pct+"%":"—","",`${ho.ticks_failed||0} failed${ho.ticks_capped?` · ${ho.ticks_capped} turn-capped`:""}`)}
   </div>`;
   /* runtime & resources (live docker stats — Phase B, host-side) */
   html+=`<div id="dgRes" class="card" style="margin-bottom:12px"><div class="k">runtime &amp; resources</div><div class="s" style="margin-top:3px;color:var(--mut)">loading…</div></div>`;
@@ -919,7 +920,7 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
   html+=runtimeSection(d.runtime||{});
   /* honesty panel */
   html+=`<div class="card" style="margin-bottom:12px"><div class="k">honesty panel</div>
-    <div class="s" style="margin-top:3px">Process success <b style="color:var(--tx)">${ho.process_success_pct!=null?ho.process_success_pct+"%":"—"}</b> (${(d.ticks_total-(ho.ticks_failed||0))}/${d.ticks_total} ticks, rc=0 &amp; subtype=success)
+    <div class="s" style="margin-top:3px">Process success <b style="color:var(--tx)">${ho.process_success_pct!=null?ho.process_success_pct+"%":"—"}</b> (${(d.ticks_total-(ho.ticks_failed||0))}/${d.ticks_total} ticks, rc=0 &amp; subtype=success)${ho.ticks_capped?` · ${ho.ticks_capped} hit the MAX_TURNS cap (intentional — counted as success, not failure)`:""}
     · Verification: <b style="color:var(--idle)">${esc(ho.verification||"Unknown")}</b>
     <br><span style="color:var(--mut)">${esc(ho.verification_note||"")}</span></div></div>`;
   /* tick inspector */
@@ -1245,7 +1246,7 @@ async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b
   const label=running?"running":(d.pid_alive?"stale":"stopped");
   const attn=hb.agents_need_attention||0,scanned=hb.agents_scanned||0;
   // --- status pill + controls ---
-  let h=`<div class="sectit">Fleet health monitor <span class="s" style="font-weight:400">— the Agent SRE: detects problems, says the likely cause &amp; fix, alerts the inbox${ic("An off-Opus daemon that polls every agent each cycle, matches anomalies against a runbook of root-cause playbooks, and (per each agent\\'s MONITOR_MODE) alerts the dashboard inbox. It detects + enqueues only — a separate watcher is the only actor that touches docker.")}</span></div>`;
+  let h=`<div class="sectit">Fleet health monitor <span class="s" style="font-weight:400">— the Agent SRE: detects problems, says the likely cause &amp; fix, alerts the inbox${ic("An off-Opus daemon that polls every agent each cycle, matches anomalies against a runbook of root-cause playbooks, and (per each agent's MONITOR_MODE) alerts the dashboard inbox. It detects + enqueues only — a separate watcher is the only actor that touches docker.")}</span></div>`;
   h+=`<div class="card" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px">
     <span style="display:flex;align-items:center;gap:7px"><span style="width:9px;height:9px;border-radius:50%;background:var(${col});display:inline-block"></span><b style="text-transform:uppercase;font-size:12px;letter-spacing:.04em">${label}</b></span>
     <span class="s">${attn} need attention</span><span class="s">·</span>
@@ -1290,7 +1291,7 @@ async function loadServices(){const el=document.getElementById("monservices");if
   let d={};try{d=await(await fetch(qs("/api/services"))).json();}catch(e){return;}
   const svcs=d.services||[];if(!svcs.length){return;}
   const down=svcs.filter(s=>!s.up).length;
-  let h=`<div class="sectit" style="font-size:13px;margin-top:14px">Host services <span class="s" style="font-weight:400">— the bridges agents depend on${down?` · <span style="color:var(--err)">${down} down</span>`:" · all up"}${ic("Host-side services (qmd/mlx/voice/transcribe/…) the agents call. Restart runs launchctl kickstart (or the service\\'s setup script) on the Mac. Wired via ENCLAVE_BRIDGE_CONTROL.")}</span>`;
+  let h=`<div class="sectit" style="font-size:13px;margin-top:14px">Host services <span class="s" style="font-weight:400">— the bridges agents depend on${down?` · <span style="color:var(--err)">${down} down</span>`:" · all up"}${ic("Host-side services (qmd/mlx/voice/transcribe/…) the agents call. Restart runs launchctl kickstart (or the service's setup script) on the Mac. Wired via ENCLAVE_BRIDGE_CONTROL.")}</span>`;
   if(d.controllable&&down>1)h+=` <button class="btn" style="padding:2px 8px;font-size:11px" onclick="svcRestartDown()">Restart all down</button>`;
   h+=`</div><div class="card" style="padding:6px 10px">`;
   h+=svcs.map(s=>{const c=s.up?"--ok":"--err";
@@ -1378,15 +1379,15 @@ async function renderActivity(quiet){const p=document.getElementById("pane");if(
       <span style="flex:1"></span>
       <span class="s" style="color:var(--mut)">loop: every ${lp.CONTINUOUS_COOLDOWN||"?"}s active · ${lp.INTERVAL_SECONDS||"?"}s safeguard · ${esc(lp.BRAIN||"")} · ${esc(lp.SUPERVISE||"")}</span></div></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div class="card"><div class="k">▶ doing right now${ic("Live tool-call stream from the agent\\'s events.jsonl — the literal actions it is taking this tick (newest first). Refreshes every 3s.")}</div>
+      <div class="card"><div class="k">▶ doing right now${ic("Live tool-call stream from the agent's events.jsonl — the literal actions it is taking this tick (newest first). Refreshes every 3s.")}</div>
         <div style="margin-top:6px;max-height:230px;overflow:auto">${evs}</div></div>
-      <div class="card"><div class="k">focus${ic("The head of the agent\\'s own state/rollup.md — its summary of what it is working on.")}</div>
+      <div class="card"><div class="k">focus${ic("The head of the agent's own state/rollup.md — its summary of what it is working on.")}</div>
         <div class="s" style="margin-top:6px;white-space:pre-wrap;max-height:230px;overflow:auto;color:var(--tx)">${esc(d.focus||"—")}</div></div>
     </div>
-    <div class="card" style="margin-top:10px"><div class="k">work queue${ic("The agent\\'s own work items (work.json): doing / todo, and a count of completed.")} <span class="s" style="font-weight:400">— ${wk.done||0} done</span></div>
+    <div class="card" style="margin-top:10px"><div class="k">work queue${ic("The agent's own work items (work.json): doing / todo, and a count of completed.")} <span class="s" style="font-weight:400">— ${wk.done||0} done</span></div>
       <div style="margin-top:6px">${(wk.doing||[]).map(it=>wrow(it,"--ok")).join("")}${(wk.todo||[]).map(it=>wrow(it,"--idle")).join("")||((wk.doing||[]).length?"":'<div class="s" style="color:var(--mut)">queue empty</div>')}</div></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
-      <div class="card"><div class="k">recent progress${ic("The agent\\'s own timestamped activity.log — what it has shipped recently.")}</div>
+      <div class="card"><div class="k">recent progress${ic("The agent's own timestamped activity.log — what it has shipped recently.")}</div>
         <div style="margin-top:6px;max-height:220px;overflow:auto">${(d.activity||[]).map(l=>`<div class="s" style="padding:2px 0;color:var(--mut)">${esc(l)}</div>`).join("")||'<div class="s" style="color:var(--mut)">—</div>'}</div></div>
       <div class="card"><div class="k">recent ticks${ic("The last few ticks: reason, tool-calls, duration, outcome.")}</div>
         <table class="cost" style="margin-top:6px"><tbody>${ticks||'<tr><td class="s">—</td></tr>'}</tbody></table></div>
@@ -1571,11 +1572,11 @@ const _urlView=new URLSearchParams(location.search).get("view");
 const _VIEWS=["overview","agents","monitor","activity","models"];   // "graph" folded into overview
 try{let _v=(_VIEWS.includes(_urlView)?_urlView:null)||localStorage.getItem("console_view")||"overview";if(!_VIEWS.includes(_v))_v="overview";view(_v);}catch(e){view("overview");}
 load();
-setInterval(()=>{if(curview==="overview")loadOverview();},15000);
+setInterval(()=>{if(curview==="overview"&&!_paused)loadOverview();},15000);
 let _lastA="";
 try{const es=new EventSource(qs("/api/stream"));es.onmessage=e=>{try{const j=JSON.parse(e.data);const na=j.agents||agents;const k=JSON.stringify(na);
   if(k===_lastA)return;                       /* skip no-op pushes — the rail rebuilt every ~4s and flickered ("page reloads") even when nothing changed */
-  _lastA=k;agents=na;if(curview==="agents"){render();if(sel&&agents[sel])setBar(agents[sel]);}else if(curview==="overview")renderOverview();}catch(_){}};}catch(e){setInterval(load,5000);}
+  _lastA=k;agents=na;if(_paused)return;if(curview==="agents"){render();if(sel&&agents[sel])setBar(agents[sel]);}else if(curview==="overview")renderOverview();}catch(_){}};}catch(e){setInterval(load,5000);}
 </script></body></html>"""
 
 

@@ -234,8 +234,13 @@ def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
     # --disallowedTools AskUserQuestion: it's INTERACTIVE — in a headless `claude -p` chat turn nothing
     # can answer it, so the turn stalls until CHAT_TURN_TIMEOUT and the user sees "timed out / failed to
     # start". Blocking it forces the agent to answer (or ask its clarifying question) in TEXT instead.
+    # --append-system-prompt CHAT_SYSTEM: cwd=/agent auto-loads the agent's CLAUDE.md (its autonomous
+    # WORK-TICK mission — "build, every tick advance a game, never idle"). In a CHAT that makes it explore
+    # /build instead of answering, burning the timeout. This override tells it: this is a conversation —
+    # ANSWER, don't run the mission.
     base = ["claude", "--model", model, "--dangerously-skip-permissions",
             "--disallowedTools", "AskUserQuestion",
+            "--append-system-prompt", CHAT_SYSTEM,
             "--output-format", "stream-json", "--verbose"]
     stop_file = agent_dir / "state" / "chat-stop"
     log(f"chat turn start (conv={conv_id or '-'}, model={model}): {' '.join((msg or '').split())[:80]}")
