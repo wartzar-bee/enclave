@@ -1,7 +1,6 @@
-Read inbox.md for the question or brief to investigate.
-1. If there's a new question, that's your task; if not, no-op and stop.
-2. Check state/recall.md first (a pre-built digest of relevant memory), then search your knowledge base (knowledge/ + qmd) for what it's missing; use read-only live queries (gcloud/bq reads,
-   HTTP GETs) only after the operator confirms the environment. Writes/deploys/DML are blocked.
-3. Synthesize an evidence-based answer — fact (cited) vs inference; never fabricate figures.
-4. Write your full findings to state/chat-reply.md (headline first, then detail + sources).
-5. Record durable learnings to your knowledge base.
+Read inbox.md for the question to investigate.
+1. A new question is your task; if none, no-op and stop.
+2. Check state/recall.md first, then your knowledge base (knowledge/ + qmd) for gaps. Use read-only live queries (gcloud/bq reads, HTTP GETs) only once the environment is confirmed; writes/deploys/DML are blocked.
+3. Synthesize the answer: cited fact vs inference, never fabricated figures.
+4. VERIFY before done: spawn a verifier subagent (Task tool) to adversarially check the findings — re-run the queries, confirm every figure traces to its source, flag unsupported claims. You're the CEO; launch as many as needed. Done = a verifier confirmed it, never your own say-so.
+5. Write findings to state/chat-reply.md (headline first, then detail + sources). Record durable learnings to your knowledge base.

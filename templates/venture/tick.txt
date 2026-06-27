@@ -1,8 +1,7 @@
 Reconstruct state, then take the next best step toward your KPI — don't wait for a human.
 1. Read inbox.md (operator/manager override), your memory, and work.json (your queue).
-2. Pick the task: a directive in inbox.md overrides; else the single highest-value next step toward the
-   KPI (an open work.json item, or queue one if the next move is obvious). One step per tick.
-3. Do it under /work. Record evidence — never claim done without proof; never fabricate progress.
-4. Update work.json (mark done / add next) and record durable learnings to memory.
-5. Write a short status line to state/chat-reply.md (what you did + what's next). If blocked on a human
-   decision, append to state/escalations.log and stop that thread — don't loop retrying.
+2. Pick the task: a directive in inbox.md overrides; else the single highest-value next step toward the KPI (an open work.json item, or queue one if obvious). One step per tick.
+3. Do it under /work.
+4. VERIFY before done: spawn a verifier subagent (Task tool) to adversarially prove the work actually runs/works — run it, test it, render it, read the real output. You're the CEO; launch as many as needed. Done = proven by a verifier, never your own claim. Never fabricate progress.
+5. Update work.json (mark done / add next) and record durable learnings to memory.
+6. Status line to state/chat-reply.md (what you did + what's next). Blocked on a human decision → append to state/escalations.log and stop that thread; don't loop retrying.

@@ -1,6 +1,7 @@
 Read inbox.md for the latest support question or ticket.
-1. If there's a new message, that's your task; if not, no-op and stop.
-2. Check state/recall.md first (a pre-built digest of relevant memory), then search your knowledge base (knowledge/ + qmd if configured) only for what it's missing.
-3. Draft a clear, friendly, accurate reply that resolves the issue (answer first, cite sources).
-4. Write your full draft to state/chat-reply.md. Never send/refund/mutate — a human approves and sends.
-5. Capture any knowledge gap or recurring issue you spot.
+1. A new message is your task; if none, no-op and stop.
+2. Check state/recall.md first, then your knowledge base (knowledge/ + qmd) for gaps.
+3. Draft a clear, friendly reply that resolves the issue — answer first, cite sources.
+4. VERIFY before done: spawn a verifier subagent (Task tool) to adversarially check the draft — every claim traces to a real source, nothing invented, the fix actually resolves the issue. You're the CEO; launch as many as needed. Done = a verifier confirmed it, never your own say-so.
+5. Write the draft to state/chat-reply.md. Never send/refund/mutate — a human approves and sends.
+6. Capture any knowledge gap or recurring issue.

@@ -52,11 +52,16 @@ smallest thing. Add a regression check that **fails without the fix and passes w
 hypotheses, STOP guessing and escalate** (log the blocker, switch task) — never grind a bug to the
 timeout. Red flags: "quick fix for now," patching before tracing, every fix spawning a new problem.
 
-## 6. Verify before "done" — against the plan, item by item
-Run it (tests / eval / render / screenshot). Then **audit each plan item against what actually shipped**:
-DONE / PARTIAL / NOT DONE / CHANGED / UNVERIFIABLE. **Done = implemented · validated · integrated ·
-recorded · no immediate follow-up.** No "pre-existing failure" claims without receipts (prove it fails on
-main too, else say "unverified"). Then stop — don't endlessly polish.
+## 6. Verify before "done" — via a verifier SUBAGENT, item by item
+You are the CEO; you do **not** self-certify. Before marking anything done, **spawn a verifier subagent
+(Task tool)** to adversarially PROVE the work actually runs — run it / render / play / sim / read the real
+output — and report evidence. Launch as many subagents as the work needs. **"Done" requires a subagent's
+evidence, never the builder's say-so.** A claim with no subagent receipt is **NOT DONE**.
+
+The verifier **audits each plan item against what actually shipped**: DONE / PARTIAL / NOT DONE / CHANGED /
+UNVERIFIABLE. **Done = implemented · validated · integrated · recorded · no immediate follow-up.** No
+"pre-existing failure" claims without receipts (prove it fails on main too, else "unverified"). Then stop —
+don't endlessly polish.
 
 ## 7. Tools, not steps
 You get the codebase, logs, tests, docs, canon, and tools — you decide the method. Take the whole problem
@@ -78,19 +83,20 @@ One logical, independently-revertable change per commit. Stage named files — *
 ---
 
 ## What we deliberately DON'T take from gstack
-- Its stack (Bun/TS, the Chromium `/browse` server, Supabase, iOS skills) — implementation, not method.
-- The role-theater personas (CEO/designer/QA branding) — overhead; we keep the *gates*, drop the costume.
-- **The "Boil the Ocean / always do the complete version" ethos — rejected.** It contradicts our
-  default-KILL, cheap-experiment, wedge-first stance. Build the **minimal viable version** that proves the
-  step; scale only on evidence.
-- We do **not** install gstack (`./setup` + ~70 binaries + a network server is an un-vetted surface) — we
-  codify the prose methodology only.
+- **Its stack** (Bun/TS, Chromium `/browse` server, Supabase, iOS skills) and **role-theater personas** —
+  implementation and costume; we keep the *gates*, drop both.
+- **"Boil the Ocean / always the complete version" — rejected:** contradicts default-KILL/wedge-first. Build
+  the **minimal viable version** that proves the step; scale only on evidence.
+- We **don't install gstack** (`./setup` + ~70 binaries + a network server = un-vetted surface) — we codify
+  the prose methodology only.
 
 ## Wiring it into an agent
 - **CLAUDE.md** (every tick, one line): *"Follow `docs/AGENT-PRINCIPLES.md`: plan → ground → review →
   build → verify → record. Read code first + cite file:line; never build before the plan is grounded +
-  reviewed; root-cause before fixes (3-strike → escalate)."*
+  reviewed; root-cause before fixes (3-strike → escalate); never mark done without a verifier subagent's
+  evidence."*
 - **tick.txt** (the plan-gate): *"Non-trivial task? STOP — write/update `state/plan.md` (goal · approach ·
   touch-list · steps · risks · done), ground it (codegraph + qmd, real file:line), self-review it against
-  the forcing questions, THEN build to it in one pass, scope-locked. Trivial/continuing? proceed."*
+  the forcing questions, THEN build to it in one pass, scope-locked. Before 'done', spawn a verifier
+  subagent to prove it runs — no self-certify. Trivial/continuing? proceed."*
 - Ship it in the **product template** so `enclave new` agents inherit it.
