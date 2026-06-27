@@ -638,9 +638,9 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <button class="btn" id="pausebtn" title="Pause auto-refresh (read/scroll without the view changing)" onclick="togglePause()">⏸</button>
   <button class="btn" id="themebtn" title="Toggle light/dark" onclick="toggleTheme()">🌙</button>
 </nav>
-<div id="newmodal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50">
+<div id="newmodal" onclick="if(event.target===this)closeNew()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50">
   <div style="max-width:520px;margin:6vh auto;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:20px;max-height:86vh;overflow:auto">
-    <h2 style="margin:0 0 12px">Create agent</h2>
+    <h2 style="margin:0 0 12px;display:flex;justify-content:space-between;align-items:center">Create agent<span onclick="closeNew()" title="Close (Esc)" style="cursor:pointer;color:var(--mut);font-weight:400;font-size:20px;line-height:1;padding:0 6px">✕</span></h2>
     <label class="nl">name (kebab-case)<span class="info" onclick="showInfo(event,'Becomes the agent id, folder, and container name. Lowercase letters, digits and dashes only.')">i</span></label><input id="n_name" placeholder="my-new-agent">
     <label class="nl">template<span class="info" onclick="showInfo(event,'Starter brain + skills: venture (builds products), autonomous (self-driving), orchestrator (manages sub-agents), ops / analyst / support (focused task agents).')">i</span></label><select id="n_template"><option>venture</option><option>autonomous</option><option>orchestrator</option><option>ops</option><option>analyst</option><option>support</option></select>
     <label class="nl">clone brain from (optional)<span class="info" onclick="showInfo(event,'Seed this agent from an existing one — copies its skills/knowledge/memory/reference/docs + mission. A true twin that can run a different (e.g. no-Claude) brain. Runtime state (logs, usage) starts fresh; secrets are never copied.')">i</span></label><select id="n_clonefrom"><option value="">— none (fresh from template) —</option></select>
@@ -1290,6 +1290,13 @@ function renderNotif(){const p=document.getElementById("notifpanel");if(!p||p.st
 function toggleNotif(ev){if(ev)ev.stopPropagation();const p=document.getElementById("notifpanel");
   p.style.display=p.style.display==="block"?"none":"block";renderNotif();}
 document.addEventListener("click",e=>{const w=document.getElementById("bellwrap");if(w&&!w.contains(e.target)){const p=document.getElementById("notifpanel");if(p)p.style.display="none";}});
+/* Escape closes the topmost popup, most-transient first: info tooltip -> create modal -> notif panel
+   -> expanded tick rows. (Tooltip before modal so Esc dismisses a tooltip without nuking the dialog.) */
+document.addEventListener("keydown",e=>{if(e.key!=="Escape")return;
+  const ip=document.getElementById("infopop");if(ip){ip.remove();return;}
+  const m=document.getElementById("newmodal");if(m&&m.style.display!=="none"){closeNew();return;}
+  const np=document.getElementById("notifpanel");if(np&&np.style.display!=="none"){np.style.display="none";return;}
+  document.querySelectorAll('[id^="dgexp"]').forEach(r=>{if(r.style.display!=="none")r.style.display="none";});});
 /* ---------- Overview view ---------- */
 async function loadOverview(){try{ov=await(await fetch(qs("/api/overview"))).json();}catch(e){}renderOverview();loadEscalations();}
 let _escOpen=false;
