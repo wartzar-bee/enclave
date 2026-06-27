@@ -178,14 +178,18 @@ def cycle(policy, st, control_queue, now=None, dryrun=False, log=print):
                         suggest_intent = spec
                 except Exception:
                     suggest_intent = None
+            # Per-agent mute: a chronic, known, non-actionable finding stays VISIBLE here but never
+            # reaches the inbox/push (e.g. context_bloat on a deliberately tool-heavy agent).
+            suppressed = policy.suppressed(aid, pb.key)
             entry["findings"].append({
                 "key": pb.key, "title": pb.title, "severity": sev, "cause": dx.get("cause"),
                 "confidence": dx.get("confidence"), "evidence": dx.get("evidence", ""),
                 "recommendation": dx.get("recommendation"),
-                "escalated": not (mode == "observe" or decision != "alert"),
+                "escalated": not (mode == "observe" or decision != "alert" or suppressed),
+                "suppressed": suppressed,
                 "intent": suggest_intent,
             })
-            if mode == "observe" or decision != "alert":
+            if mode == "observe" or decision != "alert" or suppressed:
                 continue
             escalate(home, f"[monitor:{pb.key}] {aid} — {pb.title}: {dx['cause']} "
                            f"(confidence {dx['confidence']}; {dx.get('evidence', '')}). "

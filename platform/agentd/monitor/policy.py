@@ -31,6 +31,14 @@ class Policy:
     def enabled(self, key):
         return bool(self.data.get("playbooks", {}).get(key, {}).get("enabled", True))
 
+    def suppressed(self, agent, key):
+        """Per-agent anomaly mute: keep a chronic, known, non-actionable finding (e.g. context_bloat on
+        a deliberately tool-heavy agent) VISIBLE in the Monitor view but OUT of the inbox/push. Distinct
+        from MONITOR_MODE=observe (which mutes the WHOLE agent) — this mutes ONE playbook for ONE agent.
+        Shape: {"per_agent": {"<agent>": {"suppress": ["context_bloat", ...]}}}."""
+        pa = (self.data.get("per_agent") or {}).get(agent) or {}
+        return key in (pa.get("suppress") or [])
+
     def severity(self, key, default):
         return self.data.get("playbooks", {}).get(key, {}).get("severity", default)
 
