@@ -172,7 +172,9 @@ CHAT_PREAMBLE = (
     "documents — and LINK it into the knowledge graph; an unlinked note is an orphan). Before saving, "
     "VERIFY where you can (your own knowledge via qmd/wiki, files in /work, read-only backoffice "
     "queries), and stamp every saved item with an explicit CONFIDENCE tag + its provenance "
-    "(write the tag into the note, e.g. 'confidence=verified; source=…; date=<date>'). The ladder:\n"
+    "(write the tag into the note, e.g. 'confidence=verified; source=…; date=<date>'). This CONFIDENCE "
+    "tag belongs ONLY inside a saved memory note — NEVER append it (or any source/date/policy tag) to your "
+    "chat reply to the operator; fabricating such a tag on a reply is a no-fabrication violation. The ladder:\n"
     "  • confidence=unverified — operator asserted it and you could NOT check it → save ATTRIBUTED + "
     "provisional ('Operator stated (UNVERIFIED <date>): … — VERIFY'). Never bank it as plain truth.\n"
     "  • confidence=plausible — consistent with what you already know but not independently confirmed.\n"
@@ -210,8 +212,25 @@ def _conv_history(agent_dir, conv_id):
     return hist[-HISTORY_CTX:]
 
 
+def _agent_claude_md(agent_dir):
+    """The agent's CLAUDE.md = its operating charter (mission, mandate, identity, no-fabrication rules).
+    The Claude chat path auto-loads it via cwd; the BRAIN=api/local single-shot path does NOT, so without
+    this the chat brain runs rule-blind (→ refuses sanctioned work, fabricates confidence tags). Cap to
+    bound tokens."""
+    try:
+        txt = (pathlib.Path(agent_dir) / "CLAUDE.md").read_text()
+        return txt[:16000]
+    except Exception:
+        return ""
+
+
 def _api_prompt(agent_dir, conv_id, msg, images):
-    parts = [CHAT_PREAMBLE]
+    parts = []
+    charter = _agent_claude_md(agent_dir)
+    if charter:
+        parts.append("## YOUR OPERATING INSTRUCTIONS (CLAUDE.md — authoritative; follow its mission, "
+                     "mandate, identity, and no-fabrication rules in THIS chat too)\n" + charter)
+    parts.append(CHAT_PREAMBLE)
     hist = _conv_history(agent_dir, conv_id)
     if hist:
         parts.append("## conversation so far\n" +
