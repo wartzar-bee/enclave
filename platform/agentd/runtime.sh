@@ -102,10 +102,13 @@ if [ "${BRAIN:-claude}" = "local" ]; then
   exit 0
 fi
 
-# BRAIN=api: drive the tick with ANY OpenRouter-compatible API endpoint (DeepSeek, Gemini, Mistral…).
+# BRAIN=api: drive the tick with ANY OpenAI-compatible API endpoint (NVIDIA NIM, DeepSeek, Gemini, Mistral…).
 # Runs off the Anthropic subscription entirely — use this for GCloud / non-Mac deployments where
 # BRAIN=claude (subscription) and BRAIN=local (Mac MLX) are both unavailable.
 # Uses the SAME local_agent.py ReAct harness + guard hooks; only the brain endpoint changes.
+# Endpoint is fully generic: BRAIN_API_BASE (base URL) + BRAIN_MODEL (driver model) + BRAIN_API_KEY_ENV
+# (NAME of the key var, default OPENROUTER_API_KEY — set NVIDIA_API_KEY for build.nvidia.com, XAI_API_KEY
+# for xAI, etc.). Hard judgment escalates to ESCALATION_MODEL (defaults to the driver model, same endpoint).
 # Budget guard: API_BUDGET_USD (default $10/agent) caps cumulative spend tracked in state/api_spending.jsonl.
 if [ "${BRAIN:-claude}" = "api" ]; then
   API_BUDGET="${API_BUDGET_USD:-10.0}"
@@ -125,24 +128,34 @@ except Exception: print(0)
   else
     log "API budget cap: \$${SPENT} >= \$${API_BUDGET} — DEFER (raise API_BUDGET_USD to continue)"; exit 75
   fi
-  # Resolve OpenRouter API key from scoped secret mount or env
-  if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-    for SFILE in "$AGENT_DIR/.secrets/openrouter.env" "${TOOLS_ROOT:-/workspace}/.secrets/openrouter.env"; do
-      [ -f "$SFILE" ] && OPENROUTER_API_KEY="$(grep '^OPENROUTER_API_KEY=' "$SFILE" 2>/dev/null | cut -d= -f2-)" && break
+  # Resolve the API key by its CONFIGURED env-var name (BRAIN_API_KEY_ENV) — generic across providers
+  # (OPENROUTER_API_KEY by default; NVIDIA_API_KEY / XAI_API_KEY / OPENAI_API_KEY / … for others). Look in
+  # the live env first, then scan any scoped .secrets/*.env for "<NAME>=…" (same pattern as the optimize path).
+  API_KEY_ENV="${BRAIN_API_KEY_ENV:-OPENROUTER_API_KEY}"
+  API_KEY="$(printenv "$API_KEY_ENV" 2>/dev/null || true)"
+  if [ -z "$API_KEY" ]; then
+    for SDIR in "$AGENT_DIR/.secrets" "${TOOLS_ROOT:-/workspace}/.secrets"; do
+      [ -d "$SDIR" ] || continue
+      for SFILE in "$SDIR"/*.env; do
+        [ -f "$SFILE" ] || continue
+        API_KEY="$(grep "^${API_KEY_ENV}=" "$SFILE" 2>/dev/null | head -1 | cut -d= -f2-)"
+        [ -n "$API_KEY" ] && break
+      done
+      [ -n "$API_KEY" ] && break
     done
   fi
-  [ -z "${OPENROUTER_API_KEY:-}" ] && log "WARN: OPENROUTER_API_KEY not found — API calls will likely fail"
+  [ -z "$API_KEY" ] && log "WARN: $API_KEY_ENV not found (env or .secrets/*.env) — API calls will likely fail"
   # Pre-load recall (same as the Claude path)
   MEM="$AGENT_DIR/bin/memory.py"; [ -f "$MEM" ] || MEM="$SCRIPT_DIR/memory.py"
   [ -f "$MEM" ] && { mkdir -p "$AGENT_DIR/state"; python3 "$MEM" --base "$AGENT_DIR" digest > "$AGENT_DIR/state/recall.md" 2>>"$LOG" || true; }
   LA="$SCRIPT_DIR/local_agent.py"; [ -f "$LA" ] || LA="${TOOLS_ROOT:-/workspace}/platform/agentd/local_agent.py"
-  log "tick start (brain=api, model=${BRAIN_MODEL:-deepseek/deepseek-chat}, guard=on)"
+  log "tick start (brain=api, model=${BRAIN_MODEL:-deepseek/deepseek-chat}, key=$API_KEY_ENV, guard=on)"
   LOCAL_BRAIN_BASE="${BRAIN_API_BASE:-https://openrouter.ai/api/v1}" \
   LOCAL_BRAIN_MODEL="${BRAIN_MODEL:-deepseek/deepseek-chat}" \
-  LOCAL_BRAIN_KEY="${OPENROUTER_API_KEY:-}" \
-  ESCALATION_BASE="${ESCALATION_BASE:-https://openrouter.ai/api/v1}" \
+  LOCAL_BRAIN_KEY="${API_KEY:-}" \
+  ESCALATION_BASE="${ESCALATION_BASE:-${BRAIN_API_BASE:-https://openrouter.ai/api/v1}}" \
   ESCALATION_MODEL="${ESCALATION_MODEL:-${BRAIN_MODEL:-deepseek/deepseek-chat}}" \
-  ESCALATION_KEY="${OPENROUTER_API_KEY:-}" \
+  ESCALATION_KEY="${ESCALATION_KEY:-${API_KEY:-}}" \
   LOCAL_MAX_TOKENS="${LOCAL_MAX_TOKENS:-8192}" \
   LOCAL_MAX_STEPS="${LOCAL_MAX_STEPS:-32}" \
   LOCAL_REQ_TIMEOUT="${LOCAL_REQ_TIMEOUT:-120}" \

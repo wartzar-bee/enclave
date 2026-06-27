@@ -643,8 +643,22 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <h2 style="margin:0 0 12px">Create agent</h2>
     <label class="nl">name (kebab-case)<span class="info" onclick="showInfo(event,'Becomes the agent id, folder, and container name. Lowercase letters, digits and dashes only.')">i</span></label><input id="n_name" placeholder="my-new-agent">
     <label class="nl">template<span class="info" onclick="showInfo(event,'Starter brain + skills: venture (builds products), autonomous (self-driving), orchestrator (manages sub-agents), ops / analyst / support (focused task agents).')">i</span></label><select id="n_template"><option>venture</option><option>autonomous</option><option>orchestrator</option><option>ops</option><option>analyst</option><option>support</option></select>
-    <label class="nl">brain<span class="info" onclick="showInfo(event,'Model tier: claude (Anthropic) | api (OpenAI-compatible provider) | local (model on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).')">i</span></label><select id="n_brain" onchange="fillNewModels()"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
-    <label class="nl">model (optional)<span class="info" onclick="showInfo(event,'Pick from the models for the chosen brain, or ✏️ custom… to type one. Leave on (template default) to use the template model.')">i</span></label><select id="n_model" onchange="newModelPick()"></select>
+    <label class="nl">clone brain from (optional)<span class="info" onclick="showInfo(event,'Seed this agent from an existing one — copies its skills/knowledge/memory/reference/docs + mission. A true twin that can run a different (e.g. no-Claude) brain. Runtime state (logs, usage) starts fresh; secrets are never copied.')">i</span></label><select id="n_clonefrom"><option value="">— none (fresh from template) —</option></select>
+    <label class="cbl" style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--mut);margin:6px 0 2px"><input type="checkbox" id="n_clonework" style="width:auto;margin:0"> include work tree (heavy — may be a separate repo)</label>
+    <label class="nl">brain<span class="info" onclick="showInfo(event,'Model tier: claude (Anthropic) | api (OpenAI-compatible provider, e.g. NVIDIA free — no Claude) | local (model on the Mac) | optimize (start on Claude, drop to the cheapest reachable pool as the cap fills).')">i</span></label><select id="n_brain" onchange="fillNewModels()"><option>claude</option><option>api</option><option>local</option><option>optimize</option></select>
+    <div id="n_provrow" style="display:none">
+      <label class="nl">provider<span class="info" onclick="showInfo(event,'For brain=api: which OpenAI-compatible endpoint to run on. NVIDIA = build.nvidia.com free tier (no Claude); OpenRouter = paid aggregator; custom = enter a base URL + the key env-var name.')">i</span></label>
+      <select id="n_provider" onchange="provChange()"></select>
+      <div id="n_provcustom" style="display:none">
+        <label class="nl">API base URL</label><input id="n_apibase" placeholder="https://your-endpoint/v1">
+        <label class="nl">API key env var name<span class="info" onclick="showInfo(event,'The NAME of the env var the runtime reads the key from (resolved from a matching secrets/*.env). e.g. NVIDIA_API_KEY, XAI_API_KEY.')">i</span></label><input id="n_keyenv" placeholder="PROVIDER_API_KEY">
+      </div>
+    </div>
+    <label class="nl">model (optional)<span class="info" onclick="showInfo(event,'Pick from the models for the chosen brain/provider, or ✏️ custom… to type one. Leave on (template default) to use the template model.')">i</span></label><select id="n_model" onchange="newModelPick()"></select>
+    <div id="n_escrow" style="display:none">
+      <label class="nl">escalation model — hard judgment (optional)<span class="info" onclick="showInfo(event,'For brain=api: a stronger model the agent escalates hard reasoning/planning to (via the escalate tool). Blank = reuse the driver model on the same endpoint.')">i</span></label>
+      <select id="n_escmodel" onchange="modelPick('n_escmodel')"></select>
+    </div>
     <label class="nl">heartbeat interval seconds (optional)<span class="info" onclick="showInfo(event,'Max idle seconds between ticks when there is no message. 10800 = 3h. Blank = template default.')">i</span></label><input id="n_interval" placeholder="10800">
     <label class="nl">mission (appended to CLAUDE.md)<span class="info" onclick="showInfo(event,'Plain-English description of what this agent does and how it should behave. Appended to its CLAUDE.md system prompt.')">i</span></label><textarea id="n_mission" rows="4" placeholder="What this agent does…"></textarea>
     <label class="nl">secrets — scoped credentials<span class="info" onclick="showInfo(event,'Credential env files the agent mounts read-only. Search + click to grant existing ones from your library, and/or add a new one (filename + KEY=VALUE). They are written into the agent at creation, so it runs immediately — nothing to fill in later.')">i</span></label>
@@ -1109,7 +1123,7 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
   const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
   /* BRAIN/MODEL/SUPERVISE are set by the cards above (dropdowns/buttons) — don't repeat them as free
      text here. Model-valued keys (MODEL_ROUTINE→claude tier, LOCAL_BRAIN_MODEL→local) render as dropdowns. */
-  const HIDE=["BRAIN","MODEL","SUPERVISE","MONITOR_MODE"],MODELKEYS={MODEL_ROUTINE:"claude",LOCAL_BRAIN_MODEL:"local"};
+  const HIDE=["BRAIN","MODEL","SUPERVISE","MONITOR_MODE"],MODELKEYS={MODEL_ROUTINE:"claude",LOCAL_BRAIN_MODEL:"local",BRAIN_MODEL:"api_all",ESCALATION_MODEL:"api_all"};
   const mm=effV("MONITOR_MODE")||"alert";
   const mmOpts=["off","observe","alert","suggest","autofix"].map(m=>`<option ${m===mm?"selected":""}>${m}</option>`).join("");
   const rows=_cfgEditable.filter(k=>!HIDE.includes(k)).map(k=>{const ch=_pending[k]!==undefined;const cur=effV(k);let field;
@@ -1166,8 +1180,14 @@ async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dt
 async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});}catch(e){}}
 async function postR(path,body){try{const r=await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});return await r.json();}catch(e){return{error:String(e)};}}
 /* ---------- New-agent modal (P1 create) ---------- */
-let _newModels={};
-async function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";document.getElementById("n_newsec").innerHTML="";await fillNewModels();loadSecretsAvail();}
+let _newModels={},_providers={},_provModels={};
+async function openNew(){document.getElementById("n_msg").textContent="";document.getElementById("newmodal").style.display="block";document.getElementById("n_newsec").innerHTML="";
+  await fillNewModels();fillCloneFrom();loadSecretsAvail();}
+async function fillCloneFrom(){const cf=document.getElementById("n_clonefrom");if(!cf)return;
+  let ids=Object.keys(agents||{});
+  if(!ids.length){try{ids=Object.keys(((await(await fetch(qs("/api/fleet"))).json()).agents)||{});}catch(e){}}
+  ids.sort();const cur=cf.value;
+  cf.innerHTML='<option value="">— none (fresh from template) —</option>'+ids.map(i=>`<option ${i===cur?"selected":""} value="${esc(i)}">${esc(i)}</option>`).join("");}
 let _secAvail=[],_secSel=new Set(),_secLib=false;
 async function loadSecretsAvail(){_secSel=new Set();
   try{const d=await(await fetch(qs("/api/secrets-available"))).json();_secAvail=d.available||[];_secLib=!!d.lib_configured;}catch(e){_secAvail=[];_secLib=false;}
@@ -1191,11 +1211,32 @@ function addNewSecret(){const box=document.getElementById("n_newsec");const row=
   row.className="newsecrow";row.style.cssText="display:flex;gap:6px;margin-top:6px;align-items:center";
   row.innerHTML=`<input class="ns_name" placeholder="name.env" style="flex:0 0 130px"><input class="ns_val" placeholder="KEY=value" style="flex:1"><span class="info" onclick="this.parentElement.remove()" style="border-color:var(--err);color:var(--err)" title="remove">×</span>`;
   box.appendChild(row);}
-async function fillNewModels(){const sel=document.getElementById("n_model");if(!sel)return;
-  if(!Object.keys(_newModels).length){try{_newModels=(await(await fetch(qs("/api/presets"))).json()).models||{};}catch(e){}}
-  const brain=document.getElementById("n_brain").value;const list=_newModels[brain]||[];const cur=sel.value;
-  sel.innerHTML='<option value="">(template default)</option>'+list.map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("")+'<option value="__custom__">✏️ custom…</option>';}
-function newModelPick(){const sel=document.getElementById("n_model");if(sel.value==="__custom__"){const c=prompt("Model id:","");if(c&&c.trim()){const o=document.createElement("option");o.textContent=c.trim();o.selected=true;sel.insertBefore(o,sel.lastElementChild);}else{sel.value="";}}}
+async function _ensurePresets(){if(Object.keys(_newModels).length||Object.keys(_provModels).length)return;
+  try{const d=await(await fetch(qs("/api/presets"))).json();_newModels=d.models||{};_providers=d.providers||{};_provModels=d.provider_models||{};}catch(e){}}
+function _modelListFor(){const brain=document.getElementById("n_brain").value;
+  if(brain!=="api")return _newModels[brain]||[];
+  const psel=document.getElementById("n_provider");const prov=psel?psel.value:"";
+  if(prov&&prov!=="custom"&&_provModels[prov])return _provModels[prov];
+  return _newModels.api||[];}            // openrouter/custom fall back to the eval-recs list
+function _fillModelSel(id,list,placeholder){const sel=document.getElementById(id);if(!sel)return;const cur=sel.value;
+  sel.innerHTML=`<option value="">${placeholder}</option>`+list.map(m=>`<option ${m===cur?"selected":""}>${esc(m)}</option>`).join("")+'<option value="__custom__">✏️ custom…</option>';}
+async function fillNewModels(){await _ensurePresets();const brain=document.getElementById("n_brain").value;const isApi=brain==="api";
+  const pr=document.getElementById("n_provrow");if(pr)pr.style.display=isApi?"block":"none";
+  const er=document.getElementById("n_escrow");if(er)er.style.display=isApi?"block":"none";
+  const psel=document.getElementById("n_provider");
+  if(psel&&!psel.options.length){const provs=Object.keys(_providers);const opts=(provs.length?provs:["nvidia","openrouter"]);
+    psel.innerHTML=opts.map(p=>`<option value="${esc(p)}">${esc((_providers[p]&&_providers[p].label)||p)}</option>`).join("")+'<option value="custom">custom…</option>';
+    psel.value=opts.includes("nvidia")?"nvidia":opts[0];}
+  provCustomToggle();
+  const list=_modelListFor();
+  _fillModelSel("n_model",list,"(template default)");
+  _fillModelSel("n_escmodel",list,"(use driver model)");}
+function provCustomToggle(){const psel=document.getElementById("n_provider"),cb=document.getElementById("n_provcustom");
+  if(psel&&cb)cb.style.display=psel.value==="custom"?"block":"none";}
+function provChange(){provCustomToggle();fillNewModels();}
+function modelPick(id){const sel=document.getElementById(id);if(sel.value==="__custom__"){const c=prompt("Model id:","");
+  if(c&&c.trim()){const o=document.createElement("option");o.textContent=c.trim();o.selected=true;sel.insertBefore(o,sel.lastElementChild);}else{sel.value="";}}}
+function newModelPick(){modelPick("n_model");}   /* back-compat shim */
 function closeNew(){document.getElementById("newmodal").style.display="none";}
 async function submitNew(){const g=id=>document.getElementById(id).value.trim();
   const name=g("n_name");const msg=document.getElementById("n_msg");
@@ -1204,6 +1245,13 @@ async function submitNew(){const g=id=>document.getElementById(id).value.trim();
   const mdl=g("n_model");if(mdl&&mdl!=="__custom__")body.model=mdl;
   if(g("n_interval"))body.interval_seconds=g("n_interval");
   if(g("n_mission"))body.mission=g("n_mission");
+  // clone an existing agent's brain
+  const cf=g("n_clonefrom");if(cf){body.clone_from=cf;if(document.getElementById("n_clonework").checked)body.clone_work=true;}
+  // brain=api endpoint: provider shorthand (or custom base/key-env) + escalation model
+  if(body.brain==="api"){const prov=g("n_provider");
+    if(prov==="custom"){const b=g("n_apibase"),k=g("n_keyenv");if(b)body.brain_api_base=b;if(k)body.brain_api_key_env=k;}
+    else if(prov)body.provider=prov;
+    const em=g("n_escmodel");if(em&&em!=="__custom__")body.escalation_model=em;}
   // (A) chosen existing credentials (chips)
   if(_secSel.size)body.secrets=[..._secSel];
   // (B) new name/value secret files
@@ -1843,10 +1891,31 @@ class H(BaseHTTPRequestHandler):
                     pass
             models_by_brain = {"claude": claude_tier, "optimize": claude_tier,
                                "api": eval_models, "local": []}
+            # BRAIN=api providers (no-Claude path): provider → endpoint base + key-env (mirrors
+            # bin/enclave PROVIDERS, used by the New-Agent modal to expand a provider choice).
+            providers = {
+                "nvidia":     {"label": "NVIDIA (free)", "base": "https://integrate.api.nvidia.com/v1",
+                               "key_env": "NVIDIA_API_KEY", "secret": "nvidia.env"},
+                "openrouter": {"label": "OpenRouter", "base": "https://openrouter.ai/api/v1",
+                               "key_env": "OPENROUTER_API_KEY", "secret": "openrouter.env"},
+            }
+            # Curated, verified-viable model ids per provider for the model dropdowns (NVIDIA = on the
+            # free tier + not rate-throttled; ordered driver→escalation→fast). OpenRouter falls back to
+            # the eval-recs list (models_by_brain["api"]).
+            provider_models = {
+                "nvidia": ["qwen/qwen3-next-80b-a3b-instruct", "minimaxai/minimax-m3",
+                           "openai/gpt-oss-120b", "openai/gpt-oss-20b",
+                           "meta/llama-4-maverick-17b-128e-instruct",
+                           "nvidia/llama-3.3-nemotron-super-49b-v1.5"],
+                "openrouter": eval_models,
+            }
+            # Combined list for the Config tab's BRAIN_MODEL / ESCALATION_MODEL dropdowns (provider unknown
+            # there) = curated NVIDIA + the eval-recs ids; "✏️ custom…" is always available too.
+            models_by_brain["api_all"] = sorted(set(eval_models) | set(provider_models["nvidia"]))
             return self._send(200, "application/json", json.dumps({
                 "presets": sorted(fleet_config.PRESETS), "defs": fleet_config.PRESETS,
                 "brains": sorted(fleet_config.BRAINS), "modes": sorted(fleet_config.MODES),
-                "models": models_by_brain}))
+                "models": models_by_brain, "providers": providers, "provider_models": provider_models}))
         if p == "/api/models":   # P4: model-eval recommendations (from an external recs file, if configured)
             recs_path = os.environ.get("ENCLAVE_MODEL_RECS", "")
             if recs_path and os.path.isfile(recs_path):
@@ -2335,9 +2404,17 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, "application/json", '{"error":"name must be kebab-case [a-z0-9][a-z0-9_-]*"}')
             # whitelist spec fields the spawn pipeline understands (enclave new --spec)
             spec = {"name": name}
-            for k in ("template", "brain", "model", "mission"):
+            for k in ("template", "brain", "model", "mission",
+                      # BRAIN=api endpoint (no-Claude path): provider shorthand or explicit base/key-env,
+                      # + a separate judgment-escalation model.
+                      "provider", "brain_api_base", "brain_api_key_env",
+                      "escalation_model", "escalation_base",
+                      # clone an existing agent's brain (skills/knowledge/memory/…) into the new one.
+                      "clone_from"):
                 if d.get(k):
                     spec[k] = d[k]
+            if d.get("clone_work"):
+                spec["clone_work"] = True
             if d.get("interval_seconds"):
                 try:
                     spec["interval_seconds"] = int(d["interval_seconds"])

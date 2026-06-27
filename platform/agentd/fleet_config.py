@@ -30,6 +30,10 @@ ALLOWED_KEYS = {
     "INTERVAL_SECONDS", "SUPERVISE", "CONTINUOUS_COOLDOWN", "TICK_TIMEOUT", "MAX_TURNS",
     "DELEGATION_ENFORCE", "DELEGATION_MAX_CHARS", "COMPACT_ENFORCE", "PERMISSION", "WORKDIR",
     "LOCAL_BRAIN_MODEL", "LOCAL_BRAIN_BASE", "LOCAL_REQ_TIMEOUT",
+    # BRAIN=api (any OpenAI-compatible provider — NVIDIA/OpenRouter/xAI/…): endpoint + driver model +
+    # the NAME of the key var, plus a separate judgment-escalation model and a per-agent spend cap.
+    "BRAIN_MODEL", "BRAIN_API_BASE", "BRAIN_API_KEY_ENV",
+    "ESCALATION_BASE", "ESCALATION_MODEL", "ESCALATION_KEY", "API_BUDGET_USD",
     "GUARD_ALLOW_GIT", "GUARD_EGRESS_ENFORCE",
     "MONITOR_MODE",   # fleet health monitor policy for this agent (off|observe|alert|suggest|autofix)
 }
@@ -49,6 +53,14 @@ PRESETS = {
     "chat-only-sonnet": {"BRAIN": "claude", "MODEL": "claude-sonnet-4-6", "SUPERVISE": "off"},
     # Cost-routed: route_brain picks cheapest reachable pool per tick.
     "optimize": {"BRAIN": "optimize", "ROUTER": "on", "SUPERVISE": "auto"},
+    # No-Claude, NVIDIA-free brain (task-routed: qwen drives, MiniMax-M3 for hard judgment). Needs
+    # NVIDIA_API_KEY in secrets/nvidia.env. Runs entirely off the Anthropic subscription.
+    "no-claude-nvidia": {"BRAIN": "api",
+                         "BRAIN_API_BASE": "https://integrate.api.nvidia.com/v1",
+                         "BRAIN_API_KEY_ENV": "NVIDIA_API_KEY",
+                         "BRAIN_MODEL": "qwen/qwen3-next-80b-a3b-instruct",
+                         "ESCALATION_MODEL": "minimaxai/minimax-m3",
+                         "SUPERVISE": "off"},
 }
 
 

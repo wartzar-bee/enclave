@@ -86,6 +86,14 @@ BRAINS = {
                  "cred_prompt": "Claude Code OAuth token (from `claude setup-token`) — optimize starts on Claude"},
 }
 
+# BRAIN=api providers: a `provider` spec field expands to the endpoint base + the NAME of the key var the
+# runtime resolves from secrets/ + the secret-file that key lives in. Add a row to support a new provider;
+# "custom" means base+key_env are given explicitly. (Any OpenAI-compatible endpoint works.)
+PROVIDERS = {
+    "nvidia":     {"base": "https://integrate.api.nvidia.com/v1", "key_env": "NVIDIA_API_KEY",     "secret": "nvidia.env"},
+    "openrouter": {"base": "https://openrouter.ai/api/v1",        "key_env": "OPENROUTER_API_KEY", "secret": "openrouter.env"},
+}
+
 # Known-good Claude model ids (the chat picker's allowlist). A typo here = a silently dead chat
 # ("couldn't generate a reply"), so init/brain reject an unknown one unless --allow-unknown-model.
 KNOWN_CLAUDE_MODELS = {"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"}
@@ -282,6 +290,45 @@ def _spec_args(spec):
             out += [flag, str(spec[key])]
     return out
 
+def _clone_source_home(agent_id):
+    """Resolve an existing agent's home/ by id under ENCLAVE_STACKS_ROOTS (the fleet roots the console
+    discovers agents from). Returns a Path or None."""
+    roots = (os.environ.get("ENCLAVE_STACKS_ROOTS") or str(REPO.parent)).split(":")
+    for r in roots:
+        h = pathlib.Path(r).expanduser() / agent_id / "home"
+        if h.is_dir():
+            return h
+    return None
+
+def _clone_brain(agent_id, home, include_work):
+    """Seed `home` from an existing agent's BRAIN: copy its knowledge dirs (skills/knowledge/memory/
+    reference/docs) + append its CLAUDE.md `## Mission` block. NEVER copies state/logs/secrets (runtime
+    state starts fresh). include_work also copies work/ (heavy — may be a separate git tree)."""
+    src = _clone_source_home(agent_id)
+    if not src:
+        print(f"  (clone_from: source agent '{agent_id}' not found under ENCLAVE_STACKS_ROOTS — skipped)")
+        return
+    dirs = ["skills", "knowledge", "memory", "reference", "docs"] + (["work"] if include_work else [])
+    copied = []
+    for d in dirs:
+        s = src / d
+        if s.is_dir():
+            shutil.copytree(s, home / d, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"))
+            copied.append(d)
+    # carry the source's Mission block into the clone's CLAUDE.md (the model + endpoint differ, the job doesn't)
+    try:
+        srctxt = (src / "CLAUDE.md").read_text()
+        i = srctxt.find("## Mission")
+        if i != -1:
+            cl = home / "CLAUDE.md"
+            block = "\n\n" + srctxt[i:].strip() + "\n"
+            if cl.exists() and "## Mission" not in cl.read_text():
+                cl.write_text(cl.read_text().rstrip() + block)
+    except OSError:
+        pass
+    print(f"  cloned BRAIN from '{agent_id}': {', '.join(copied) or '(no brain dirs found)'}")
+
 def _apply_spec_extras(spec, home, secrets, envf):
     """Apply the spec fields that aren't plain init flags to the freshly-scaffolded deployment."""
     mission = (spec.get("mission") or "").strip()
@@ -294,6 +341,42 @@ def _apply_spec_extras(spec, home, secrets, envf):
     if iv:
         _set_env_kv(home / "agent.env", {"INTERVAL_SECONDS": str(iv)})
         _set_env_kv(envf, {"INTERVAL_SECONDS": str(iv)})
+
+    # BRAIN=api endpoint wiring (the no-Claude path): a `provider` shorthand (nvidia/openrouter) expands to
+    # base + key-env; explicit brain_api_base / brain_api_key_env / escalation_* win. Written into agent.env
+    # so runtime.sh's BRAIN=api block drives local_agent.py against that endpoint with no Claude in the loop.
+    if (spec.get("brain") or "").strip().lower() == "api":
+        prov = (spec.get("provider") or "").strip().lower()
+        pinfo = PROVIDERS.get(prov, {})
+        api_base = (spec.get("brain_api_base") or pinfo.get("base") or "").strip()
+        key_env = (spec.get("brain_api_key_env") or pinfo.get("key_env") or "").strip()
+        apienv = {}
+        if api_base:
+            apienv["BRAIN_API_BASE"] = api_base
+        if key_env:
+            apienv["BRAIN_API_KEY_ENV"] = key_env
+        if spec.get("escalation_model"):
+            apienv["ESCALATION_MODEL"] = str(spec["escalation_model"]).strip()
+        if spec.get("escalation_base"):
+            apienv["ESCALATION_BASE"] = str(spec["escalation_base"]).strip()
+        if spec.get("api_budget_usd") not in (None, ""):
+            apienv["API_BUDGET_USD"] = str(spec["api_budget_usd"]).strip()
+        # Drop any Claude MODEL the template shipped — a BRAIN=api agent runs on BRAIN_MODEL, and a stray
+        # MODEL=claude-… misleads the dashboard into showing a Claude model for a no-Claude agent.
+        _set_env_kv(home / "agent.env", apienv, remove=("MODEL",))
+        # Ensure the provider's secret-file placeholder exists so the operator knows where the key goes
+        # (real value is staged by the spawn pipeline's secrets-staging, or pasted in later).
+        sfile = pinfo.get("secret")
+        if sfile and not (secrets / sfile).exists():
+            secrets.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _write(secrets / sfile, f"# {sfile} — {key_env} for this agent's BRAIN=api endpoint, no quotes\n{key_env}=\n", mode=0o600)
+
+    # clone_from: seed this agent's BRAIN from an existing deployment (a true twin that runs a different
+    # model). Copies the knowledge dirs only — never state/logs/secrets — so memory/skills/reference carry
+    # over while runtime state starts fresh. clone_work also copies the working tree (heavy; may be a repo).
+    if spec.get("clone_from"):
+        _clone_brain(str(spec["clone_from"]).strip(), home, bool(spec.get("clone_work")))
+
     names = []
     for s in (spec.get("secrets") or []):
         if isinstance(s, dict):

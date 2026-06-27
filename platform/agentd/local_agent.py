@@ -144,8 +144,11 @@ def _json_objects(text):
 #   <raw file content>       <raw shell command(s)>
 #   ```                      ```
 # Everything else stays JSON ```tool (short/structured args, rarely quote-heavy).
-_WRITE_RE = re.compile(r"```write[ \t]+(\S+)[ \t]*\r?\n(.*?)\r?\n```", re.DOTALL)
-_BASH_RE = re.compile(r"```(?:bash|sh|shell)[ \t]*\r?\n(.*?)\r?\n```", re.DOTALL)
+# The newline(s) around the body are OPTIONAL so SINGLE-LINE fences also parse — local models (e.g.
+# qwen) very often emit `​``bash cat foo``​` or `​``write /p <content>``​` on ONE line instead of the
+# multi-line form, which the strict \n-anchored version rejected → wasted "no tool call" steps.
+_WRITE_RE = re.compile(r"```write[ \t]+(\S+)[ \t]*\r?\n?(.*?)\r?\n?```", re.DOTALL)
+_BASH_RE = re.compile(r"```(?:bash|sh|shell)[ \t]*\r?\n?(.*?)\r?\n?```", re.DOTALL)
 
 
 def parse_tool_call(text):
@@ -435,6 +438,7 @@ Tools — the two you use most take a RAW fenced body (NO JSON, NO escaping):
 
   Put quotes, newlines, braces, code RAW inside those blocks — do NOT wrap them in JSON (JSON with a
   quoted command or a whole source file WILL break and be discarded). One block = one action.
+  (A single-line block is also accepted, e.g. ```bash ls -la``` — but you MUST close the fence with ```.)
 
 The remaining tools use a JSON ```tool block (their args are short — no quote-heavy content):
 - read      {"tool":"read","input":{"file_path":"...","offset"?,"limit"?}}
