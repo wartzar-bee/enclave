@@ -83,3 +83,48 @@ deliberately-stopped pod) is enforced **only at enqueue time in `fleet_monitor._
 `control_watcher` executor itself does not re-check it. A spec reaching the control queue from any other
 producer would be executed. Single-point, not defense-in-depth; a second check in
 `control_watcher._process` would make the invariant hold regardless of producer.
+
+## Follow-ups / open hardening roadmap (from the external review, 2026-06-27)
+
+The hermetic suite + opt-in live test are a strong **smoke + regression net**, but two non-Claude
+reviewers (DeepSeek V4 Pro, Gemini 2.5 Pro) judged a green run **not sufficient alone to gate a deploy**
+— the docker boundary is mocked and the real-boundary test is opt-in. Done this round: no-500 assertions,
+real time-window fixtures + value assertions, fail-loud cost harness, `boot_console` state restore,
+poll-not-sleep + health checks in the live test. **Still open, by priority:**
+
+- [ ] **Failure-mode fixtures.** Add corrupt / missing / empty `usage.jsonl`, missing `home/`, truncated
+      `events.jsonl`, unreadable file → assert *graceful, correct* degradation (not just "no 500"). The
+      defensive `try/except` paths are the production failure modes and are currently unverified.
+- [ ] **Real SSE test for `/api/stream`.** Today it only asserts connect + 200. Read the first events,
+      assert valid `event:`/`data:` framing + initial snapshot payload + a heartbeat within the interval.
+      Malformed SSE = silently stale dashboard.
+- [ ] **Coverage measurement.** Wrap the runner in `coverage run --branch`, set a floor (~80%) in CI.
+      "Every endpoint referenced" is presence, not branch coverage.
+- [ ] **chat_responder provider contract.** Tests mock the HTTP call away; the provider-call/streaming/
+      error path (what actually broke twice) is unexercised. Add a mock-server contract test.
+- [ ] **Concurrency smoke test.** The harness runs the snapshot/cost loop bodies once synchronously;
+      add one test that runs the real threads and hammers endpoints concurrently (races, stale cache).
+- [ ] **Frontend data-correctness.** E2E proves "renders without console errors," not "renders the right
+      data" — assert the DOM reflects the API (status dot, cost, agent grouping).
+- [ ] **Mock docker at the CLI-output level.** Test `fleet._compose_ls` parsing of real
+      `docker compose ls --format json` output instead of stubbing the function (the parse is untested).
+- [ ] **Schema-drift guard.** Validate fixtures against a captured real `usage.jsonl`/`events.jsonl`
+      sample (the `ts`-format bug was this class).
+- [ ] **`Check.fatal()`** for prerequisite assertions so a failed precondition aborts instead of
+      cascading into timeouts / `KeyError`s.
+- [ ] **Harness robustness.** `_free_port` TOCTOU race; `CHAT_PORT` formatting wraps for >99 agents.
+- [ ] **ENCLAVE HARDENING — operator-stopped defense-in-depth.** Add a second `.operator-stopped` check
+      in `control_watcher._process` (see "Known finding" above) so the invariant holds regardless of
+      which producer enqueued the restart spec.
+- [ ] **ENCLAVE HARDENING — watcher-freshness healthcheck.** Assert the running spawn daemon is the
+      current `spawn_watcher` (the stale-daemon bug silently broke create for a day). Surface it in the
+      dashboard `doctor`.
+- [ ] **CI workflow not yet on the remote.** `.github/workflows/tests.yml` is committed-ready on disk
+      but the push needs a token with **Workflows: write** (see RESUME notes).
+- [ ] **Decisions deferred to operator:** (a) add a *pytest dev layer* alongside the stdlib suites
+      (must keep stdlib for the no-pip baked image); (b) make `test_live_lifecycle.py` a **blocking CI
+      job** via docker-in-docker so the real boundary isn't opt-in.
+
+Full reviews: `reports/enclave-test-suite-SELF-REVIEW-2026-06-27.md` +
+`reports/enclave-test-suite-EXTERNAL-review-2026-06-27.md` (workspace). Re-run the external review any
+time with `python3 tools/enclave/review_test_suite.py`.
