@@ -76,11 +76,26 @@ def main():
         code, b = F.get(base, "/api/overview")
         check.eq("/api/overview 200", code, 200)
         check("/api/overview shape", _is_dict(b) and {"usage", "cap", "graph"} <= set(b))
+        # VALUE assertions (not just shape): the fixture spreads 3 ticks/agent across ~6.5 days, so the
+        # window-cutoff logic is exercised — 7d sees all 6 (2 agents x 3) and strictly more than 'today'
+        # (only the ~1h tick per agent). Also proves aggregation isn't silently empty-but-shaped.
+        u = b.get("usage", {})
+        t7 = (u.get("7d", {}) or {}).get("fleet") or {}
+        ttoday = (u.get("today", {}) or {}).get("fleet") or {}
+        twtd = (u.get("wtd", {}) or {}).get("fleet") or {}
+        check.eq("/api/overview 7d window sees all fixture ticks (2x3)", t7.get("ticks"), 6)
+        check("/api/overview window cutoff distinguishes today<=wtd<=7d AND today<7d",
+              ttoday.get("ticks", 0) <= twtd.get("ticks", 0) <= t7.get("ticks", 0)
+              and t7.get("ticks", 0) > ttoday.get("ticks", 0),
+              f"today={ttoday.get('ticks')} wtd={twtd.get('ticks')} 7d={t7.get('ticks')}")
+        check("/api/overview 7d cost actually aggregated (>0)", (t7.get("cost_usd") or 0) > 0, f"{t7}")
 
         # ---------- /api/graph ----------
         code, b = F.get(base, "/api/graph")
         check.eq("/api/graph 200", code, 200)
         check("/api/graph shape {nodes,links}", _is_dict(b) and "nodes" in b and "links" in b)
+        check("/api/graph nodes include the fixture agents (value, not shape)",
+              {"alpha", "beta"} <= {n.get("id") for n in (b.get("nodes") or [])})
 
         # ---------- /api/usage.csv ----------
         code, b = F.get(base, "/api/usage.csv?window=wtd", raw=True)
@@ -302,13 +317,17 @@ def main():
         code, _ = F.post(base, "/api/create", {"name": "test-new", "brain": "claude"})
         check.eq("POST create duplicate -> 409", code, 409)
 
-        # ---------- docker-touching POSTs: structured no-crash response (NOT success) ----------
+        # ---------- docker-touching POSTs: must NOT 500. Hermetically (no real container) the verb
+        # FAILS gracefully -> HTTP 200 with ok:false. A 500 = unhandled server exception = test failure
+        # (external review: accepting 500 made the suite "lie"). ----------
         code, b = F.post(base, "/api/action", {"action": "down", "id": "alpha"})
-        check("POST action down -> structured no-crash",
-              code in (200, 500) and _is_dict(b) and ("ok" in b or "error" in b))
+        check.eq("POST action down -> 200 (NOT 500)", code, 200)
+        check("POST action down -> structured {ok: bool}",
+              _is_dict(b) and isinstance(b.get("ok"), bool), f"{code} {b}")
         code, b = F.post(base, "/api/config", {"id": "alpha", "updates": {"MAX_TURNS": "30"}})
-        check("POST config updates -> structured no-crash",
-              code in (200, 500) and _is_dict(b) and ("ok" in b or "error" in b))
+        check.eq("POST config updates -> 200 (NOT 500)", code, 200)
+        check("POST config updates -> structured {ok: bool}",
+              _is_dict(b) and isinstance(b.get("ok"), bool), f"{code} {b}")
 
         # ---------- /api/services/restart: allowlist-gated host-bridge restart ----------
         # unknown / non-controllable service -> 400 (no bridge-control map configured by default)

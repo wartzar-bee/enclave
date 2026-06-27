@@ -60,15 +60,22 @@ class Check:
 
 
 # --------------------------------------------------------------------------- fleet fixture builder
+# 3 ticks, deliberately spread across the week by build_fleet (one ~1h ago, one ~3d ago, one ~6.5d ago)
+# so the today/wtd/7d window-cutoff logic is actually exercised — with all ticks in one window the
+# windows are indistinguishable and the cutoff code is unverified (external review).
 _USAGE_DEFAULT = [
-    # a few ticks so diagnostics/cost have something to chew on (ts filled in relative to now)
     {"reason": "heartbeat", "model": "claude-sonnet-4-6", "input": 500, "output": 1200,
      "cache_read": 900000, "cache_write": 12000, "cost_usd": 1.1, "duration_s": 42, "turns": 18,
      "rc": 0, "subtype": "success"},
     {"reason": "continue", "model": "claude-sonnet-4-6", "input": 480, "output": 1300,
      "cache_read": 1100000, "cache_write": 9000, "cost_usd": 1.4, "duration_s": 51, "turns": 22,
      "rc": 0, "subtype": "success"},
+    {"reason": "continue", "model": "claude-sonnet-4-6", "input": 510, "output": 1100,
+     "cache_read": 1000000, "cache_write": 10000, "cost_usd": 1.2, "duration_s": 47, "turns": 20,
+     "rc": 0, "subtype": "success"},
 ]
+# hours-ago for each tick when a spec doesn't pin its own ts: newest .. oldest, spanning ~6.5 days.
+_TICK_AGES_H = [1.0, 72.0, 156.0]
 
 
 def build_fleet(specs=None, root=None):
@@ -140,10 +147,14 @@ def build_fleet(specs=None, root=None):
         # tick is dropped from every window) — and the dashboard JS calls .slice on ts — so the
         # fixture must mirror that shape, or the cost/overview/diagnostics paths test empty data.
         usage = spec.get("usage", _USAGE_DEFAULT)
+        n = len(usage)
         with (st / "usage.jsonl").open("w") as f:
             for j, rec in enumerate(usage):
                 rec = dict(rec)
-                rec.setdefault("ts", _iso(now - (len(usage) - j) * 3600))
+                # spread across ~6.5 days (newest first) so today/wtd/7d differ; honor an explicit ts.
+                age_h = _TICK_AGES_H[j] if (usage is _USAGE_DEFAULT and j < len(_TICK_AGES_H)) \
+                    else 1.0 + (155.0 * j / max(1, n - 1))
+                rec.setdefault("ts", _iso(now - age_h * 3600))
                 f.write(json.dumps(rec) + "\n")
 
         # external api spend
@@ -191,14 +202,22 @@ def boot_console(root, token="", control_queue=None, bridges="", extra_env=None,
     os.environ["CONSOLE_TOKEN"] = token or ""
     os.environ["ENCLAVE_DOCTOR_BRIDGES"] = bridges or ""
     cq = control_queue or str(pathlib.Path(root) / "_control")
-    os.environ["ENCLAVE_CONTROL_QUEUE"] = cq
-    # keep the cap probe from hitting the network during tests
-    os.environ.setdefault("ENCLAVE_MONITOR_HEARTBEAT", str(pathlib.Path(root) / "monitor-heartbeat.json"))
-    os.environ.setdefault("ENCLAVE_MONITOR_STATE", str(pathlib.Path(root) / "monitor-state.json"))
-    for k, v in (extra_env or {}).items():
-        os.environ[k] = v
+    # Assign (NOT setdefault) every env key to THIS root, and remember prior values so stop() can
+    # restore them — otherwise a second boot in the same process reuses the first root's paths
+    # (external review). Monitor paths point at this root so the cap probe never hits the network.
+    _env_keys = {"ENCLAVE_STACKS_ROOTS": str(root), "CONSOLE_TOKEN": token or "",
+                 "ENCLAVE_DOCTOR_BRIDGES": bridges or "", "ENCLAVE_CONTROL_QUEUE": cq,
+                 "ENCLAVE_MONITOR_HEARTBEAT": str(pathlib.Path(root) / "monitor-heartbeat.json"),
+                 "ENCLAVE_MONITOR_STATE": str(pathlib.Path(root) / "monitor-state.json"),
+                 **(extra_env or {})}
+    _env_prev = {k: os.environ.get(k) for k in _env_keys}
+    os.environ.update(_env_keys)
 
     import fleet
+    # snapshot the module globals we mutate so stop() can put them back (keeps suites isolated even
+    # when several boot in one process).
+    _fleet_prev = {"STACKS_ROOTS": fleet.STACKS_ROOTS, "_scan_cache": fleet._scan_cache,
+                   "_compose_ls": fleet._compose_ls, "_manifest": fleet._manifest}
     fleet.STACKS_ROOTS = [pathlib.Path(root).resolve()]
     fleet._scan_cache = {"ts": 0.0, "data": {}}
     if hermetic:
@@ -241,6 +260,14 @@ def boot_console(root, token="", control_queue=None, bridges="", extra_env=None,
             srv.server_close()
         except Exception:
             pass
+        # restore mutated fleet globals + os.environ so the next boot/suite starts clean
+        for k, v in _fleet_prev.items():
+            setattr(fleet, k, v)
+        for k, prev in _env_prev.items():
+            if prev is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = prev
 
     return console, base, stop
 
@@ -271,8 +298,11 @@ def _run_cost_once(console):
         with console._cost_lock:
             console._cost.update(usage=wins, external=ext, cap=cap, series=ser,
                                  alerts=alerts, last=last, graph=graph, ts=time.time())
-    except Exception as e:  # fail-open like production
-        print(f"  (cost-once warning: {e})")
+    except Exception as e:
+        # FAIL LOUD in tests (production's loop is fail-open, but a test harness that swallows a
+        # cost-computation error lets every shape-only cost/overview assertion pass against empty
+        # data — external review). Surface it so the suite goes red.
+        raise RuntimeError(f"_run_cost_once failed — cost subsystem is broken, not 'fail-open': {e}") from e
 
 
 # --------------------------------------------------------------------------- HTTP helpers

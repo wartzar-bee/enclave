@@ -52,6 +52,28 @@ def _exists(name):
     return _docker("inspect", name).returncode == 0
 
 
+def _restart_count(name):
+    r = _docker("inspect", "-f", "{{.RestartCount}}", name)
+    try:
+        return int(r.stdout.strip()) if r.returncode == 0 else -1
+    except ValueError:
+        return -1
+
+
+def _wait(fn, timeout=40, interval=0.5):
+    """Poll until fn() is truthy or timeout — replaces fixed time.sleep so the test is fast when the
+    system is fast and robust when it's slow (external review: fixed sleeps make E2E flaky)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if fn():
+                return True
+        except Exception:
+            pass
+        time.sleep(interval)
+    return False
+
+
 def _skip(why):
     print(f"SKIP: {why}")
     raise SystemExit(0)
@@ -77,25 +99,35 @@ def _preflight():
 
 
 def teardown():
-    """Best-effort: stop + remove the throwaway and its on-disk dir + any queue residue."""
+    """Stop + remove the throwaway and its on-disk dir + any queue residue. Returns a list of cleanup
+    failures (non-zero rc) so the caller can surface them — a silent teardown failure leaves orphaned
+    containers/dirs that poison later runs (external review)."""
+    fails = []
     d = FLEET / NAME
     cf = d / "docker-compose.yml"
     if cf.exists():
-        subprocess.run(["docker", "compose", "-f", str(cf), "down", "-v"],
-                       capture_output=True, text=True, timeout=120)
+        r = subprocess.run(["docker", "compose", "-f", str(cf), "down", "-v"],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            fails.append(f"compose down rc={r.returncode}: {(r.stderr or '')[-160:]}")
     for n in (NAME, f"{NAME}-chat"):
         if _exists(n):
-            _docker("rm", "-f", n)
+            r = _docker("rm", "-f", n)
+            if r.returncode != 0:
+                fails.append(f"rm {n} rc={r.returncode}")
     if d.exists():
-        subprocess.run(["rm", "-rf", str(d)], timeout=30)
+        r = subprocess.run(["rm", "-rf", str(d)], capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            fails.append(f"rm -rf {d} rc={r.returncode}")
     q = FLEET / "_queue"
     for sub in ("incoming", "processed", "failed"):
         for f in (q / sub).glob(f"*{NAME}*.json") if (q / sub).exists() else []:
             try: f.unlink()
-            except OSError: pass
+            except OSError as e: fails.append(f"unlink {f}: {e}")
     staging = q / "secrets-staging" / NAME
     if staging.exists():
         subprocess.run(["rm", "-rf", str(staging)], timeout=10)
+    return fails
 
 
 def main():
@@ -113,13 +145,16 @@ def main():
               f"{code} {body}")
 
         # ---- spawn watcher builds + starts it (poll up to 180s for the image build) ----
-        deadline = time.time() + 180
-        while time.time() < deadline and not _running(NAME):
-            time.sleep(3)
-        check("spawn watcher built + started the container", _running(NAME),
+        check("spawn watcher built + started the container", _wait(lambda: _running(NAME), timeout=180, interval=3),
               "container never came up — is the spawn watcher (org.enclave.spawn) running current code?")
         if not _running(NAME):
             raise SystemExit(check.report())
+
+        # HEALTH, not just 'running': give it a moment and assert it isn't crash-looping (docker would
+        # flip a crash-looping container in/out of Running while RestartCount climbs).
+        time.sleep(5)
+        check("agent is healthy, not crash-looping (RestartCount==0)", _restart_count(NAME) == 0,
+              f"RestartCount={_restart_count(NAME)}")
 
         # dashboard reflects it
         code, body = F.get(BASE, "/api/fleet")
@@ -130,39 +165,37 @@ def main():
         agent_env = FLEET / NAME / "home" / "agent.env"
         marker = FLEET / NAME / "home" / "state" / ".operator-stopped"
 
-        # ---- CONFIG CHANGE while running -> force-recreate ----
+        # ---- CONFIG CHANGE while running -> force-recreate (poll for the new container id) ----
         before = _cid(NAME)
         code, body = F.post(BASE, "/api/config", {"id": NAME, "updates": {"INTERVAL_SECONDS": "90000"}})
         check("config edit accepted", code == 200 and isinstance(body, dict) and body.get("ok"), f"{code} {body}")
-        time.sleep(6)
-        check("config edit force-recreated the container (new id)", _cid(NAME) and _cid(NAME) != before)
+        check("config edit force-recreated the container (new id)",
+              _wait(lambda: _cid(NAME) and _cid(NAME) != before, timeout=40))
         check("config edit persisted to agent.env",
               "INTERVAL_SECONDS=90000" in agent_env.read_text() if agent_env.exists() else False)
-        check("agent still running after config change", _running(NAME))
+        check("agent still running after config change", _wait(lambda: _running(NAME), timeout=30))
 
         # ---- STOP (down) ----
         code, body = F.post(BASE, "/api/action", {"action": "down", "id": NAME})
         check("down accepted", code == 200 and isinstance(body, dict) and body.get("ok"), f"{code} {body}")
-        time.sleep(4)
-        check("container stopped after down", not _running(NAME))
-        check("operator-stopped marker written on down", marker.exists())
+        check("container stopped after down", _wait(lambda: not _running(NAME), timeout=40))
+        check("operator-stopped marker written on down", _wait(lambda: marker.exists(), timeout=10))
 
         # ---- START (up) ----
         code, body = F.post(BASE, "/api/action", {"action": "up", "id": NAME})
         check("up accepted", code == 200 and isinstance(body, dict) and body.get("ok"), f"{code} {body}")
-        time.sleep(6)
-        check("container running after up", _running(NAME))
-        check("operator-stopped marker cleared on up", not marker.exists())
+        check("container running after up", _wait(lambda: _running(NAME), timeout=40))
+        check("operator-stopped marker cleared on up", _wait(lambda: not marker.exists(), timeout=10))
 
         # ---- RESTART ----
         code, body = F.post(BASE, "/api/action", {"action": "restart", "id": NAME})
         check("restart accepted", code == 200 and isinstance(body, dict) and body.get("ok"), f"{code} {body}")
-        time.sleep(6)
-        check("container running after restart", _running(NAME))
+        check("container running after restart", _wait(lambda: _running(NAME), timeout=40))
     finally:
-        teardown()
+        fails = teardown()
         gone = not _exists(NAME) and not (FLEET / NAME).exists()
         check("teardown removed the throwaway (container + dir)", gone)
+        check("teardown had no cleanup failures (no orphans left)", not fails, "; ".join(fails))
 
     raise SystemExit(check.report())
 
