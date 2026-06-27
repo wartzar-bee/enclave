@@ -74,3 +74,19 @@ firewalled — a heavy lift for an opt-in the wiki already replaces.
 4. The `run_sandboxed()` executor is the next BUILD step (gated by engineering, not security): per
    `docs/WASM-SANDBOX.md`, WASI can't run arbitrary `bash`, so it needs a restricted exec surface (or an
    interpreter compiled to WASM), not a drop-in shell wrapper.
+
+## `ECC` ("Everything Claude Code", github.com/affaan-m/ECC) — v2.0.0 — VERDICT: BORROW FILE-BY-FILE, DO NOT INSTALL (2026-06-28)
+Not a baked dependency — a large MIT framework of agentic-coding methodology/skills/agents/hooks we
+mined for ideas. We **re-authored** (did NOT copy) 8 starter skills + 3 verifier subagents from it into
+`skills/` + `agents/` (seeded by `bin/enclave init`). Precedent: re-author rather than
+install — distil the idea, own the file.
+
+| Check | Result |
+|---|---|
+| Provenance / license | Affaan Mustafa (single maintainer + ~230 contributors), **MIT**, ecc.tools, real upstream (2000+ issues/PRs), mature `SECURITY.md` + a supply-chain IOC scanner |
+| Install mechanism | `install.sh`→`scripts/install-apply.js` = file-copy into `~/.claude` only; `npm i` pulls 3 reputable deps (`@iarna/toml`/`ajv`/`sql.js`); ECC postinstall is a harmless `echo`. No remote-code download, no `eval` |
+| Exfil / phone-home | **None in core.** All network is opt-in tooling gated on user-supplied tokens (Discord bot, LLM providers, optional MCPs). `ecc_dashboard.py` = local Tkinter, no sockets. No reads of `.ssh`/`.secrets`/keychain to send anywhere |
+| Instruction-injection | Clean — scanned 271 skills/67 agents; hits are *defensive* (skills that treat plan/file content as untrusted data). No malicious prompts |
+| **Risks (why NOT install wholesale)** | (1) `hooks/hooks.json` = ~25 auto-running, full-priv hooks re-trusted on every upstream pull — poor fit for our no-timer/no-auto rules; (2) `scripts/auto-update.js` = `git pull`+reinstall (never cron it); (3) SaaS-wired pieces: `skills/social-publisher` (getsocialclaw.com), `scripts/hooks/insaits-*` (pip `insa-its`), `.mcp.json` `chrome-devtools-mcp@latest` (unpinned) |
+
+**Decision:** safe to READ + to re-author individual `.md` skills/agents after per-file review. **Never** run `install.sh`/`auto-update.js`, adopt the hook bundle, or copy the SaaS-wired files. The borrowed pack carries `origin: ECC-distilled` in its frontmatter.
