@@ -186,6 +186,17 @@ CHAT_PREAMBLE = (
     "confidence, so they can confirm or bump it. Only capture things with LASTING value — real facts, "
     "corrections, preferences, decisions — never chit-chat or one-off task steps.")
 
+# Appended to EVERY chat turn via --append-system-prompt (including resumed sessions, where CHAT_PREAMBLE
+# is NOT re-injected). cwd=/agent auto-loads the agent's CLAUDE.md (its autonomous WORK-TICK mission —
+# "build, every tick advance a game, never idle"); in a CHAT that makes it explore/build instead of
+# answering, burning the turn timeout. This override says: this is a live conversation — ANSWER directly.
+CHAT_SYSTEM = (
+    "You are in a LIVE chat with the operator through a web UI. This is a CONVERSATION, not an autonomous "
+    "work tick: ANSWER the operator's message directly and concisely. Do NOT read inbox.md, do NOT run the "
+    "per-tick 'pick the next build step' mission, do NOT start long autonomous builds unless explicitly "
+    "asked. Use your tools/knowledge to actually answer (qmd, reading files in /work, read-only queries), "
+    "remember everything earlier in this thread, and output only your reply (shown directly in chat).")
+
 
 def _conv_history(agent_dir, conv_id):
     """Recent turns of THIS conversation — only for the api/local fallback (no native session). The
