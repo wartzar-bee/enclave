@@ -10,6 +10,10 @@ origin: ECC-distilled (verification-loop + tdd-workflow)
 "Done" is a thing you PROVE, never a thing you assert. Before marking any work item done, run the
 gate in order and STOP at the first hard failure — fixing it before going further.
 
+(A PostToolUse `verify_edit` hook already auto-catches syntax/parse breakage the instant you save a
+code file — if it tells you an edit broke a file, fix it then. That's the cheap reflex check; THIS
+gate is the deeper one — build, tests, behaviour — you run before calling work done.)
+
 ## The gate (run in this order; stop on a hard fail)
 1. **Build / runs** — does it actually build/start? (`<build cmd> 2>&1 | tail -20`). Build fails → STOP, fix first. Nothing downstream matters if it doesn't build.
 2. **Types** — typecheck clean (`tsc --noEmit` / `pyright` / equivalent). Fix criticals first.

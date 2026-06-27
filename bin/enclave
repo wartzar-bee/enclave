@@ -577,7 +577,13 @@ def cmd_init(args):
                      "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/guard.py"}]}]
             if _dg:
                 _pre.append({"matcher": "Write|Edit|MultiEdit", "hooks": _dg})
-            _write(setjson, json.dumps({"hooks": {"PreToolUse": _pre}}, indent=2) + "\n")
+            _hk = {"PreToolUse": _pre}
+            # PostToolUse: verify_edit runs a fast per-file syntax/parse check after an edit and feeds a
+            # real breakage back to the agent — the mechanical first-gate of the verify-before-done skill.
+            if (home / ".claude" / "hooks" / "verify_edit.py").exists():
+                _hk["PostToolUse"] = [{"matcher": "Write|Edit|MultiEdit",
+                    "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/verify_edit.py"}]}]
+            _write(setjson, json.dumps({"hooks": _hk}, indent=2) + "\n")
     # 1a-iii) ship the VERIFIER SUBAGENTS into home/.claude/agents so a BRAIN=claude agent's verifier-gate
     #         can spawn them by type (Task tool: code-reviewer / silent-failure-hunter / security-reviewer).
     #         Read-only review agents; harmless for local/api brains (they have no Task tool — skills cover them).
