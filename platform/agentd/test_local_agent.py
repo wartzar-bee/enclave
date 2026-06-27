@@ -61,5 +61,23 @@ check("first call in document order wins", c and c["input"]["command"].strip() =
 
 check("no fenced/json call → None", call("just thinking out loud, no action") is None)
 
+# ── dashboard telemetry helpers (events.jsonl source for local/api agents) ───────────────────────
+import json as _json, tempfile as _tmp, pathlib as _pl
+check("_event_summary bash → command", la._event_summary("bash", {"command": "ls -la /x"}) == "ls -la /x")
+check("_event_summary write → file_path", la._event_summary("write", {"file_path": "/work/a.py"}) == "/work/a.py")
+check("_event_summary grep → pattern", la._event_summary("grep", {"pattern": "reelData"}) == "reelData")
+check("_EVENT_TOOL maps local→dashboard label", la._EVENT_TOOL.get("bash") == "Bash" and la._EVENT_TOOL.get("write") == "Write")
+
+_sd = _pl.Path(_tmp.mkdtemp(prefix="la-tel-")) / "state"
+la._emit_event(_sd, {"ts": 1, "agent": "x", "event": "tool", "tool": "Bash", "summary": "ls"})
+_ev = _sd / "events.jsonl"
+check("_emit_event creates state/events.jsonl", _ev.exists())
+check("_emit_event writes one valid JSON record", _json.loads(_ev.read_text().splitlines()[-1])["tool"] == "Bash")
+try:                                              # a bad path must NOT raise — telemetry never breaks a tick
+    la._emit_event(_pl.Path("/proc/nonexistent/state"), {"event": "tick_end"})
+    check("_emit_event swallows write errors (non-blocking)", True)
+except Exception:
+    check("_emit_event swallows write errors (non-blocking)", False)
+
 print(f"\n{passed}/{passed + failed} passed" + ("" if not failed else f"  ({failed} FAILED)"))
 raise SystemExit(1 if failed else 0)

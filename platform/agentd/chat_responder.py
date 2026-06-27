@@ -38,6 +38,18 @@ def _read_jsonl(p):
         return []
 
 
+def _write_reply(reply_file, conv_id, text):
+    """Write the reply web_chat polls, PLUS a sidecar (chat-reply.cid) naming the conversation it belongs
+    to — so web_chat routes it to the RIGHT thread by id, not by fragile FIFO order (which crossed replies
+    when turns finished out of order, e.g. a timeout while another conversation answered first). The cid is
+    written BEFORE the reply so it's already present when web_chat sees the reply's mtime change."""
+    try:
+        (reply_file.parent / "chat-reply.cid").write_text(conv_id or "")
+    except Exception:
+        pass
+    reply_file.write_text(text)
+
+
 def _run_interruptible(cmd, cwd, timeout, stop_file, log):
     """Run a subprocess, but KILL it if `stop_file` appears (operator hit Stop) or timeout elapses.
     Returns (returncode, stdout, stderr) on completion, "STOPPED" if cancelled, None on timeout/spawn-fail."""
@@ -155,7 +167,20 @@ def _chat_model(agent_dir, brain):
         return m
     if brain == "claude":
         return os.environ.get("MODEL", "").strip() or "claude-sonnet-4-6"
+    if brain == "local":   # a local-brain agent chats on its LOCAL model (MLX), not a cloud default
+        return os.environ.get("LOCAL_BRAIN_MODEL", "").strip() or "lmstudio-community/Qwen3-Coder-Next-MLX-4bit"
     return os.environ.get("BRAIN_MODEL", "").strip() or "deepseek/deepseek-chat"
+
+
+def _disallowed_tools():
+    """Tools blocked in a chat turn. AskUserQuestion is always blocked (interactive → a headless `claude
+    -p` turn stalls to timeout). The BUILDING tools (Bash/Write/Edit/NotebookEdit) are blocked BY DEFAULT
+    so a chat message can't send the agent off building/serving/screenshotting (the 8-tool 240s-timeout
+    failure) — it answers + investigates read-only instead. Set CHAT_ALLOW_WRITES=1 to let chat act."""
+    d = ["AskUserQuestion"]
+    if not os.environ.get("CHAT_ALLOW_WRITES"):
+        d += ["Bash", "Write", "Edit", "NotebookEdit"]
+    return d
 
 
 # Established once on the first turn; session resume carries it across the whole thread.
@@ -194,10 +219,17 @@ CHAT_PREAMBLE = (
 # answering, burning the turn timeout. This override says: this is a live conversation — ANSWER directly.
 CHAT_SYSTEM = (
     "You are in a LIVE chat with the operator through a web UI. This is a CONVERSATION, not an autonomous "
-    "work tick: ANSWER the operator's message directly and concisely. Do NOT read inbox.md, do NOT run the "
-    "per-tick 'pick the next build step' mission, do NOT start long autonomous builds unless explicitly "
-    "asked. Use your tools/knowledge to actually answer (qmd, reading files in /work, read-only queries), "
-    "remember everything earlier in this thread, and output only your reply (shown directly in chat).")
+    "work tick: ANSWER the operator's message directly and concisely, in TEXT. "
+    "Your tools here are READ-ONLY (Read files, Grep/Glob, qmd search, read-only queries) — use them to FIND "
+    "the answer. For 'status?' or 'what's going on', read state/rollup.md, work.json and state/portfolio.md "
+    "and summarise where the work actually stands, in a few lines. "
+    "You CANNOT and MUST NOT build, edit, or run things in this chat: there are NO Bash/Write/Edit tools here, "
+    "so do NOT try to start a game build, launch a server, render screenshots, or run the per-tick mission — "
+    "that work happens on the WORK TICK, not in chat (and trying burns the turn with no answer). If the "
+    "operator asks you to DO or CHANGE something (e.g. 'keep working', 'fix X', 'build Y'), briefly confirm you "
+    "understood and tell them it'll be handled on the work tick (or to queue it via the work queue / inbox) — "
+    "then STOP. Never read inbox.md or follow the 'pick the next build step' protocol here. Remember everything "
+    "earlier in this thread, and output only your reply (shown directly in chat).")
 
 
 def _conv_history(agent_dir, conv_id):
@@ -261,15 +293,18 @@ def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
     turn = msg
     if images:
         turn = "User attached image(s); read them with the Read tool:\n" + "\n".join(f"- {p}" for p in images) + "\n\n" + msg
-    # --disallowedTools AskUserQuestion: it's INTERACTIVE — in a headless `claude -p` chat turn nothing
-    # can answer it, so the turn stalls until CHAT_TURN_TIMEOUT and the user sees "timed out / failed to
-    # start". Blocking it forces the agent to answer (or ask its clarifying question) in TEXT instead.
-    # --append-system-prompt CHAT_SYSTEM: cwd=/agent auto-loads the agent's CLAUDE.md (its autonomous
-    # WORK-TICK mission — "build, every tick advance a game, never idle"). In a CHAT that makes it explore
-    # /build instead of answering, burning the timeout. This override tells it: this is a conversation —
-    # ANSWER, don't run the mission.
+    # --disallowedTools: chat turns are conversational + READ-ONLY by default. We disallow:
+    #   • AskUserQuestion — INTERACTIVE; in a headless `claude -p` turn nothing answers it, so the turn
+    #     stalls to CHAT_TURN_TIMEOUT. Blocking it forces a TEXT answer / clarifying question instead.
+    #   • Bash/Write/Edit/NotebookEdit — the BUILDING tools. cwd=/agent auto-loads the agent's work-tick
+    #     CLAUDE.md ("build, every tick advance a game, never idle"), so in a CHAT the agent would go off
+    #     building a game / starting servers / rendering screenshots — 8 tool calls, 240s timeout, NO answer
+    #     (the exact failure the operator hit). Read/Grep/Glob/qmd stay so it can still investigate to answer
+    #     (e.g. Read state/rollup.md for "status?"). Set CHAT_ALLOW_WRITES=1 to let chat act (build/edit).
+    # --append-system-prompt CHAT_SYSTEM tells it: this is a conversation — ANSWER, don't run the mission.
+    disallowed = _disallowed_tools()
     base = ["claude", "--model", model, "--dangerously-skip-permissions",
-            "--disallowedTools", "AskUserQuestion",
+            "--disallowedTools", ",".join(disallowed),
             "--append-system-prompt", CHAT_SYSTEM,
             "--output-format", "stream-json", "--verbose"]
     stop_file = agent_dir / "state" / "chat-stop"
@@ -343,8 +378,20 @@ def _openrouter_key():
 
 def _answer_api(prompt, model, timeout, log):
     """Single-shot completion for BRAIN=api/local (no tools)."""
-    base = os.environ.get("BRAIN_API_BASE") or "https://openrouter.ai/api/v1"
+    brain = os.environ.get("BRAIN", "claude")
+    # CHAT_BASE lets chat run on a DIFFERENT endpoint than the work brain — e.g. a local-MLX agent whose
+    # single GPU is busy with the tick can chat on a fast cloud-free model (NVIDIA) so status replies don't
+    # time out waiting on the contended local server. Pair with CHAT_MODEL.
+    chat_base = os.environ.get("CHAT_BASE", "").strip()
+    if chat_base:
+        base = chat_base
+    elif brain == "local":   # local MLX server (no real auth) — don't fall through to OpenRouter + a 401
+        base = os.environ.get("LOCAL_BRAIN_BASE") or os.environ.get("BRAIN_API_BASE") or "http://host.docker.internal:8081/v1"
+    else:
+        base = os.environ.get("BRAIN_API_BASE") or "https://openrouter.ai/api/v1"
     key = _openrouter_key()
+    if not key and brain == "local" and not chat_base:
+        key = "local"   # local server ignores the bearer token
     body = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}],
                        "max_tokens": int(os.environ.get("CHAT_MAX_TOKENS", "1024"))}).encode()
     req = urllib.request.Request(base.rstrip("/") + "/chat/completions", data=body,
@@ -446,9 +493,9 @@ def chat_loop(agent_dir, log=print):
                     else:
                         reply = _answer_api(_api_prompt(agent_dir, conv_id, text, images), model, timeout, log)
                 if reply == "STOPPED":
-                    reply_file.write_text("_(stopped)_")
+                    _write_reply(reply_file, conv_id, "_(stopped)_")
                 elif reply:
-                    reply_file.write_text(reply)
+                    _write_reply(reply_file, conv_id, reply)
                     log(f"chat reply sent ({len(reply)} chars)")
                     if first and not reply.startswith(ERR):   # don't title a conversation off an error message
                         ti = _gen_title(agent_dir, brain, text, timeout, log)
@@ -468,7 +515,7 @@ def chat_loop(agent_dir, log=print):
                         msg += "\n\n```trace\n" + tr + "\n```"   # collapsible block in the UI — review what it did
                         try: tracef.unlink()
                         except OSError: pass
-                    reply_file.write_text(msg)
+                    _write_reply(reply_file, conv_id, msg)
         except Exception as e:
             log(f"chat loop error: {e}")
         time.sleep(POLL_SECS)

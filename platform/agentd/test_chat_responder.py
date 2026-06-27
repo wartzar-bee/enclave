@@ -26,7 +26,8 @@ check = F.Check()
 
 # env vars these tests poke; cleared before each env-sensitive block for determinism
 _TEST_KEYS = ["MODEL", "CHAT_MODEL", "BRAIN_MODEL", "BRAIN_API_KEY_ENV", "OPENROUTER_API_KEY",
-              "LOCAL_BRAIN_KEY", "NVIDIA_API_KEY", "AGENT_DIR", "TOOLS_ROOT", "BRAIN_API_BASE"]
+              "LOCAL_BRAIN_KEY", "NVIDIA_API_KEY", "AGENT_DIR", "TOOLS_ROOT", "BRAIN_API_BASE",
+              "BRAIN", "LOCAL_BRAIN_BASE", "LOCAL_BRAIN_MODEL", "CHAT_BASE", "CHAT_ALLOW_WRITES"]
 
 
 def _clear_env():
@@ -170,6 +171,67 @@ def main():
     check("_SAFE_ID accepts c123", bool(C._SAFE_ID.match("c123")))
     check("_SAFE_ID rejects abc", not C._SAFE_ID.match("abc"))
     check("_SAFE_ID rejects c12a", not C._SAFE_ID.match("c12a"))
+
+    # ---------------------------------------------------------------- _write_reply: conv-id sidecar (cross-reply fix)
+    _clear_env()
+    rf = home / "state" / "chat-reply.md"
+    C._write_reply(rf, "c424242", "hello world")
+    check.eq("_write_reply writes the reply text", rf.read_text(), "hello world")
+    check.eq("_write_reply writes the conversation-id sidecar",
+             (home / "state" / "chat-reply.cid").read_text().strip(), "c424242")
+    C._write_reply(rf, None, "no conv")
+    check.eq("_write_reply tolerates a None conv id (empty sidecar)",
+             (home / "state" / "chat-reply.cid").read_text().strip(), "")
+
+    # ---------------------------------------------------------------- _chat_model: a local-brain agent chats local
+    _clear_env()
+    ml = C._chat_model(home, "local").lower()
+    check("_chat_model local default is a local MLX id (not a cloud default)", "mlx" in ml or "qwen" in ml)
+    os.environ["LOCAL_BRAIN_MODEL"] = "my/local-model"
+    check.eq("_chat_model local honors LOCAL_BRAIN_MODEL", C._chat_model(home, "local"), "my/local-model")
+    _clear_env()
+
+    # ---------------------------------------------------------------- _disallowed_tools: read-only chat by default
+    _clear_env()
+    dt = C._disallowed_tools()
+    check("chat blocks AskUserQuestion (interactive → stalls)", "AskUserQuestion" in dt)
+    check("chat blocks Bash by default (no off-building)", "Bash" in dt)
+    check("chat blocks Write+Edit by default", "Write" in dt and "Edit" in dt)
+    os.environ["CHAT_ALLOW_WRITES"] = "1"
+    dt2 = C._disallowed_tools()
+    check("CHAT_ALLOW_WRITES=1 re-enables building tools", "Bash" not in dt2 and "Write" not in dt2)
+    check("CHAT_ALLOW_WRITES still blocks AskUserQuestion", "AskUserQuestion" in dt2)
+    _clear_env()
+    check("CHAT_SYSTEM steers to read-only, answer-not-build",
+          "read-only" in C.CHAT_SYSTEM.lower() and "build" in C.CHAT_SYSTEM.lower())
+
+    # ---------------------------------------------------------------- _answer_api: BRAIN=local hits the LOCAL endpoint (no 401)
+    _clear_env()
+    os.environ["BRAIN"] = "local"
+    os.environ["LOCAL_BRAIN_BASE"] = "http://host.docker.internal:8081/v1"
+    os.environ["LOCAL_BRAIN_KEY"] = "mlx"
+    captured = {}
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def _fake_urlopen(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["auth"] = req.get_header("Authorization")
+        return _Resp()
+
+    _orig = C.urllib.request.urlopen
+    C.urllib.request.urlopen = _fake_urlopen
+    try:
+        out = C._answer_api("hi", "local-model", 5, lambda *a: None)
+    finally:
+        C.urllib.request.urlopen = _orig
+    check("_answer_api local hits the LOCAL base (not OpenRouter)", "8081" in captured.get("url", ""))
+    check("_answer_api local sends a bearer token (no missing-auth 401)", bool(captured.get("auth")))
+    check.eq("_answer_api returns the model content", out, "ok")
+    _clear_env()
 
     raise SystemExit(check.report())
 

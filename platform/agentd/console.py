@@ -1123,7 +1123,17 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
   const modeBtns=_cfgMeta.modes.map(m=>`<button class="btn ${m===mode?"danger":""}" title="${MODE_HELP[m]||""}" onclick="modeLocal('${m}')">${m}${m===mode?" ✓":""}</button>`).join(" ");
   /* BRAIN/MODEL/SUPERVISE are set by the cards above (dropdowns/buttons) — don't repeat them as free
      text here. Model-valued keys (MODEL_ROUTINE→claude tier, LOCAL_BRAIN_MODEL→local) render as dropdowns. */
-  const HIDE=["BRAIN","MODEL","SUPERVISE","MONITOR_MODE"],MODELKEYS={MODEL_ROUTINE:"claude",LOCAL_BRAIN_MODEL:"local",BRAIN_MODEL:"api_all",ESCALATION_MODEL:"api_all"};
+  const HIDE=["BRAIN","MODEL","MODEL_ROUTINE","SUPERVISE","MONITOR_MODE"],MODELKEYS={MODEL_ROUTINE:"claude",LOCAL_BRAIN_MODEL:"local",BRAIN_MODEL:"api_all",ESCALATION_MODEL:"api_all"};
+  /* routine-tick model + router toggle, surfaced in the simple brain card (claude tier) so a hidden
+     MODEL_ROUTINE can't silently downgrade every tick — the "dashboard says Opus but ticks ran Sonnet" trap. */
+  const curR=effV("MODEL_ROUTINE");const knownC=(_cfgMeta.models&&_cfgMeta.models["claude"])||known;
+  const routineOpts=[...new Set([...(curR?[curR]:[]),...knownC])].map(m=>`<option ${m===curR?"selected":""}>${esc(m)}</option>`).join("")+(curR?"":'<option value="" selected>(none)</option>')+'<option value="__custom__">✏️ custom…</option>';
+  const routerOn=(effV("ROUTER")||"").toLowerCase()==="on";
+  const routineRow=(effV("BRAIN")==="claude")?`<div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <label class="s" style="min-width:78px;color:var(--mut)">routine ticks${ic(KEY_HELP.MODEL_ROUTINE)}</label>
+        <select data-k="MODEL_ROUTINE" onchange="cfgModelPick(this)" style="flex:1" ${routerOn?"":"disabled"}>${routineOpts}</select>
+        <label class="s" style="display:flex;align-items:center;gap:4px" title="${esc(KEY_HELP.ROUTER||"")}"><input type="checkbox" ${routerOn?"checked":""} onchange="pend('ROUTER',this.checked?'on':'off');drawConfig()">router</label></div>
+      <div class="s" style="margin-top:4px">${routerOn?`heartbeat / mechanical ticks run on <b>${esc(curR||"(unset)")}</b>; judgment ticks on the model above. Uncheck <b>router</b> to always use the top model.`:`router OFF — every tick uses the top model above.`}</div>`:"";
   const mm=effV("MONITOR_MODE")||"alert";
   const mmOpts=["off","observe","alert","suggest","autofix"].map(m=>`<option ${m===mm?"selected":""}>${m}</option>`).join("");
   const rows=_cfgEditable.filter(k=>!HIDE.includes(k)).map(k=>{const ch=_pending[k]!==undefined;const cur=effV(k);let field;
@@ -1137,6 +1147,7 @@ function drawConfig(){const p=document.getElementById("cfgmain");if(!p)return;co
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
         <select id="brainSel" onchange="pend('BRAIN',this.value);drawConfig()">${brainOpts}</select>
         <select id="modelSel" onchange="modelPick(this.value)" style="flex:1">${modelOpts}</select></div>
+      ${routineRow}
       <div class="s" style="margin-top:5px">brain sets the pool; model is the list for that brain (pick ✏️ custom… to type one)</div></div>
     <div class="card" style="margin-bottom:12px"><div class="k">run mode${ic("How the agent runs. Autonomous = continuous work loop (SUPERVISE=auto). Chat = only wakes when you message it. Scheduled = wakes on a fixed heartbeat interval.")}</div>
       <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">${modeBtns}</div>

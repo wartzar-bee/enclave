@@ -259,7 +259,22 @@ def check_new_reply():
     if not content:
         return None, None
     with _lock:
-        if _pending:
+        # Route by the conversation-id SIDECAR the responder writes (chat-reply.cid) — robust to replies
+        # arriving out of send-order (a timeout while another conversation answers first). Fall back to the
+        # legacy FIFO if the sidecar is absent (older responder) or empty (a proactive, unsolicited reply).
+        cid = None
+        try:
+            c = (REPLY_FILE.parent / "chat-reply.cid").read_text().strip()
+            if _SAFE_ID.match(c):
+                cid = c
+        except OSError:
+            pass
+        if cid:
+            if cid in _pending:
+                _pending.remove(cid)           # this reply's conversation → drain it from the FIFO
+            elif _pending:
+                _pending.pop(0)                # keep the FIFO from growing unboundedly
+        elif _pending:                         # no sidecar → legacy in-order routing
             cid = _pending.pop(0)
         else:                                  # proactive reply (no pending send) → newest conversation
             idx = list_conversations()

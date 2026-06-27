@@ -74,6 +74,37 @@ def resolve_endpoints():
     return brain, esc
 
 
+# ── dashboard telemetry (events.jsonl + usage.jsonl) ────────────────────────────────────────
+# The Claude path emits these via Claude-Code hooks (event_log.py) + usage_capture.py. The local
+# ReAct loop fires no Claude hooks, so a BRAIN=local/api agent was invisible to the dashboard. We
+# emit the SAME records here so Activity/Status/Diagnostics work for every brain. All best-effort.
+_USAGE_ACC = {"input": 0, "output": 0, "cost": 0.0, "had_usage": False}
+_EVENT_TOOL = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit",
+               "glob": "Glob", "grep": "Grep", "qmd": "Qmd", "escalate": "Escalate"}
+
+def _event_summary(tool, inp):
+    inp = inp or {}
+    if tool == "bash":
+        return (inp.get("command", "") or "").strip().replace("\n", " ")[:140]
+    if tool in ("write", "edit", "read"):
+        return inp.get("file_path", "") or ""
+    if tool in ("glob", "grep"):
+        return (inp.get("pattern", "") or inp.get("query", ""))[:100]
+    if tool == "qmd":
+        return (inp.get("query", "") or "")[:100]
+    return ""
+
+def _emit_event(sd, rec):
+    """Append one line to state/events.jsonl — the dashboard's live 'doing now' feed. Mirrors
+    hooks/event_log.py for the local path. NEVER raises (telemetry must never break a tick)."""
+    try:
+        sd.mkdir(parents=True, exist_ok=True)
+        with (sd / "events.jsonl").open("a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
 # ── OpenAI-compatible chat call (stdlib only; works for MLX/Ollama/OpenRouter) ──────────────
 _SPEND_LOG = pathlib.Path(os.environ.get("SPEND_LOG", "")) if os.environ.get("SPEND_LOG") else None
 
@@ -88,6 +119,14 @@ def chat(endpoint, messages, max_tokens, temperature, timeout):
         req.add_header("Authorization", "Bearer " + endpoint["key"])
     with urllib.request.urlopen(req, timeout=timeout) as r:
         j = json.loads(r.read())
+    # Accumulate this tick's token usage for the dashboard usage.jsonl record (best-effort; many
+    # local servers return usage, some don't → the record falls back to 0/unknown like the Claude path).
+    _u = j.get("usage") or {}
+    if _u:
+        _USAGE_ACC["had_usage"] = True
+        _USAGE_ACC["input"] = max(_USAGE_ACC["input"], _u.get("prompt_tokens", 0) or 0)
+        _USAGE_ACC["output"] += _u.get("completion_tokens", 0) or 0
+        _USAGE_ACC["cost"] += float(_u.get("cost", 0) or 0)
     # Track spend for BRAIN=api (OpenRouter returns usage.prompt_tokens + cost in some responses)
     if _SPEND_LOG and j.get("usage"):
         try:
@@ -518,11 +557,42 @@ def run(agent_dir):
         print(f"{time.strftime('%FT%TZ', time.gmtime())} — [local_agent] {m}", flush=True)
 
     log(f"start brain={brain['model']} @ {brain['base']} (esc={esc['model']}, guard={hook}, max_steps={max_steps})")
+    # ── dashboard telemetry: tick_start event + a per-tick usage.jsonl record at every exit ──
+    sd = agent_dir / "state"
+    aid = os.environ.get("AGENT_ID", "")
+    reason = os.environ.get("TICK_REASON", "heartbeat")
+    started = time.time()
+    _USAGE_ACC.update({"input": 0, "output": 0, "cost": 0.0, "had_usage": False})
+    _tool_n = {}                                           # tool → [calls, fails]
+    _steps_done = [0]
+    _emit_event(sd, {"ts": int(time.time()), "agent": aid, "event": "tick_start", "source": "local"})
+
+    def _finish(rc, subtype):
+        _emit_event(sd, {"ts": int(time.time()), "agent": aid, "event": "tick_end"})
+        rt = {"tool_calls": sum(v[0] for v in _tool_n.values()),
+              "tool_failures": sum(v[1] for v in _tool_n.values()),
+              "tools": {k: {"n": v[0], "fail": v[1]} for k, v in _tool_n.items()},
+              "available": True}
+        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "agent": aid, "reason": reason,
+               "model": brain["model"], "input": _USAGE_ACC["input"], "output": _USAGE_ACC["output"],
+               "cache_read": 0, "cache_write": 0,
+               "cost_usd": round(_USAGE_ACC["cost"], 6) if _USAGE_ACC["had_usage"] else 0.0,
+               "duration_s": round(time.time() - started, 1), "turns": _steps_done[0],
+               "rc": rc, "subtype": subtype, "runtime": rt}
+        try:
+            sd.mkdir(parents=True, exist_ok=True)
+            with (sd / "usage.jsonl").open("a") as fh:
+                fh.write(json.dumps(rec) + "\n")
+        except Exception:
+            pass
+        return rc
+
     nudges = 0
     seen_calls = {}                                        # signature → count (anti-repetition)
     produce_by = max(4, int(max_steps * 0.6))             # after this, force produce+finish (anti-wander)
     forced = False
     for step in range(1, max_steps + 1):
+        _steps_done[0] = step
         # Forcing function: local models tend to research forever. Past the budget, steer HARD to
         # commit a deliverable + finish (the wander-til-max_steps failure mode, observed 2026-06-13).
         if step >= produce_by and not forced:
@@ -546,7 +616,7 @@ def run(agent_dir):
             except Exception as e:
                 if attempt == 3:
                     log(f"brain call failed after 4 tries: {e}")
-                    return 1
+                    return _finish(1, "brain_error")
                 wait = 3 * (attempt + 1)   # 3s, 6s, 9s
                 log(f"brain call retry {attempt + 1}/3 ({e}); waiting {wait}s for the shared MLX server")
                 time.sleep(wait)
@@ -563,7 +633,7 @@ def run(agent_dir):
                 except OSError: pass
             if nudges >= 5:
                 log(f"step {step}: no tool call after {nudges} nudges — treating as final")
-                return 0
+                return _finish(0, "no_tool")
             # Format-corrective: if the reply contains a fenced code block, the model produced content
             # but in the wrong wrapper — tell it EXACTLY how to save it as a write call (I-004).
             has_code = "```" in (reply or "")
@@ -599,7 +669,7 @@ def run(agent_dir):
             continue
         if tool == "finish":
             log(f"finish: {inp.get('summary','')[:200]}")
-            return 0
+            return _finish(0, "ok")
         allow, reason = guard_check(agent_dir, hook, tool, inp)
         if not allow:
             log(f"step {step}: {tool} BLOCKED — {reason}")
@@ -638,12 +708,20 @@ def run(agent_dir):
             obs = (f"error: no '{tool}' tool exists. Run code/commands via the bash tool "
                    "(e.g. bash 'python3 x.py'). Valid tools: bash, read, write, edit, glob, grep, qmd, escalate, finish.")
         log(f"step {step}: {tool} → {obs[:120].rstrip()}")
+        _err = obs.startswith("error") or obs.startswith("[")
+        _slot = _tool_n.setdefault(tool, [0, 0])
+        _slot[0] += 1
+        if _err:
+            _slot[1] += 1
+        _emit_event(sd, {"ts": int(time.time()), "agent": aid, "event": "tool",
+                         "tool": _EVENT_TOOL.get(tool, tool), "summary": _event_summary(tool, inp),
+                         **({"error": True} if _err else {})})
         messages.append({"role": "user", "content": f"OBSERVATION:\n{obs}"})
         # lean context: keep system + turn + last ~24 exchanges
         if len(messages) > 26:
             messages = messages[:2] + messages[-24:]
     log(f"hit max_steps={max_steps} — stopping")
-    return 0
+    return _finish(0, "max_steps")
 
 
 def main():
