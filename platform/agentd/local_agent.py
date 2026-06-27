@@ -224,12 +224,17 @@ def exec_bash(agent_dir, inp):
     if not cmd:
         return "error: no command"
     try:
+        # errors="replace": a command that emits BINARY to stdout (e.g. a screenshot/render piping a
+        # PNG — byte 0x89…) must not crash the tick on a UTF-8 decode. The broad except below is the
+        # backstop: a single tool error returns a message, it never kills the whole tick.
         p = subprocess.run(["bash", "-lc", cmd], cwd=str(agent_dir), capture_output=True,
-                           text=True, timeout=int(inp.get("timeout", 180)))
+                           text=True, errors="replace", timeout=int(inp.get("timeout", 180)))
         out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
         return _truncate(out.strip() or f"(exit {p.returncode}, no output)")
     except subprocess.TimeoutExpired:
         return "error: command timed out"
+    except Exception as e:
+        return f"error: {type(e).__name__}: {e}"
 
 
 def _resolve(agent_dir, path):
@@ -239,7 +244,7 @@ def _resolve(agent_dir, path):
 
 def exec_read(agent_dir, inp):
     try:
-        txt = _resolve(agent_dir, inp.get("file_path", "")).read_text()
+        txt = _resolve(agent_dir, inp.get("file_path", "")).read_text(errors="replace")
     except Exception as e:
         return f"error: {e}"
     lines = txt.splitlines()
