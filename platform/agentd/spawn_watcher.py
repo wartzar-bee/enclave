@@ -34,6 +34,42 @@ def _audit(action, name, result, detail=""):
                             "agent": name, "result": result, "detail": detail}) + "\n")
 
 
+# A guardrail is the ABSENCE of a capability, not a text match (operator rule 2026-06-27). The
+# operator owns money + legal authority (CLAUDE.md), so a payment-rail or legal-identity credential
+# must NEVER be mounted into an autonomous pod's scoped /workspace/.secrets. If no card/payment token
+# exists in the container, the agent structurally cannot spend — regardless of what it types, and
+# without any (evadable, false-positive-prone) runtime command-text filtering. This is the chokepoint:
+# refuse to STAGE such a credential, quarantine it, escalate to the operator, and start the pod without
+# it. The operator can still place one out-of-band if they genuinely intend a pod to transact.
+_PAYMENT_LEGAL_RE = re.compile(
+    r"stripe|gumroad|paypal|braintree|adyen|paddle|lemonsqueez|razorpay|payoneer|venmo|cashapp|"
+    r"coinbase|binance|\bwise[_-]?api|"                            # processors / wallets
+    r"card[_-]?number|credit[_-]?card|\bcvv\b|\bcvc\b|\biban\b|"   # card / bank
+    r"routing[_-]?number|account[_-]?number|sort[_-]?code|"
+    r"\bkdp\b|amazon[_-]?kdp|seller[_-]?central",                  # legal-identity publishing / selling
+    re.I)
+
+
+def _is_payment_or_legal_cred(fname, content):
+    """True if a staged secret file looks like a payment rail or legal-identity credential — the kind
+    that routes through the operator and must never be mounted into an autonomous pod (the capability,
+    not a runtime string, is the guardrail). Matches on filename OR the env body."""
+    return bool(_PAYMENT_LEGAL_RE.search(fname or "") or _PAYMENT_LEGAL_RE.search(content or ""))
+
+
+def _escalate(target, name, msg):
+    """Append a human-decision escalation to the pod's escalations.log (the dashboard HITL inbox reads
+    it). Same plain-text format the monitor/supervisor use: '<iso> ESCALATE :: <msg>'."""
+    try:
+        f = target / "home" / "state" / "escalations.log"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with f.open("a") as h:
+            h.write(f"{ts} ESCALATE :: [spawn:payment-cred-refused] {name} — {msg}\n")
+    except Exception:
+        pass
+
+
 def _load_name(spec_path):
     """Best-effort read of the spec's `name` (YAML or JSON); fall back to the file stem."""
     text = spec_path.read_text()
@@ -83,8 +119,30 @@ def _process(spec_path, stacks_root, queue):
     if staged.is_dir():
         dst = target / "secrets"
         dst.mkdir(parents=True, exist_ok=True)
-        n = 0
+        n = refused = 0
         for f in staged.glob("*.env"):
+            try:
+                content = f.read_text(errors="ignore")
+            except OSError:
+                content = ""
+            # STRUCTURAL guardrail: never mount a payment/legal-identity credential into a pod.
+            if _is_payment_or_legal_cred(f.name, content):
+                q = queue / "secrets-refused" / name        # quarantine OUTSIDE the pod (not mounted)
+                q.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(f), str(q / f.name))
+                try:
+                    os.chmod(q / f.name, 0o600)
+                except OSError:
+                    pass
+                _escalate(target, name, f"refused to mount '{f.name}' — it looks like a payment/"
+                          f"legal-identity credential. The operator owns money + legal authority; a pod "
+                          f"cannot be given a way to spend. Quarantined at _queue/secrets-refused/{name}/"
+                          f"{f.name}. If you truly intend this pod to transact, place it out-of-band.")
+                _audit("spawn-secrets", name, "refused",
+                       f"{f.name}: payment/legal credential — not mounted")
+                print(f"  ⛔ {name}: refused to mount '{f.name}' (payment/legal cred → operator); quarantined")
+                refused += 1
+                continue
             shutil.copy2(f, dst / f.name)
             try:
                 os.chmod(dst / f.name, 0o600)
@@ -92,8 +150,9 @@ def _process(spec_path, stacks_root, queue):
                 pass
             n += 1
         shutil.rmtree(staged, ignore_errors=True)
-        _audit("spawn-secrets", name, "applied", f"{n} file(s)")
-        print(f"  · applied {n} staged secret file(s) to {name}")
+        _audit("spawn-secrets", name, "applied", f"{n} file(s); {refused} refused")
+        print(f"  · applied {n} staged secret file(s) to {name}"
+              + (f" — ⛔ {refused} payment/legal cred(s) refused (see escalations)" if refused else ""))
     run = subprocess.run([sys.executable, str(ENCLAVE), "run", "--dir", str(target), "--no-build",
                           "--no-open"], capture_output=True, text=True)
     if run.returncode != 0:

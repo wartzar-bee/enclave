@@ -176,6 +176,30 @@ def main():
           ((target / "secrets" / "openai.env").stat().st_mode & 0o777) in (0o600, 0o644))
     check("process secrets: spec still processed", len(list((q / "processed").glob("*secagent.json"))) == 1)
 
+    # ------------------------------------------ structural guardrail: payment/legal cred is REFUSED
+    # The control on the operator's money is the ABSENCE of the capability — a payment credential must
+    # never be mounted into a pod. Staging one quarantines it (outside the pod) + escalates.
+    q = _mk_queue(root / "q_paycred")
+    stacks = root / "stacks_paycred"; stacks.mkdir()
+    staged = q / "secrets-staging" / "paybot"
+    staged.mkdir(parents=True)
+    (staged / "nvidia.env").write_text("NVIDIA_API_KEY=nvapi-ok\n")     # normal → mounted
+    (staged / "stripe.env").write_text("STRIPE_SECRET_KEY=sk_live_x\n")  # payment → refused
+    rec = Recorder(returncode=0); SW.subprocess.run = rec
+    sp = _drop(q, "paybot.json", {"name": "paybot"})
+    SW._process(sp, stacks, q)
+    target = (stacks / "paybot").resolve()
+    check("paycred: normal cred IS mounted", (target / "secrets" / "nvidia.env").exists())
+    check("paycred: payment cred NOT mounted into the pod",
+          not (target / "secrets" / "stripe.env").exists())
+    check("paycred: payment cred quarantined outside the pod",
+          (q / "secrets-refused" / "paybot" / "stripe.env").exists())
+    check("paycred: operator escalation written",
+          (target / "home" / "state" / "escalations.log").exists()
+          and "payment" in (target / "home" / "state" / "escalations.log").read_text().lower())
+    check("paycred: pod still created + started (runs WITHOUT the refused cred)",
+          len(list((q / "processed").glob("*paybot.json"))) == 1)
+
     raise SystemExit(check.report())
 
 

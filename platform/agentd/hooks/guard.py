@@ -15,21 +15,20 @@ primary secret boundary; this just blocks the obvious foot-guns a tool call coul
 Fails OPEN on unparseable input (never wedge the agent); deny rules fail CLOSED on match.
 
   (configured automatically — not run by hand)
-Tune the publish denylist per venture via env GUARD_PUBLISH_DENY="pat1,pat2,…".
 Egress allowlist (P1): policies/default-egress.json (override via GUARD_EGRESS_POLICY).
   Report-only by default; set GUARD_EGRESS_ENFORCE=1 to enforce per-agent.
+
+NOTE — no "publish-gate" substring denylist (removed 2026-06-27, operator: "guardrails are
+capability removal, not text matching"). The control that actually stops an agent spending the
+operator's money is STRUCTURAL: no payment/legal-identity credential is ever mounted into a pod's
+scoped /workspace/.secrets (enforced at provisioning — spawn_watcher refuses to stage one). With no
+card/token in the container the agent cannot pay, regardless of what it types — and a substring list
+("gumroad"/"payout"/…) only false-tripped real work (it cost a slot agent a day on the word "payout")
+while being trivially evadable. Removing the *capability* is the guardrail; this hook keeps only the
+mechanical controls that have no structural equivalent (git-off, loader-hijack, SSRF-IMDS, egress).
 """
 import sys, os, re, json, fnmatch
 
-# Live long-form publish / sales / bio-link go-live — human-gated (publish-gate +
-# never-advertise). NOT content posting (bluesky_post / reels stay allowed — that's the job).
-# Self-contained companies run their own FREE distribution autonomously (publish chapters, edit
-# settings/tags, post content, upload readings) — NOT gated. Only MONEY (the operator's funds) and
-# NEVER-ADVERTISE (bio-link/CTA) stay blocked; legal-identity (KDP) is its own escalation.
-DEFAULT_PUBLISH_DENY = (
-    "kdp_", " kdp ", "gumroad", "stripe", "checkout", "payout", "purchase",   # money = operator
-    "edit_bio", "set_bio", "linkinbio", "link-in-bio", "update_bio",           # never-advertise
-)
 # Foreign credentials / key stores outside this agent's scoped secrets (the mount already
 # limits which .secrets/ files exist; this blocks attempts to reach anything else).
 SECRET_DENY = (".ssh/", "id_rsa", "id_ed25519", ".aws/credentials", "/.netrc",
@@ -124,17 +123,11 @@ def decide_cloud_readonly(cmd):
     return True, ""
 
 
-def _env_deny():
-    extra = [p.strip().lower() for p in os.environ.get("GUARD_PUBLISH_DENY", "").split(",") if p.strip()]
-    return tuple(DEFAULT_PUBLISH_DENY) + tuple(extra)
-
-
-def decide(tool_name, tool_input, publish_deny=None):
+def decide(tool_name, tool_input):
     """PURE allow/deny decision (unit-tested). Returns (allow: bool, reason: str)."""
     cmd = (tool_input.get("command") or "") if tool_name == "Bash" else ""
     path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("notebook_path") or ""
     url = tool_input.get("url") or ""           # WebFetch / fetch-style tools
-    low_cmd = cmd.lower()
     blob = f"{cmd} {path}".lower()
     egress = f"{cmd} {url}"                       # everything that can drive a network request
 
@@ -177,13 +170,11 @@ def decide(tool_name, tool_input, publish_deny=None):
         if pat in blob:
             return False, f"access to '{pat.strip()}' denied — outside this agent's scoped secrets"
 
-    # 3) publish-gate / never-advertise — live long-form/sales/bio-link go-live is human-gated
-    for pat in (publish_deny if publish_deny is not None else _env_deny()):
-        if pat and pat in low_cmd:
-            return False, (f"'{pat.strip()}' is publish-gated — long-form/sales/bio-link go-live needs "
-                           f"human approval; draft + stage it, don't push it live")
+    # NB: no "publish-gate" substring rule here — spending the operator's money is prevented
+    # STRUCTURALLY (no payment credential mounted into the pod; see module docstring), not by
+    # matching command text. A capability the agent doesn't have can't be string-matched around.
 
-    # 4) read-only cloud policy (opt-in per agent): gcloud/gsutil/bq/GraphQL writes blocked
+    # 3) read-only cloud policy (opt-in per agent): gcloud/gsutil/bq/GraphQL writes blocked
     if tool_name == "Bash" and os.environ.get("GUARD_CLOUD_READONLY"):
         ok, reason = decide_cloud_readonly(cmd)
         if not ok:
@@ -422,9 +413,9 @@ def _selftest():
     check("secret-deny",
           decide("Bash", {"command": "cat .secrets/anthropic"}),
           False, "outside this agent's scoped secrets")
-    check("publish-gate",
+    check("payment-cmd-now-allowed-guard-is-structural",
           decide("Bash", {"command": "run gumroad upload file.pdf"}),
-          False, "publish-gated")
+          True)   # no publish-gate: agent has no payment cred mounted, so the command is harmless
     check("normal-read-allowed",
           decide("Read", {"file_path": "/agent/state/rollup.md"}),
           True)
