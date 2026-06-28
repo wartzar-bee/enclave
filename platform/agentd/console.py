@@ -741,7 +741,7 @@ function showInfo(ev,text){ev.stopPropagation();const old=document.getElementByI
   p.style.left=Math.max(8,Math.min(r.left,window.innerWidth-p.offsetWidth-12))+"px";
   p.style.top=(r.bottom+window.innerHeight-r.bottom>p.offsetHeight+10?r.bottom+6:r.top-p.offsetHeight-6)+"px";
   setTimeout(()=>document.addEventListener("click",()=>{const e=document.getElementById("infopop");if(e)e.remove();},{once:true}),0);}
-function ic(text){return `<span class="info" data-info="${esc(text)}" onclick="showInfo(event,this.dataset.info)">i</span>`;}
+function ic(text){return `<span class="info" data-info="${esc(text)}" onclick="event.stopPropagation();showInfo(event,this.dataset.info)">i</span>`;}
 /* ---------- auto-refresh pause + manual refresh (operator: stop reloading the view I'm reading) ---------- */
 function togglePause(){_paused=!_paused;const b=document.getElementById("pausebtn");
   if(b){b.textContent=_paused?"▶":"⏸";b.title=_paused?"Auto-refresh PAUSED — click to resume live updates":"Pause auto-refresh (read/scroll without the view changing)";b.classList.toggle("pausedon",_paused);}}
@@ -1468,43 +1468,51 @@ async function monCtl(action,dryrun){const m=document.getElementById("monmsg");i
 /* ---------- Skills tab (P5: learned-memory vault) ---------- */
 /* ---------- Activity tab — per-agent LIVE cockpit: what is it doing right now? ---------- */
 function _agoS(s){if(s==null)return"";s=Math.round(s);return s<90?s+"s ago":s<5400?Math.round(s/60)+"m ago":Math.round(s/3600)+"h ago";}
+/* Collapsible sections (persisted across the 3s refresh + reloads via localStorage). */
+let _actCollapsed=new Set(JSON.parse(localStorage.getItem('actCollapsed')||'[]'));
+function toggleSec(k){if(_actCollapsed.has(k))_actCollapsed.delete(k);else _actCollapsed.add(k);
+  localStorage.setItem('actCollapsed',JSON.stringify([..._actCollapsed]));
+  const b=document.getElementById('sec_'+k),c=document.getElementById('car_'+k);
+  if(b)b.style.display=_actCollapsed.has(k)?'none':'';if(c)c.textContent=_actCollapsed.has(k)?'▸':'▾';}
+function secCard(k,title,body,opts){opts=opts||{};const col=_actCollapsed.has(k);
+  return `<div class="card" style="margin-bottom:10px">
+    <div class="k" style="cursor:pointer;user-select:none" onclick="toggleSec('${k}')"><span id="car_${k}" style="display:inline-block;width:12px;color:var(--mut)">${col?'▸':'▾'}</span>${title}${opts.right?'<span class="s" style="float:right;font-weight:400;color:var(--mut)">'+opts.right+'</span>':''}</div>
+    <div id="sec_${k}" style="display:${col?'none':''};margin-top:6px;${opts.bodyStyle||''}">${body}</div></div>`;}
+/* ISO-or-"YYYY-MM-DD HH:MM:SS"-string -> relative age; clock HH:MM for the same. */
+function _agoIso(iso){if(!iso)return"";const t=Date.parse(String(iso).replace(' ','T'));if(isNaN(t))return"";return _agoS(Date.now()/1000-t/1000);}
+function _hmIso(iso){iso=String(iso||"");return iso.slice(11,16)||iso.slice(0,16);}
 async function renderActivity(quiet){const p=document.getElementById("pane");if(!sel)return;
   if(!quiet&&p.dataset.act!==sel){p.innerHTML='<div style="padding:16px">loading…</div>';}
   let d={};try{d=await(await fetch(qs(`/api/activity?id=${encodeURIComponent(sel)}`))).json();}catch(e){if(!quiet)p.innerHTML='<div style="padding:16px;color:var(--err)">activity unavailable</div>';return;}
   if(d.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(d.error)+'</div>';return;}
   p.dataset.act=sel;
-  const ts=d.tick_status||{},live=d.ticking;
-  const dot=live?'<span style="color:var(--ok)">●</span> ticking now':(ts.status==="idle"?'<span style="color:var(--idle)">●</span> idle'+(ts.waiting_on?" — waiting on "+esc(ts.waiting_on):""):'<span style="color:var(--off)">●</span> between ticks');
-  const lp=d.loop||{};
-  const evs=(d.events||[]).map(e=>`<div class="s" style="display:flex;gap:8px;padding:2px 0"><span class="mono" style="color:var(--accent);min-width:46px">${esc(e.tool||"")}</span><span style="color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.summary||"")}</span></div>`).join("")||'<div class="s" style="color:var(--mut)">no recent tool events</div>';
+  const ts=d.tick_status||{},live=d.ticking,lp=d.loop||{},now=Date.now()/1000;
+  const tickHM=_hmIso(d.last_tick_start),tickAgo=_agoIso(d.last_tick_start);
+  let head;
+  if(live){head=`<b style="font-size:15px;color:var(--ok)">● WORKING</b>`+(tickHM?`<span class="s">tick started ${tickHM}${tickAgo?" · "+tickAgo:""}</span>`:"")+(d.last_event_age_s!=null?`<span class="s">last action ${_agoS(d.last_event_age_s)}</span>`:"");}
+  else if(ts.status==="idle"){head=`<b style="font-size:15px;color:var(--idle)">● IDLE</b>`+(ts.waiting_on?`<span class="s">waiting on ${esc(ts.waiting_on)}</span>`:"")+(tickHM?`<span class="s">last tick ${tickHM}${tickAgo?" · "+tickAgo:""}</span>`:"");}
+  else{head=`<b style="font-size:15px;color:var(--off)">● between ticks</b>`+(tickHM?`<span class="s">last tick ${tickHM}${tickAgo?" · "+tickAgo:""}</span>`:"")+(lp.CONTINUOUS_COOLDOWN?`<span class="s" style="color:var(--mut)">next within ~${lp.CONTINUOUS_COOLDOWN}s</span>`:"");}
+  const evs=(d.events||[]).map(e=>{const ea=(typeof e.ts==="number")?_agoS(now-e.ts):"";return `<div class="s" style="display:flex;gap:8px;padding:2px 0"><span class="mono" style="color:var(--mut);min-width:52px;text-align:right">${ea}</span><span class="mono" style="color:var(--accent);min-width:46px">${esc(e.tool||"")}</span><span style="flex:1;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.summary||"")}</span></div>`;}).join("")||'<div class="s" style="color:var(--mut)">no recent tool events</div>';
   const wk=d.work||{};
   const wrow=(it,col)=>`<div class="s" style="padding:2px 0"><span style="color:var(${col})">●</span> <span style="color:var(--mut)">#${it.id}</span> ${esc(it.text||"")}</div>`;
   const ticks=(d.recent_ticks||[]).map(t=>{const capped=(t.subtype||"")==="error_max_turns";
     const bad=!capped&&(t.rc!=null&&t.rc!==0||t.subtype&&t.subtype!=="success");
     const oc=capped?"capped":(bad?esc(t.subtype||"rc"+t.rc):"ok");const col=capped?"var(--idle)":(bad?"var(--err)":"var(--ok)");
-    return `<tr><td class="mono s">${esc((t.ts||"").slice(5,16).replace("T"," "))}</td><td class="s">${esc(t.reason||"")}</td><td class="s">${t.tool_calls!=null?t.tool_calls+" tools":""}</td><td class="s">${t.dur_s!=null?Math.round(t.dur_s)+"s":""}</td><td class="s" style="color:${col}">${oc}</td></tr>`;}).join("");
+    return `<tr><td class="mono s">${esc((t.ts||"").slice(5,16).replace("T"," "))}</td><td class="mono s" style="color:var(--mut)">${_agoIso(t.ts)}</td><td class="s">${esc(t.reason||"")}</td><td class="s">${t.tool_calls!=null?t.tool_calls+" tools":""}</td><td class="s">${t.dur_s!=null?Math.round(t.dur_s)+"s":""}</td><td class="s" style="color:${col}">${oc}</td></tr>`;}).join("");
   const commits=(d.commits||[]).map(c=>`<div class="s" style="display:flex;gap:8px;padding:2px 0"><span class="mono" style="color:var(--accent)">${esc(c.hash||"")}</span><span style="flex:1;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.msg||"")}</span><span style="color:var(--mut);white-space:nowrap">${_agoS(Date.now()/1000-(c.ts||0))}</span></div>`).join("")||'<div class="s" style="color:var(--mut)">no commits found in this repo</div>';
   p.innerHTML=`<div style="padding:14px;overflow:auto;height:100%">
-    <div class="card" style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <b style="font-size:14px">${dot}</b>
-      <span class="s">${d.last_event_age_s!=null?"last action "+_agoS(d.last_event_age_s):""}</span>
-      <span style="flex:1"></span>
+    <div class="card" style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      ${head}<span style="flex:1"></span>
       <span class="s" style="color:var(--mut)">loop: every ${lp.CONTINUOUS_COOLDOWN||"?"}s active · ${lp.INTERVAL_SECONDS||"?"}s safeguard · ${esc(lp.BRAIN||"")} · ${esc(lp.SUPERVISE||"")}</span></div></div>
-    <div class="card" style="margin-bottom:10px"><div class="k">✅ recent commits${ic("The agent's own git commits — the clearest record of what it actually SHIPPED, newest first.")}</div>
-      <div style="margin-top:6px;max-height:170px;overflow:auto">${commits}</div></div>
+    ${secCard("commits","✅ recent commits"+ic("The agent's own git commits — the clearest record of what it actually SHIPPED, newest first."),`<div style="max-height:170px;overflow:auto">${commits}</div>`)}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div class="card"><div class="k">▶ doing right now${ic("Live tool-call stream from the agent's events.jsonl — the literal actions it is taking this tick (newest first). Refreshes every 3s.")}</div>
-        <div style="margin-top:6px;max-height:230px;overflow:auto">${evs}</div></div>
-      <div class="card"><div class="k">focus${ic("The head of the agent's own state/rollup.md — its summary of what it is working on.")}</div>
-        <div class="s" style="margin-top:6px;white-space:pre-wrap;max-height:230px;overflow:auto;color:var(--tx)">${esc(d.focus||"—")}</div></div>
+      ${secCard("doing","▶ doing right now"+ic("Live tool-call stream from the agent's events.jsonl — the literal actions it is taking this tick (newest first), each with how long ago. Refreshes every 3s."),`<div style="max-height:250px;overflow:auto">${evs}</div>`)}
+      ${secCard("focus","focus"+ic("The head of the agent's own state/rollup.md — its summary of what it is working on."),`<div class="s" style="white-space:pre-wrap;max-height:250px;overflow:auto;color:var(--tx)">${esc(d.focus||"—")}</div>`)}
     </div>
-    <div class="card" style="margin-top:10px"><div class="k">work queue${ic("The agent's own work items (work.json): doing / todo, and a count of completed.")} <span class="s" style="font-weight:400">— ${wk.done||0} done</span></div>
-      <div style="margin-top:6px">${(wk.doing||[]).map(it=>wrow(it,"--ok")).join("")}${(wk.todo||[]).map(it=>wrow(it,"--idle")).join("")||((wk.doing||[]).length?"":'<div class="s" style="color:var(--mut)">queue empty</div>')}</div></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
-      <div class="card"><div class="k">recent progress${ic("The agent's own timestamped activity.log — what it has shipped recently.")}</div>
-        <div style="margin-top:6px;max-height:220px;overflow:auto">${(d.activity||[]).map(l=>`<div class="s" style="padding:2px 0;color:var(--mut)">${esc(l)}</div>`).join("")||'<div class="s" style="color:var(--mut)">—</div>'}</div></div>
-      <div class="card"><div class="k">recent ticks${ic("The last few ticks: reason, tool-calls, duration, outcome.")}</div>
-        <table class="cost" style="margin-top:6px"><tbody>${ticks||'<tr><td class="s">—</td></tr>'}</tbody></table></div>
+    ${secCard("work","work queue"+ic("The agent's own work items (work.json): doing / todo, and a count of completed."),`${(wk.doing||[]).map(it=>wrow(it,"--ok")).join("")}${(wk.todo||[]).map(it=>wrow(it,"--idle")).join("")||((wk.doing||[]).length?"":'<div class="s" style="color:var(--mut)">queue empty</div>')}`,{right:(wk.done||0)+" done"})}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      ${secCard("progress","recent progress"+ic("The agent's own timestamped activity.log — what it has shipped recently."),`<div style="max-height:220px;overflow:auto">${(d.activity||[]).map(l=>`<div class="s" style="padding:2px 0;color:var(--mut)">${esc(l)}</div>`).join("")||'<div class="s" style="color:var(--mut)">—</div>'}</div>`)}
+      ${secCard("ticks","recent ticks"+ic("The last few ticks: clock time, how long ago, reason, tool-calls, duration, outcome."),`<table class="cost"><tbody>${ticks||'<tr><td class="s">—</td></tr>'}</tbody></table>`)}
     </div></div>`;}
 async function renderSkills(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading…</div>';
   let d={};try{d=await(await fetch(qs(`/api/skills?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">skills unavailable (agent has no home on this host)</div>';return;}
