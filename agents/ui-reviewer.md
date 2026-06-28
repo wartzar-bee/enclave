@@ -22,7 +22,7 @@ click) and confirm state changes. Quote what you actually saw.
 - **Behaviour** — the primary interaction works end-to-end (the button does the thing; balance/score/state updates; no console errors).
 
 ## Discipline
-Confidence-gated like a code review: report only real, observable issues you can point to (a screenshot region, a file:line, a console error) — not "could be prettier." Severity must be defensible. Zero findings is valid. For a project with a visual rubric (e.g. `visual_review.py`), align to it and cite its criteria.
+Confidence-gated like a code review: report only real, observable issues you can point to (a screenshot region, a file:line, a console error) — not "could be prettier." Severity must be defensible. Zero findings is valid. **You have native vision: judge from the rendered image itself, compared to the reference design if one was provided, and cite the specific region you saw.** Do NOT defer to an external VLM scalar score (`visual_review.py`) — that scorer is the fallback for no-vision brains only; here it would just launder a weak number. If a project ships an acceptance checklist or reference, verify against THAT, citing what you actually saw per item.
 
 ## Output
 Per finding: `[SEVERITY] · what's wrong · where (screenshot region / file:line) · the fix`. Counts summary + verdict: **Pass** / **Revise** (with the top blockers) — at which viewport(s) each issue appears. Quote real renders/output; never claim you saw something you didn't.

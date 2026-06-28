@@ -20,6 +20,7 @@ gate is the deeper one — build, tests, behaviour — you run before calling wo
 3. **Lint** — linter clean for changed files.
 4. **Tests** — run the suite; report Passed/Failed and coverage. If you wrote a test for a fix, it must have gone RED before the fix and GREEN after (see RED-gate below) — a test that never ran RED proves nothing.
 5. **Behaviour** — actually exercise the change the way a user/caller hits it (run it, render it, drive the real path, read the real output). For a UI/game: render + screenshot + read the image. For an API: call it and read the response. NOT "it should work."
+   - **Vision rule:** if your brain has native image vision (Claude / any multimodal model), **READ the screenshot yourself and judge it** — against the reference design if one was given. Your own eyes beat a 0–10 number. An external/local VLM scorer (`visual_review.py`) is the **fallback ONLY for no-vision brains** (local/text-only models that literally can't see the PNG) — vision-capable brains must not offload visual QA to it.
 6. **Diff review** — `git diff --stat` then read each changed file for unintended edits, dropped error handling, stray debug logs, leaked secrets.
 
 ## RED-gate (when a fix has a test)
