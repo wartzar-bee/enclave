@@ -71,6 +71,10 @@ and solve it; don't ask many small questions, and don't wait for step-by-step.
 Plan + outcome + any correction → durable memory (lessons / decisions), linked. **Log a learning whenever
 you hit a durable quirk or fix that would save 5+ minutes next time.** Update memory when corrected. Your
 context resets each tick; your files don't.
+**Keep the every-tick files LEAN — they are re-read in full on every turn, so their size is your single
+biggest recurring cost.** When you finish an inbox directive, MOVE its block out of `inbox.md` into
+`done.md` (newest on top) so `inbox.md` holds ONLY open `- [ ]` items. Cap `rollup.md` to its ~10 newest
+entries (older → `state/archive/`). A bloated inbox/rollup multiplies cost across every turn of every tick.
 
 ## 9. Stay lean + parallelize roles
 Cost is the fleet's binding constraint: batch tool calls, delegate bulk codegen/sim/analysis to a
