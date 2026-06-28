@@ -292,9 +292,40 @@ def exec_read(agent_dir, inp):
     return _truncate("\n".join(f"{off+i+1}\t{ln}" for i, ln in enumerate(sel)))
 
 
+# Binary asset extensions an LLM must NEVER author as text — pasting base64/byte content yields a
+# corrupt file (it can't emit valid image/font/audio bytes) that silently renders as an EMPTY BOX.
+# Root-caused on fireforge: the model wrote ```write …/symbol.png iVBORw0KGgo…<hallucinated bytes>```.
+_BINARY_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".woff", ".woff2", ".ttf",
+               ".otf", ".eot", ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm", ".mov", ".atlas",
+               ".ktx2", ".basis", ".bin", ".wasm", ".pdf", ".zip", ".gz")
+
+_RO_CMDS = {"ls", "cat", "head", "tail", "find", "grep", "rg", "stat", "wc", "pwd", "echo",
+            "file", "du", "tree", "which", "printenv", "env", "realpath", "basename", "dirname"}
+
+def _readonly_bash(cmd):
+    """True iff a bash command is pure read-only inspection (no writes/redirects) → safe to dedup when
+    repeated verbatim. Conservative: any redirect or any non-read-only leading token → not read-only
+    (so re-renders / re-builds / python scripts are never skipped)."""
+    c = (cmd or "").strip()
+    if not c or ">" in c or ">>" in c:
+        return False
+    for seg in re.split(r"\|\||&&|;|\|", c):
+        toks = seg.strip().lstrip("(").strip().split()
+        if toks and toks[0] not in _RO_CMDS:
+            return False
+    return True
+
 def exec_write(agent_dir, inp):
+    fp = inp.get("file_path", "")
+    if fp.lower().endswith(_BINARY_EXT):
+        return ("error: refused — you cannot author a BINARY file (image/font/audio) as text. Pasted "
+                "base64/byte content produces a CORRUPT file that renders as an empty box. "
+                "To CREATE art: `bash python3 /workspace/tools/image/gen.py --prompt \"…\" --out " + fp + "`. "
+                "To get per-symbol PNGs FROM an existing atlas/spritesheet: write a small Pillow script "
+                "(open the atlas, .crop() each region, .save() each cell) and run it via bash. "
+                "Never put base64/byte data in a write.")
     try:
-        f = _resolve(agent_dir, inp.get("file_path", ""))
+        f = _resolve(agent_dir, fp)
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(inp.get("content", ""))
         return f"wrote {f}{_post_write_check(f)}"
@@ -676,8 +707,11 @@ def run(agent_dir):
             messages.append({"role": "user", "content": f"OBSERVATION:\n[BLOCKED by guard] {reason}"})
             continue
         # Anti-repetition: a read-only call repeated verbatim is wasted budget (a wander symptom).
+        # Includes read-only BASH (ls/cat/head/find/grep/…) — the model does everything via bash, so
+        # without this it re-`cat`s work.json / re-`ls`es dirs dozens of times until it hits max_steps.
         sig = tool + "|" + json.dumps(inp, sort_keys=True)[:200]
-        if tool in ("read", "qmd", "glob", "grep") and seen_calls.get(sig, 0) >= 1:
+        _ro = tool in ("read", "qmd", "glob", "grep") or (tool == "bash" and _readonly_bash(inp.get("command", "")))
+        if _ro and seen_calls.get(sig, 0) >= 1:
             seen_calls[sig] += 1
             log(f"step {step}: {tool} DUPLICATE — skipped")
             messages.append({"role": "user", "content":

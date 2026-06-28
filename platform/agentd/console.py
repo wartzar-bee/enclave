@@ -286,8 +286,17 @@ def _agent_activity(home):
             out["work"]["done"] = sum(1 for w in work if w.get("status") == "done")
     except Exception:
         pass
-    # --- activity timeline (the agent's own timestamped progress lines) ---
-    out["activity"] = _tail_lines(st / "activity.log", 14)[::-1]
+    # --- recent progress: the agent's own activity.log. Non-Claude (BRAIN=api/local) agents don't
+    #     write activity.log, so fall back to the rollup's dated section headers (their own progress
+    #     milestones), else the live event stream — so the panel is never blank for a working agent. ---
+    act = _tail_lines(st / "activity.log", 14)[::-1]
+    if not act and rollup.exists():
+        act = [h.lstrip("# ").strip() for h in
+               re.findall(r"^#{1,3}\s+.+", rollup.read_text(errors="ignore"), re.M)][:14]
+    if not act and evs:
+        act = [(time.strftime("%H:%M:%SZ ", time.gmtime(e["ts"])) if isinstance(e.get("ts"), (int, float)) else "")
+               + str(e.get("tool") or "") + ": " + str(e.get("summary") or "") for e in evs[-14:][::-1]]
+    out["activity"] = act
     # --- recent ticks (from usage.jsonl) + loop config for context ---
     try:
         recs = [json.loads(l) for l in _tail_lines(st / "usage.jsonl", 8) if l.strip()]
@@ -492,6 +501,8 @@ body.light{--bg:#faf9f5;--card:#ffffff;--bd:#e7e3d8;--tx:#28261f;--mut:#73726c;-
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);height:100vh;display:flex;flex-direction:column}
 #nav{display:flex;align-items:center;gap:6px;padding:9px 14px;background:var(--card);border-bottom:1px solid var(--bd);flex:0 0 auto}
 #nav .brand{font-size:12.5px;font-weight:700;letter-spacing:.05em;color:var(--mut);margin-right:8px}
+#setmodal label{display:block;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:14px 0 4px}
+#setmodal select,#setmodal input{width:100%;box-sizing:border-box;background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit}
 #newmodal .nl{display:block;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:11px 0 3px}
 .newsecrow input{background:var(--hover);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:5px 7px;font-size:12px}
 .secdrop{position:absolute;left:0;right:0;top:calc(100% + 2px);z-index:60;max-height:190px;overflow:auto;border:1px solid var(--bd);border-radius:8px;background:var(--card);box-shadow:0 8px 26px rgba(0,0,0,.45);display:none}
@@ -628,7 +639,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <span class="navtab" data-v="monitor" onclick="view('monitor')">Monitor</span>
   <span class="navtab" data-v="activity" onclick="view('activity')">Audit</span>
   <span class="navtab" data-v="models" onclick="view('models')">Models</span>
-  <span id="winwrap"><select id="win" onchange="renderOverview()"><option value="today">Today</option><option value="wtd" selected>Week-to-date</option><option value="7d">Last 7 days</option></select>
+  <span id="winwrap" style="margin-left:auto"><select id="win" onchange="renderOverview()"><option value="today">Today</option><option value="wtd" selected>Week-to-date</option><option value="7d">Last 7 days</option></select>
     <button class="btn" onclick="exportCsv()" title="Download usage as CSV">⬇ CSV</button></span>
   <span class="stale" id="stale"></span>
   <button class="btn" onclick="openNew()" title="Create a new agent">+ New Agent</button>
@@ -637,7 +648,53 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <button class="btn" id="refreshbtn" title="Refresh now" onclick="refreshNow()">↻</button>
   <button class="btn" id="pausebtn" title="Pause auto-refresh (read/scroll without the view changing)" onclick="togglePause()">⏸</button>
   <button class="btn" id="themebtn" title="Toggle light/dark" onclick="toggleTheme()">🌙</button>
+  <button class="btn" id="setbtn" title="Settings" onclick="openSettings()">⚙</button>
 </nav>
+<div id="setmodal" onclick="if(event.target===this)closeSettings()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50">
+  <div style="max-width:440px;margin:9vh auto;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:22px;max-height:86vh;overflow:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <b style="font-size:15px">⚙ Settings</b>
+      <span class="btn" onclick="closeSettings()" style="cursor:pointer">✕</span>
+    </div>
+    <label>Time display</label>
+    <select id="set_tz" onchange="setTz(this.value)">
+      <option value="utc">UTC — server time</option>
+      <option value="local">Local — this browser's timezone</option>
+    </select>
+    <div class="s" id="set_tz_hint" style="color:var(--mut);margin-top:7px"></div>
+    <label>Auto-refresh</label>
+    <select id="set_refresh" onchange="setRefresh(this.value)">
+      <option value="3000">Fast — every 3s</option>
+      <option value="10000">Normal — every 10s</option>
+      <option value="30000">Slow — every 30s</option>
+      <option value="0">Off — manual (↻) only</option>
+    </select>
+    <label>Cost currency</label>
+    <select id="set_ccy" onchange="setCcy(this.value)">
+      <option value="usd">USD ($)</option>
+      <option value="eur">EUR (€)</option>
+    </select>
+    <div id="set_rate_row" style="display:none">
+      <label>Display rate — EUR per 1 USD</label>
+      <input id="set_rate" type="number" step="0.01" min="0.01" onchange="setRate(this.value)">
+    </div>
+    <label>Desktop alerts — stalls &amp; escalations</label>
+    <select id="set_notify" onchange="setNotify(this.value)">
+      <option value="off">Off</option>
+      <option value="on">On — browser notifications</option>
+    </select>
+    <div class="s" id="set_notify_hint" style="color:var(--mut);margin-top:6px"></div>
+    <label>Default landing view</label>
+    <select id="set_landing" onchange="setLanding(this.value)">
+      <option value="last">Last view used</option>
+      <option value="overview">Overview</option>
+      <option value="agents">Agents</option>
+      <option value="monitor">Monitor</option>
+      <option value="activity">Audit</option>
+      <option value="models">Models</option>
+    </select>
+  </div>
+</div>
 <div id="newmodal" onclick="if(event.target===this)closeNew()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50">
   <div style="max-width:520px;margin:6vh auto;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:20px;max-height:86vh;overflow:auto">
     <h2 style="margin:0 0 12px;display:flex;justify-content:space-between;align-items:center">Create agent<span onclick="closeNew()" title="Close (Esc)" style="cursor:pointer;color:var(--mut);font-weight:400;font-size:20px;line-height:1;padding:0 6px">✕</span></h2>
@@ -770,7 +827,7 @@ const KEY_HELP={
 };
 function theme(){return document.body.classList.contains("light")?"light":"dark";}
 function cssv(n){return getComputedStyle(document.body).getPropertyValue(n).trim();}
-function usd(n){if(n==null)return"—";return"$"+(n<10?n.toFixed(2):n<1000?n.toFixed(1):Math.round(n).toLocaleString());}
+function usd(n){if(n==null)return"—";let v=(_ccy==="eur")?n*_eurRate:n;return _ccySym()+(v<10?v.toFixed(2):v<1000?v.toFixed(1):Math.round(v).toLocaleString());}
 function num(n){if(n==null)return"—";return n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(1)+"k":(""+n);}
 /* ---------- view switching ---------- */
 function view(v){curview=v;
@@ -878,7 +935,7 @@ function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);wi
   const p=document.getElementById("pane");if(!sel){p.innerHTML='<div class="empty">Select an agent.</div>';return;}
   const a=agents[sel];
   if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/?theme=${theme()}" allow="microphone; clipboard-write"></iframe>`;}
-  else if(t==="activity"){renderActivity();window._logTimer=setInterval(()=>{if(curtab==="activity"&&!_paused)renderActivity(true);},3000);}
+  else if(t==="activity"){renderActivity();window._logTimer=setInterval(()=>{if(curtab==="activity"&&!_paused&&_due("act"))renderActivity(true);},3000);}
   else if(t==="status"){renderDiag(a);}   /* Status merged into Diagnostics (2026-06-27) */
   else if(t==="diag"){renderDiag(a);}
   else if(t==="config"){renderConfig(a);}
@@ -888,7 +945,7 @@ function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);wi
       <span class="seg"><button class="segb sel" id="logActivity" onclick="setLogKind('activity')">Activity</button><button class="segb" id="logRaw" onclick="setLogKind('raw')">Raw</button></span>
       <label class="s"><input type="checkbox" id="logfollow" checked> live tail</label><span class="s" id="logstamp"></span>
       <span style="flex:1"></span><span class="s" id="logkindhint" style="color:var(--mut)">narrative — what the agent did</span></div><div id="logs">loading…</div>`;
-    loadLogs(true);window._logTimer=setInterval(()=>{if(curtab==="logs"&&!_paused&&document.getElementById("logfollow")&&document.getElementById("logfollow").checked)loadLogs(false);},2000);
+    loadLogs(true);window._logTimer=setInterval(()=>{if(curtab==="logs"&&!_paused&&_due("logs")&&document.getElementById("logfollow")&&document.getElementById("logfollow").checked)loadLogs(false);},2000);
   }
 }
 let _logKind="activity";
@@ -1056,7 +1113,7 @@ function drawDiagCharts(d){if(typeof Chart==="undefined")return;
       scales:{x:{stacked:true,grid:{display:false},ticks:{maxTicksLimit:8,font:{size:8}}},y:{stacked:true,ticks:{callback:fmtTok}}}}});
   mkChart("dgCost",{type:"bar",data:{labels:L,datasets:[{data:s.cost||[],backgroundColor:cssv("--accent")}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
-      scales:{x:{grid:{display:false},ticks:{maxTicksLimit:6,font:{size:8}}},y:{ticks:{callback:v=>"$"+v}}}}});
+      scales:{x:{grid:{display:false},ticks:{maxTicksLimit:6,font:{size:8}}},y:{ticks:{callback:v=>_axMoney(v)}}}}});
   mkChart("dgDur",{type:"line",data:{labels:L,datasets:[{data:s.duration||[],borderColor:cssv("--ok"),backgroundColor:"transparent",tension:.25,pointRadius:0}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
       scales:{x:{grid:{display:false},ticks:{maxTicksLimit:6,font:{size:8}}},y:{ticks:{callback:v=>v+"s"}}}}});
@@ -1285,6 +1342,7 @@ function clearAllAlerts(){_alerts.forEach(a=>_dismissed.add(alertKey(a)));_saveD
 function restoreAll(){_dismissed.clear();_saveDismissed();renderAlerts(_alerts);renderNotif();}
 function renderAlerts(al){_alerts=al||[];const b=document.getElementById("alertbar");
   const active=_alerts.filter(a=>!_dismissed.has(alertKey(a)));
+  _maybeNotify(active);
   b.innerHTML=active.map(a=>{const k=alertKey(a);return `<div class="alert ${a.level==="crit"?"crit":"warn"}">${a.level==="crit"?"⛔":"⚠"} ${esc(a.msg)}<span class="ax" title="dismiss" onclick="dismissAlert('${esc(k).replace(/'/g,"\\'")}')">✕</span></div>`;}).join("");
   renderBell();}
 function renderBell(){const badge=document.getElementById("bellbadge");if(!badge)return;
@@ -1305,6 +1363,7 @@ document.addEventListener("click",e=>{const w=document.getElementById("bellwrap"
    -> expanded tick rows. (Tooltip before modal so Esc dismisses a tooltip without nuking the dialog.) */
 document.addEventListener("keydown",e=>{if(e.key!=="Escape")return;
   const ip=document.getElementById("infopop");if(ip){ip.remove();return;}
+  const sm=document.getElementById("setmodal");if(sm&&sm.style.display!=="none"){closeSettings();return;}
   const m=document.getElementById("newmodal");if(m&&m.style.display!=="none"){closeNew();return;}
   const np=document.getElementById("notifpanel");if(np&&np.style.display!=="none"){np.style.display="none";return;}
   document.querySelectorAll('[id^="dgexp"]').forEach(r=>{if(r.style.display!=="none")r.style.display="none";});});
@@ -1480,7 +1539,50 @@ function secCard(k,title,body,opts){opts=opts||{};const col=_actCollapsed.has(k)
     <div id="sec_${k}" style="display:${col?'none':''};margin-top:6px;${opts.bodyStyle||''}">${body}</div></div>`;}
 /* ISO-or-"YYYY-MM-DD HH:MM:SS"-string -> relative age; clock HH:MM for the same. */
 function _agoIso(iso){if(!iso)return"";const t=Date.parse(String(iso).replace(' ','T'));if(isNaN(t))return"";return _agoS(Date.now()/1000-t/1000);}
-function _hmIso(iso){iso=String(iso||"");return iso.slice(11,16)||iso.slice(0,16);}
+/* ---------- Settings (persisted in localStorage) ---------- */
+let _tz=(()=>{try{return localStorage.getItem("console_tz")||"utc";}catch(e){return "utc";}})();
+let _refreshMs=(()=>{try{const v=parseInt(localStorage.getItem("console_refreshms"));return isNaN(v)?10000:v;}catch(e){return 10000;}})();
+let _ccy=(()=>{try{return localStorage.getItem("console_ccy")||"usd";}catch(e){return "usd";}})();
+let _eurRate=(()=>{try{const v=parseFloat(localStorage.getItem("console_eurrate"));return(isNaN(v)||v<=0)?0.92:v;}catch(e){return 0.92;}})();
+let _notifyOn=(()=>{try{return localStorage.getItem("console_notify")==="on"&&typeof Notification!=="undefined"&&Notification.permission==="granted";}catch(e){return false;}})();
+let _notified=new Set(),_notifySeeded=false;
+function _p2(n){return String(n).padStart(2,"0");}
+function _parseUTC(iso){if(!iso)return null;let s=String(iso).replace(" ","T");if(!/[Zz]|[+-]\d\d:?\d\d$/.test(s))s+="Z";const t=Date.parse(s);return isNaN(t)?null:new Date(t);}
+function _tzLabel(){if(_tz==="utc")return"UTC";try{return new Intl.DateTimeFormat([],{timeZoneName:'short'}).formatToParts(new Date()).find(p=>p.type==='timeZoneName').value;}catch(e){return"local";}}
+function fmtHM(iso){const d=_parseUTC(iso);if(!d)return"";return _tz==="local"?_p2(d.getHours())+":"+_p2(d.getMinutes()):_p2(d.getUTCHours())+":"+_p2(d.getUTCMinutes());}
+function fmtClock(iso){const d=_parseUTC(iso);if(!d)return"";return _tz==="local"?_p2(d.getMonth()+1)+"-"+_p2(d.getDate())+" "+_p2(d.getHours())+":"+_p2(d.getMinutes()):_p2(d.getUTCMonth()+1)+"-"+_p2(d.getUTCDate())+" "+_p2(d.getUTCHours())+":"+_p2(d.getUTCMinutes());}
+function _hmIso(iso){return fmtHM(iso);}
+/* currency: usd() values are scaled + relabelled to the chosen display currency */
+function _ccySym(){return _ccy==="eur"?"€":"$";}
+function _axMoney(v){return _ccySym()+(_ccy==="eur"?Math.round(v*_eurRate*10)/10:v);}
+/* auto-refresh throttle: live timers tick fast but their WORK runs at most once per _refreshMs (0=off) */
+const _lastDue={};
+function _due(key){if(!_refreshMs)return false;const t=Date.now();if((t-(_lastDue[key]||0))>=_refreshMs){_lastDue[key]=t;return true;}return false;}
+/* desktop notifications for NEW stalls/escalations (seeds existing on first pass so it never spams history) */
+function _maybeNotify(active){const fire=_notifyOn&&typeof Notification!=="undefined"&&Notification.permission==="granted"&&_notifySeeded;
+  for(const a of active){const k=alertKey(a);if(_notified.has(k))continue;_notified.add(k);if(fire){try{new Notification("Enclave Fleet",{body:(a.level==="crit"?"⛔ ":"⚠ ")+(a.msg||"")});}catch(e){}}}
+  _notifySeeded=true;}
+function _setTzHint(){const h=document.getElementById("set_tz_hint");if(h)h.textContent="Showing "+_tzLabel()+". Affects clock/tick timestamps; relative ages (“5m ago”) are unaffected.";}
+function _setNotifyHint(){const h=document.getElementById("set_notify_hint");if(!h)return;
+  if(typeof Notification==="undefined"){h.textContent="This browser has no Notification API.";return;}
+  h.textContent=_notifyOn?"On — a desktop notification will fire for each new stall/escalation.":(Notification.permission==="denied"?"Blocked by the browser — allow notifications for this site to enable.":"Off.");}
+function openSettings(){
+  const g=(id,v)=>{const e=document.getElementById(id);if(e)e.value=v;};
+  g("set_tz",_tz);g("set_refresh",String(_refreshMs));g("set_ccy",_ccy);g("set_rate",_eurRate);g("set_notify",_notifyOn?"on":"off");
+  try{g("set_landing",localStorage.getItem("console_landing")||"last");}catch(e){}
+  const rr=document.getElementById("set_rate_row");if(rr)rr.style.display=_ccy==="eur"?"block":"none";
+  _setTzHint();_setNotifyHint();
+  document.getElementById("setmodal").style.display="block";}
+function closeSettings(){document.getElementById("setmodal").style.display="none";}
+function setTz(v){_tz=(v==="local")?"local":"utc";try{localStorage.setItem("console_tz",_tz);}catch(e){}_setTzHint();try{refreshNow();}catch(e){}}
+function setRefresh(v){_refreshMs=parseInt(v)||0;try{localStorage.setItem("console_refreshms",String(_refreshMs));}catch(e){}}
+function setCcy(v){_ccy=(v==="eur")?"eur":"usd";try{localStorage.setItem("console_ccy",_ccy);}catch(e){}const rr=document.getElementById("set_rate_row");if(rr)rr.style.display=_ccy==="eur"?"block":"none";try{refreshNow();}catch(e){}}
+function setRate(v){const r=parseFloat(v);_eurRate=(isNaN(r)||r<=0)?_eurRate:r;try{localStorage.setItem("console_eurrate",String(_eurRate));}catch(e){}try{refreshNow();}catch(e){}}
+function setLanding(v){try{localStorage.setItem("console_landing",v);}catch(e){}}
+function setNotify(v){const want=(v==="on");
+  if(want&&typeof Notification!=="undefined"&&Notification.permission==="default"){Notification.requestPermission().then(p=>{_notifyOn=(p==="granted");try{localStorage.setItem("console_notify",_notifyOn?"on":"off");}catch(e){}const e2=document.getElementById("set_notify");if(e2)e2.value=_notifyOn?"on":"off";_setNotifyHint();});return;}
+  _notifyOn=(want&&typeof Notification!=="undefined"&&Notification.permission==="granted");
+  try{localStorage.setItem("console_notify",_notifyOn?"on":"off");}catch(e){}_setNotifyHint();}
 async function renderActivity(quiet){const p=document.getElementById("pane");if(!sel)return;
   if(!quiet&&p.dataset.act!==sel){p.innerHTML='<div style="padding:16px">loading…</div>';}
   let d={};try{d=await(await fetch(qs(`/api/activity?id=${encodeURIComponent(sel)}`))).json();}catch(e){if(!quiet)p.innerHTML='<div style="padding:16px;color:var(--err)">activity unavailable</div>';return;}
@@ -1489,7 +1591,7 @@ async function renderActivity(quiet){const p=document.getElementById("pane");if(
   const ts=d.tick_status||{},live=d.ticking,lp=d.loop||{},now=Date.now()/1000;
   const tickHM=_hmIso(d.last_tick_start),tickAgo=_agoIso(d.last_tick_start);
   let head;
-  if(live){head=`<b style="font-size:15px;color:var(--ok)">● WORKING</b>`+(tickHM?`<span class="s">tick started ${tickHM}${tickAgo?" · "+tickAgo:""}</span>`:"")+(d.last_event_age_s!=null?`<span class="s">last action ${_agoS(d.last_event_age_s)}</span>`:"");}
+  if(live){head=`<b style="font-size:15px;color:var(--ok)">● WORKING</b>`+(tickHM?`<span class="s">tick started ${tickHM} ${_tzLabel()}${tickAgo?" · "+tickAgo:""}</span>`:"")+(d.last_event_age_s!=null?`<span class="s">last action ${_agoS(d.last_event_age_s)}</span>`:"");}
   else if(ts.status==="idle"){head=`<b style="font-size:15px;color:var(--idle)">● IDLE</b>`+(ts.waiting_on?`<span class="s">waiting on ${esc(ts.waiting_on)}</span>`:"")+(tickHM?`<span class="s">last tick ${tickHM}${tickAgo?" · "+tickAgo:""}</span>`:"");}
   else{head=`<b style="font-size:15px;color:var(--off)">● between ticks</b>`+(tickHM?`<span class="s">last tick ${tickHM}${tickAgo?" · "+tickAgo:""}</span>`:"")+(lp.CONTINUOUS_COOLDOWN?`<span class="s" style="color:var(--mut)">next within ~${lp.CONTINUOUS_COOLDOWN}s</span>`:"");}
   const evs=(d.events||[]).map(e=>{const ea=(typeof e.ts==="number")?_agoS(now-e.ts):"";return `<div class="s" style="display:flex;gap:8px;padding:2px 0"><span class="mono" style="color:var(--mut);min-width:52px;text-align:right">${ea}</span><span class="mono" style="color:var(--accent);min-width:46px">${esc(e.tool||"")}</span><span style="flex:1;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.summary||"")}</span></div>`;}).join("")||'<div class="s" style="color:var(--mut)">no recent tool events</div>';
@@ -1498,7 +1600,7 @@ async function renderActivity(quiet){const p=document.getElementById("pane");if(
   const ticks=(d.recent_ticks||[]).map(t=>{const capped=(t.subtype||"")==="error_max_turns";
     const bad=!capped&&(t.rc!=null&&t.rc!==0||t.subtype&&t.subtype!=="success");
     const oc=capped?"capped":(bad?esc(t.subtype||"rc"+t.rc):"ok");const col=capped?"var(--idle)":(bad?"var(--err)":"var(--ok)");
-    return `<tr><td class="mono s">${esc((t.ts||"").slice(5,16).replace("T"," "))}</td><td class="mono s" style="color:var(--mut)">${_agoIso(t.ts)}</td><td class="s">${esc(t.reason||"")}</td><td class="s">${t.tool_calls!=null?t.tool_calls+" tools":""}</td><td class="s">${t.dur_s!=null?Math.round(t.dur_s)+"s":""}</td><td class="s" style="color:${col}">${oc}</td></tr>`;}).join("");
+    return `<tr><td class="mono s">${esc(fmtClock(t.ts))}</td><td class="mono s" style="color:var(--mut)">${_agoIso(t.ts)}</td><td class="s">${esc(t.reason||"")}</td><td class="s">${t.tool_calls!=null?t.tool_calls+" tools":""}</td><td class="s">${t.dur_s!=null?Math.round(t.dur_s)+"s":""}</td><td class="s" style="color:${col}">${oc}</td></tr>`;}).join("");
   const commits=(d.commits||[]).map(c=>`<div class="s" style="display:flex;gap:8px;padding:2px 0"><span class="mono" style="color:var(--accent)">${esc(c.hash||"")}</span><span style="flex:1;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.msg||"")}</span><span style="color:var(--mut);white-space:nowrap">${_agoS(Date.now()/1000-(c.ts||0))}</span></div>`).join("")||'<div class="s" style="color:var(--mut)">no commits found in this repo</div>';
   p.innerHTML=`<div style="padding:14px;overflow:auto;height:100%">
     <div class="card" style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
@@ -1625,12 +1727,12 @@ function drawCharts(u,win){
   const dsets=Object.entries(sa.series).map(([k,v],i)=>({label:k,data:v.cost,backgroundColor:PAL[i%PAL.length]}));
   mkChart("chTime",{type:"bar",data:{labels:sa.buckets,datasets:dsets},plugins:[fixMarker],
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{boxWidth:10,font:{size:10}}}},
-      scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,ticks:{callback:v=>"$"+v}}}}});
+      scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,ticks:{callback:v=>_axMoney(v)}}}}});
   /* cost by reason (sum over 7d series) */
   const sr=(ov.series||{}).reason||{buckets:[],series:{}};
   const rk=Object.keys(sr.series),rv=rk.map(k=>sr.series[k].cost.reduce((a,b)=>a+b,0));
   mkChart("chReason",{type:"bar",data:{labels:rk,datasets:[{data:rv,backgroundColor:rk.map((_,i)=>PAL[i%PAL.length])}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>"$"+v}},x:{grid:{display:false}}}}});
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>_axMoney(v)}},x:{grid:{display:false}}}}});
   /* cost by model (window) */
   const bm=(u.fleet||{}).by_model||{};const mk=Object.keys(bm),mv=mk.map(k=>bm[k].cost_usd);
   mkChart("chModel",{type:"doughnut",data:{labels:mk.map(m=>m.replace("claude-","")),datasets:[{data:mv,backgroundColor:mk.map((_,i)=>PAL[i%PAL.length]),borderWidth:0}]},
@@ -1643,7 +1745,7 @@ function drawMini(id){if(typeof Chart==="undefined")return;
   const el=document.getElementById("miniChart");if(!el)return;
   if(!s){el.parentElement.style.display="none";return;}
   mkChart("miniChart",{type:"bar",data:{labels:sa.buckets,datasets:[{data:s.cost,backgroundColor:cssv("--accent")}]},plugins:[fixMarker],
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>"$"+v}},x:{grid:{display:false}}}}});
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>_axMoney(v)}},x:{grid:{display:false}}}}});
 }
 /* ---------- Graph view (force-directed topology) ---------- */
 let G=null,GMGR=new Set();   // GMGR = ids that manage sub-agents (drawn with a crown) — refreshed each render
@@ -1692,9 +1794,11 @@ try{if(localStorage.getItem("rail_collapsed"))document.body.classList.add("railc
 document.getElementById("search").addEventListener("input",render);
 const _urlView=new URLSearchParams(location.search).get("view");
 const _VIEWS=["overview","agents","monitor","activity","models"];   // "graph" folded into overview
-try{let _v=(_VIEWS.includes(_urlView)?_urlView:null)||localStorage.getItem("console_view")||"overview";if(!_VIEWS.includes(_v))_v="overview";view(_v);}catch(e){view("overview");}
+try{let _land=localStorage.getItem("console_landing");
+  let _v=(_VIEWS.includes(_urlView)?_urlView:null)||((_land&&_land!=="last"&&_VIEWS.includes(_land))?_land:null)||localStorage.getItem("console_view")||"overview";
+  if(!_VIEWS.includes(_v))_v="overview";view(_v);}catch(e){view("overview");}
 load();
-setInterval(()=>{if(curview==="overview"&&!_paused)loadOverview();},15000);
+setInterval(()=>{if(curview==="overview"&&!_paused&&_due("ov"))loadOverview();},3000);
 let _lastA="";
 try{const es=new EventSource(qs("/api/stream"));es.onmessage=e=>{try{const j=JSON.parse(e.data);const na=j.agents||agents;const k=JSON.stringify(na);
   if(k===_lastA)return;                       /* skip no-op pushes — the rail rebuilt every ~4s and flickered ("page reloads") even when nothing changed */
