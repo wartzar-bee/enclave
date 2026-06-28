@@ -80,7 +80,9 @@ Every deployment is independent, but you manage them all from one place — no p
   (id + the compose file must live under `ENCLAVE_STACKS_ROOTS`) and written to an append-only audit log.
 - **`enclave console`** — a web panel, **fully wired from one command**: it also starts the background
   services its buttons need (create-agent, apply-fix, health monitor), so you don't run any daemons by
-  hand. Per agent: **Chat · Status · Diagnostics** (cost/context/tools/models, anomalies) **· Config**
+  hand. Per agent: **Chat · Status · Diagnostics** (cost/context/tools/models, anomalies — works for
+  **every brain**: `local`/`api` agents emit the same per-tick `events.jsonl`/`usage.jsonl` telemetry as the
+  Claude path) **· Config**
   (brain/mode, and edit the agent's mission/CLAUDE.md live) **· Skills · Logs**, a left **rail** grouped
   by manager with live status, a per-agent **blocker strip**, a fleet **Monitor** (detect→cause→fix,
   with one-click Apply / Automate), and a **+ New Agent** form. Binds `127.0.0.1` only (tunnel for
@@ -151,8 +153,14 @@ It's a real Claude-Code conversation in the browser — only the UI differs:
   arrives. Carries across all future chats and work ticks (not just the current thread).
 - **Image attach** (paperclip/paste/drag-drop → `home/uploads/`), **voice in/out** (browser Web Speech,
   or server-side via `TRANSCRIBE_URL`/`TTS_URL` — see `docs/VOICE-BACKEND.md`), and a **live model picker**.
-- Tunables: `CHAT_MODEL` (override the chat model), `CHAT_RESPONDER=off` (disable the chat plane). The
-  separate **work plane** (`inbox.md` + `enclave send` / Telegram) drives scheduled/autonomous work.
+- **Conversation, not a work tick** — a chat turn is **read-only by default** (it can read files + search,
+  but Bash/Write/Edit are disallowed) so "status?" returns an answer instead of sending the agent off on a
+  long build. Ask for *actions* via the **work plane** (`inbox.md` + `enclave send` / Telegram); or set
+  `CHAT_ALLOW_WRITES=1` to let chat act. Runs on the agent's brain: `claude` = a resumable session;
+  `api`/`local` = a single-shot on that brain's own endpoint.
+- Tunables: `CHAT_MODEL` (chat model), `CHAT_BASE` (run chat on a *different/faster* endpoint than the work
+  brain — e.g. a `local` agent chats on NVIDIA so it doesn't fight the tick for the GPU), `CHAT_ALLOW_WRITES`,
+  `CHAT_RESPONDER=off`. **Full reference: `docs/CHAT.md`.**
 
 ## Why it's safe (verifiable by reading code, not trusting us)
 - **Container isolation** — `--cap-drop=ALL --security-opt=no-new-privileges`; no inbound ports on the agent.
@@ -178,9 +186,10 @@ platform/agentd/          the runtime: agentloop, runtime.sh, guard + delegation
                           qmd + codegraph gateways, rlm.py
 tools/gcloud/             optional multi-tenant, read-only gcloud bridge (per-agent credential isolation)
 templates/                starter agent homes (ops, support, analyst) — all wired with guard + delegation_guard
-docs/                     design notes — DELEGATION (manager→worker), OPTIMIZE-BRAIN, WORK-DIR (working
-                          folder + indexing), WIKI-LAYER, MEMORY-PROVIDERS, MEMORY-MODES, CODE-MEMORY,
-                          WASM-SANDBOX, VETTING (dependency security passes), ROADMAP
+docs/                     design notes — CHAT (the chat plane + per-brain endpoints + tunables),
+                          DELEGATION (manager→worker), OPTIMIZE-BRAIN, WORK-DIR (working folder + indexing),
+                          WIKI-LAYER, MEMORY-PROVIDERS, MEMORY-MODES, CODE-MEMORY, WASM-SANDBOX,
+                          VETTING (dependency security passes), ROADMAP
 ```
 
 ## Memory — one linked, durable, secret-safe brain
