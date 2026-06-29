@@ -278,6 +278,19 @@ class Loop:
         # still wake instantly on events (comms/inbox). No signal → a safe middle pace. The cap-guard
         # in runtime.sh throttles the burn, so continuous != runaway.
         st = self._read_tick_status()
+        # Honor the agent's context-CLEAR signal HERE. _read_tick_status consumes+deletes tick-status.json
+        # (one-shot), so runtime.sh's own session-clear check can NEVER see it on the next tick — the agent's
+        # self-clear was silently lost and the warm session grew until a cost/occupancy net tripped (the
+        # warm-resume cost deadlock). Drop the pinned session id now so the next tick cold-starts a fresh
+        # (cheap) session from handoff.md — restoring lean per-package clears.
+        if str(st.get("session", "")).strip().lower() in ("clear", "fresh", "reset", "new"):
+            try:
+                (self.dir / "state" / "work-session.id").unlink()
+                self.log("agent signalled session CLEAR → dropped warm-session id (fresh session next tick)")
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                self.log(f"session CLEAR signal: could not drop session id ({e})")
         if st.get("status") == "idle":
             self.next_heartbeat = now + self.interval
             self.log(f"idle ({st.get('waiting_on','-')}) → heartbeat {self.interval}s (wakes on events)")
