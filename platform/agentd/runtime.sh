@@ -376,6 +376,25 @@ if [ -f "$WORK_SID_FILE" ] && [ -f "$AGENT_DIR/state/.ctx-budget.json" ] && [ "$
     rm -f "$WORK_SID_FILE"
   fi
 fi
+# SAFETY NET ($ cost floor): same idea as the occupancy net above, but on cumulative session COST. A warm
+# --resume re-charges the whole context cache on turn 1, so a long-lived session can arrive already at/over
+# the hard $ budget BEFORE any work — the ctx_budget hook then blocks every work tool (including the Write
+# that would signal session:clear): a deadlock the agent CANNOT escape (it burns ~$ doing nothing, forever).
+# If the last turn's cumulative cost_est is at/over the hard $ cap, auto-clear → this tick starts a FRESH
+# (cheap) session and reconstructs from handoff.md. Makes lean-resume self-healing, not agent-dependent.
+if [ -f "$WORK_SID_FILE" ] && [ -f "$AGENT_DIR/state/.ctx-budget.json" ]; then
+  read -r COST_OVER COST_NOW <<EOF
+$(python3 -c "import json
+try: c=float(json.load(open('$AGENT_DIR/state/.ctx-budget.json')).get('cost_est',0) or 0)
+except Exception: c=0.0
+h=float('${CTX_COST_HARD_USD:-4.5}')
+print(('1' if c>=h else '0'), round(c,2))" 2>/dev/null || echo "0 0")
+EOF
+  if [ "${COST_OVER:-0}" = "1" ]; then
+    log "session cumulative cost \$${COST_NOW} ≥ hard \$${CTX_COST_HARD_USD:-4.5} on resume (cache-rewarm deadlock) — auto-clearing → fresh lean session this tick"
+    rm -f "$WORK_SID_FILE"
+  fi
+fi
 SESS=()
 if [ "${BRAIN:-claude}" = "claude" ] && [ "${WARM_SESSION:-1}" != "0" ]; then
   if [ -s "$WORK_SID_FILE" ]; then
