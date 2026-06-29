@@ -577,12 +577,25 @@ def cmd_init(args):
                      "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/guard.py"}]}]
             if _dg:
                 _pre.append({"matcher": "Write|Edit|MultiEdit", "hooks": _dg})
+            # ctx_budget PreToolUse: once spend nears the package budget, BLOCK the work tools so the
+            # agent can only finalize its handoff + finish (cost discipline; pairs with the PostToolUse warn).
+            if (home / ".claude" / "hooks" / "ctx_budget.py").exists():
+                _pre.append({"matcher": "Bash|Edit|MultiEdit|Task|WebFetch|WebSearch",
+                    "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/ctx_budget.py"}]})
             _hk = {"PreToolUse": _pre}
             # PostToolUse: verify_edit runs a fast per-file syntax/parse check after an edit and feeds a
             # real breakage back to the agent — the mechanical first-gate of the verify-before-done skill.
+            _post = []
             if (home / ".claude" / "hooks" / "verify_edit.py").exists():
-                _hk["PostToolUse"] = [{"matcher": "Write|Edit|MultiEdit",
-                    "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/verify_edit.py"}]}]
+                _post.append({"matcher": "Write|Edit|MultiEdit",
+                    "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/verify_edit.py"}]})
+            # ctx_budget: after EVERY tool, warn the agent when its context nears its planned package
+            # budget so it banks a handoff + clears before the session balloons (cost discipline).
+            if (home / ".claude" / "hooks" / "ctx_budget.py").exists():
+                _post.append({"matcher": "*",
+                    "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/ctx_budget.py"}]})
+            if _post:
+                _hk["PostToolUse"] = _post
             _write(setjson, json.dumps({"hooks": _hk}, indent=2) + "\n")
     # 1a-iii) ship the VERIFIER SUBAGENTS into home/.claude/agents so a BRAIN=claude agent's verifier-gate
     #         can spawn them by type (Task tool: code-reviewer / silent-failure-hunter / security-reviewer).

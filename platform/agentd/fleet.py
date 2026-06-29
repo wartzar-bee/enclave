@@ -109,12 +109,19 @@ def _state(home):
         s["work_open"] = sum(1 for w in wk if isinstance(w, dict) and w.get("status") in ("todo", "doing"))
     except Exception:
         pass
-    # tick liveness from runner.log tail
+    # tick liveness from runner.log: a long MAX_TURNS tick spews hundreds of lines, so a tiny tail can
+    # miss the 'tick start' and falsely read 'idle' mid-work. Look back far + compare marker TIMESTAMPS
+    # (leading ISO ts → lexicographic == chronological): working iff the latest start is after the
+    # latest end/timeout (i.e. a tick is in progress).
     try:
-        tail = (home / "logs" / "runner.log").read_text(errors="ignore").splitlines()[-12:]
-        starts = [l for l in tail if "tick start" in l]
-        ends = [l for l in tail if "tick end" in l]
-        s["tick"] = "working" if (starts and (not ends or tail.index(starts[-1]) > tail.index(ends[-1]))) else "idle"
+        lines = (home / "logs" / "runner.log").read_text(errors="ignore").splitlines()[-1500:]
+        last_start = last_end = ""
+        for l in lines:
+            if "tick start" in l:
+                last_start = l[:20]
+            elif "tick end" in l or "tick TIMED OUT" in l:
+                last_end = l[:20]
+        s["tick"] = "working" if (last_start and last_start > last_end) else "idle"
     except Exception:
         pass
     return s

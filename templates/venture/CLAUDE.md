@@ -29,3 +29,6 @@ Save real work (code/drafts/analyses) under `/work`, NOT in your home (`/agent` 
 
 ## Credential / session expiry
 If a live tool fails with a credentials / re-auth error, STOP (don't retry in a loop), note it in `state/chat-reply.md`, and resume once the operator re-authenticates.
+
+## Context budget & handoff (cost discipline — skill: `skills/budget-and-handoff.md`)
+Plan work as coherent BUDGETED packages (related tasks only), keep ONE lean `state/handoff.md` current (objective · now-doing · EXACT next step · key files path:line · decisions · blockers), and obey the `ctx_budget` hook: **soft** 📊 → reach a boundary + refresh handoff + no big reads; **hard** 🛑 → finalize `handoff.md`, write `state/tick-status.json {"status":"continue","session":"clear"}`, then `finish` (next tick resumes lean). Estimate a token budget per package in `state/budget.json {"package":...,"soft":N,"hard":N}`; calibrate from actuals. Offload: grep/Read-offset, never `cat` whole files.

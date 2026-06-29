@@ -26,6 +26,7 @@
 import argparse
 import json
 import os
+import pathlib
 import sys
 import time
 
@@ -46,6 +47,29 @@ def _emit_text(line):
     sys.stdout.flush()
 
 
+# Live context-budget signal — written per assistant turn so the ctx_budget HOOK can steer the agent and
+# the DASHBOARD can show cost climbing MID-tick (instead of learning the bill at tick end). Best-effort;
+# never break the stream. $/Mtok defaults are Opus-ish, env-overridable.
+_RATE_IN  = float(os.environ.get("RATE_INPUT_PER_MTOK", "15"))
+_RATE_CR  = float(os.environ.get("RATE_CACHE_READ_PER_MTOK", "1.5"))
+_RATE_CW  = float(os.environ.get("RATE_CACHE_WRITE_PER_MTOK", "18.75"))
+_RATE_OUT = float(os.environ.get("RATE_OUTPUT_PER_MTOK", "75"))
+
+def _emit_budget(out_path, turn, ctx_tokens, cum):
+    """Write state/.ctx-budget.json {turn, ctx_tokens(current occupancy), cost_est(running $)}."""
+    try:
+        bp = pathlib.Path(out_path).parent / ".ctx-budget.json"
+        cost = (cum["input"] * _RATE_IN + cum["cache_read"] * _RATE_CR
+                + cum["cache_write"] * _RATE_CW + cum["output"] * _RATE_OUT) / 1e6
+        bp.write_text(json.dumps({"ts": int(time.time()), "turn": turn,
+                                  "ctx_tokens": int(ctx_tokens), "cost_est": round(cost, 4)}))
+        if turn == 1:  # fresh tick → re-arm the per-tick warning dedup the hook keys off
+            try: (bp.parent / ".ctx-warned").unlink()
+            except OSError: pass
+    except Exception:
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", default=os.environ.get("AGENT_ID", "unknown"))
@@ -56,6 +80,8 @@ def main():
 
     # Accumulate what we observe so a missing result event still yields a record.
     seen_usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    _turn = 0  # assistant-message count this tick (for the live budget signal)
+    _cum = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}  # SUMMED (for the running $ estimate)
     seen_model = args.model or None
     result_written = False
     started = time.time()
@@ -110,6 +136,14 @@ def main():
                 seen_usage["output"] += u.get("output_tokens", 0) or 0
                 seen_usage["cache_read"] = max(seen_usage["cache_read"], u.get("cache_read_input_tokens", 0) or 0)
                 seen_usage["cache_write"] = max(seen_usage["cache_write"], u.get("cache_creation_input_tokens", 0) or 0)
+                # live budget signal: current occupancy (this turn's prompt size; cache_read dominates +
+                # is reliable) + a running $ estimate from the SUMMED tokens. Read by the hook + dashboard.
+                _turn += 1
+                _ti = u.get("input_tokens", 0) or 0; _tr = u.get("cache_read_input_tokens", 0) or 0
+                _tw = u.get("cache_creation_input_tokens", 0) or 0
+                _cum["input"] += _ti; _cum["output"] += u.get("output_tokens", 0) or 0
+                _cum["cache_read"] += _tr; _cum["cache_write"] += _tw
+                _emit_budget(args.out, _turn, _ti + _tr + _tw, _cum)
             for block in msg.get("content", []) or []:
                 bt = block.get("type")
                 if bt == "text":
@@ -183,6 +217,12 @@ def main():
             }
             _append_record(args.out, rec)
             result_written = True
+            # Signal the stream-json feeder (tick_feeder.py) that this tick produced a result, so it can
+            # close stdin (EOF → claude exits cleanly) instead of holding the session open for more input.
+            try:
+                (pathlib.Path(args.out).parent / ".tick-result").write_text(str(int(time.time())))
+            except Exception:
+                pass
             _emit_text(
                 f"── result: {rec['subtype'] or '?'} · {rec['turns']} turns · {rec['duration_s']}s · "
                 f"in={rec['input']} out={rec['output']} cache_r={rec['cache_read']} "

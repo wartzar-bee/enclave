@@ -34,6 +34,7 @@ USAGE_LOG="$AGENT_DIR/state/usage.jsonl"   # per-tick first-party usage (usage_c
 # "External LLM spend" card sums it. Distinct from usage.jsonl (Claude subscription, cap-bound).
 [ -z "${SPEND_LOG:-}" ] && export SPEND_LOG="$AGENT_DIR/state/api_spending.jsonl"
 CAP="$SCRIPT_DIR/usage_capture.py"; [ -f "$CAP" ] || CAP="${TOOLS_ROOT:-/workspace}/platform/agentd/usage_capture.py"
+FEEDER="$(dirname "$CAP")/tick_feeder.py"   # stream-json stdin feeder + graduated budget INJECTOR + cutoff
 HEARTBEAT="$AGENT_DIR/state/.heartbeat"
 LOCK="${TMPDIR:-/tmp}/agent-${AGENT_ID}.lock"
 MIN_CAP_REMAINING="${STUDIO_MIN_CAP_REMAINING:-35}"
@@ -348,14 +349,105 @@ SET=()
 # per-agent lock + stale-lock reclaim still prevent a permanent wedge). Earlier this line died with
 # `timeout: command not found` (exit 127) every tick — that's why nothing ran.
 TO="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
-log "tick start (model=$MODEL_EFF, perm=$PERMISSION, mcp=${MCP:+qmd}, guard=${SET:+on}, timeout=${TO:+on}, usage=${CAP:+on})"
-if [ -f "$CAP" ]; then
+
+# Warm-session continuity (WARM_SESSION, default ON for BRAIN=claude): a tick RESUMES the same
+# conversation instead of cold-starting, so the agent KEEPS its working memory across ticks — a tick
+# becomes pause+resume, not a wipe. Pinned per-agent id (separate from chat_responder's own --resume
+# sessions). Validated: --resume carries full context. Mechanism mirrors chat_responder.py.
+WORK_SID_FILE="$AGENT_DIR/state/work-session.id"
+# Agent-driven session lifecycle (ECC file-handoff + /clear): the agent runs WARM within a unit of work,
+# but when it finishes a coherent unit and has banked state to durable files, it CLEARS its context so the
+# session can't grow forever — it decides when, not a timer. It signals by writing {"session":"clear"}
+# (or "fresh"/"reset"/"new") in state/tick-status.json; we then drop the pinned id so THIS tick starts a
+# fresh session and reconstructs from the files. (The agent may also just rm this file itself.)
+if [ -f "$WORK_SID_FILE" ] && [ -f "$AGENT_DIR/state/tick-status.json" ] \
+   && grep -qiE '"session"[[:space:]]*:[[:space:]]*"(clear|fresh|reset|new)"' "$AGENT_DIR/state/tick-status.json" 2>/dev/null; then
+  log "agent signalled session CLEAR (unit complete) — dropping warm context, fresh session this tick"
+  rm -f "$WORK_SID_FILE"
+fi
+# SAFETY NET (occupancy floor): the ctx_budget HOOK (mid-tick warn) + the agent's `session:clear` are the
+# PRIMARY controls. This is the net for when the agent IGNORES the warning. Uses the SAME metric the hook
+# uses — the last turn's context OCCUPANCY from state/.ctx-budget.json — so it only fires on real overrun.
+# If occupancy blew past the global hard floor (CTX_HARD_TOKENS, default 300k), auto-clear → next tick lean.
+if [ -f "$WORK_SID_FILE" ] && [ -f "$AGENT_DIR/state/.ctx-budget.json" ] && [ "${CTX_HARD_TOKENS:-300000}" -gt 0 ]; then
+  CTX="$(python3 -c "import json;print(int(json.load(open('$AGENT_DIR/state/.ctx-budget.json')).get('ctx_tokens',0) or 0))" 2>/dev/null || echo 0)"
+  if [ "${CTX:-0}" -gt "${CTX_HARD_TOKENS:-300000}" ]; then
+    log "context occupancy ${CTX} > ${CTX_HARD_TOKENS:-300000} hard floor — agent didn't self-clear; auto-clearing (fresh session next tick)"
+    rm -f "$WORK_SID_FILE"
+  fi
+fi
+SESS=()
+if [ "${BRAIN:-claude}" = "claude" ] && [ "${WARM_SESSION:-1}" != "0" ]; then
+  if [ -s "$WORK_SID_FILE" ]; then
+    SESS=(--resume "$(cat "$WORK_SID_FILE")")
+  else
+    WSID="$(python3 -c 'import uuid;print(uuid.uuid4())' 2>/dev/null)"
+    [ -n "$WSID" ] && { printf '%s\n' "$WSID" > "$WORK_SID_FILE"; SESS=(--session-id "$WSID"); }
+  fi
+fi
+# COST-CUTOFF watchdog (ENFORCEMENT). The ctx_budget hook only WARNS — the agent can (and does) ignore it.
+# This background watchdog polls the live cost (state/.ctx-budget.json) and, when it hits the hard budget
+# (the agent's planned hard_usd, clamped to the CTX_COST_HARD_USD floor), KILLS the tick. The post-tick
+# block then clears the session → next tick resumes lean from the handoff. The guarantee, agent-independent.
+rm -f "$AGENT_DIR/state/.cost-cutoff"; CW_PID=""
+# INJECT mode: graduated budget WARNINGS as injected user messages (the agent OBEYS them — proven) + a
+# kill backstop, both owned by tick_feeder.py (it writes the prompt via a FIFO as claude's stream-json
+# stdin). When on, it REPLACES the bash watchdog below (the feeder does the kill). Default on when the
+# feeder + capture parser are present; INJECT_BUDGET=0 falls back to positional-prompt + bash watchdog.
+INJECT=""
+if [ "${INJECT_BUDGET:-1}" != "0" ] && [ -f "$FEEDER" ] && [ -f "$CAP" ]; then INJECT=1; fi
+if [ -z "$INJECT" ] && [ "${COST_CUTOFF:-1}" != "0" ] && [ -f "$CAP" ]; then
+  ( while sleep 8; do
+      if python3 -c "
+import json,sys
+floor=float('${CTX_COST_HARD_USD:-3.5}'); hmax=float('${CTX_COST_HARD_MAX:-6.0}')
+try:
+ cost=float((json.load(open('$AGENT_DIR/state/.ctx-budget.json')) or {}).get('cost_est',0) or 0)
+except Exception: sys.exit(1)
+try:
+ hard=min(max(float(json.load(open('$AGENT_DIR/state/budget.json')).get('hard_usd') or floor), floor), hmax)
+except Exception: hard=floor
+sys.exit(0 if cost>=hard else 1)
+" 2>/dev/null; then
+        touch "$AGENT_DIR/state/.cost-cutoff"
+        log "COST CUTOFF — live spend hit the hard budget; killing the tick (resumes lean from handoff)"
+        pkill -TERM -f "claude -p" 2>/dev/null; sleep 2; pkill -KILL -f "claude -p" 2>/dev/null
+        break
+      fi
+    done ) & CW_PID=$!
+fi
+log "tick start (model=$MODEL_EFF, perm=$PERMISSION, mcp=${MCP:+qmd}, guard=${SET:+on}, timeout=${TO:+on}, usage=${CAP:+on}, session=${SESS:+warm}, cutoff=${CW_PID:+on}${INJECT:+, inject=on})"
+FEED_PID=""
+if [ -n "$INJECT" ]; then
+  # INJECT path: prompt is delivered as a stream-json user message via a FIFO by tick_feeder.py, which
+  # then injects graduated budget warnings (obeyed) + a kill backstop. claude reads the FIFO as stdin.
+  FIFO="$AGENT_DIR/state/.tick-fifo"; rm -f "$FIFO"; mkfifo "$FIFO" 2>/dev/null
+  CTX_COST_SOFT_USD="${CTX_COST_SOFT_USD:-2.0}" CTX_COST_HARD_USD="${CTX_COST_HARD_USD:-3.5}" \
+  python3 "$FEEDER" --fifo "$FIFO" --prompt-file "$AGENT_DIR/tick.txt" --state "$AGENT_DIR/state" \
+      --soft-floor "${CTX_COST_SOFT_USD:-2.0}" --hard-floor "${CTX_COST_HARD_USD:-3.5}" \
+      --grace "${CTX_STOP_GRACE_SEC:-60}" 2>>"$LOG" & FEED_PID=$!
+  ${TO:+$TO -k 30 ${TICK_TIMEOUT:-2400}} claude -p --input-format stream-json \
+    --append-system-prompt "$(cat "$AGENT_DIR/CLAUDE.md")" \
+    --model "$MODEL_EFF" \
+    "${SESS[@]}" \
+    ${MAX_TURNS:+--max-turns $MAX_TURNS} \
+    --output-format stream-json --verbose \
+    "${ADD_DIRS[@]}" \
+    "${MCP[@]}" \
+    "${SET[@]}" \
+    "${PERM[@]}" <"$FIFO" 2>>"$LOG" \
+    | MODEL_EFF="$MODEL_EFF" python3 "$CAP" --agent "$AGENT_ID" --reason "${TICK_REASON:-heartbeat}" \
+        --model "$MODEL_EFF" --out "$USAGE_LOG" >> "$LOG"
+  rc=${PIPESTATUS[0]}
+  kill "$FEED_PID" 2>/dev/null; rm -f "$FIFO"
+elif [ -f "$CAP" ]; then
   # Usage-accounting path (P1): stream-json → usage_capture.py. The parser renders the turn into
   # runner.log (no log regression) AND appends this tick's first-party usage to state/usage.jsonl.
   # claude's stderr still tees to runner.log; PIPESTATUS[0] keeps claude's OWN rc (not the parser's).
   ${TO:+$TO -k 30 ${TICK_TIMEOUT:-2400}} claude -p "$(cat "$AGENT_DIR/tick.txt")" \
     --append-system-prompt "$(cat "$AGENT_DIR/CLAUDE.md")" \
     --model "$MODEL_EFF" \
+    "${SESS[@]}" \
     ${MAX_TURNS:+--max-turns $MAX_TURNS} \
     --output-format stream-json --verbose \
     "${ADD_DIRS[@]}" \
@@ -370,6 +462,7 @@ else
   ${TO:+$TO -k 30 ${TICK_TIMEOUT:-2400}} claude -p "$(cat "$AGENT_DIR/tick.txt")" \
     --append-system-prompt "$(cat "$AGENT_DIR/CLAUDE.md")" \
     --model "$MODEL_EFF" \
+    "${SESS[@]}" \
     ${MAX_TURNS:+--max-turns $MAX_TURNS} \
     "${ADD_DIRS[@]}" \
     "${MCP[@]}" \
@@ -377,8 +470,29 @@ else
     "${PERM[@]}" </dev/null >> "$LOG" 2>&1
   rc=$?
 fi
+# stop the cost-cutoff watchdog; note if it fired (so a deliberate kill isn't logged as an error)
+[ -n "$CW_PID" ] && kill "$CW_PID" 2>/dev/null
+CUTOFF=""; [ -f "$AGENT_DIR/state/.cost-cutoff" ] && { CUTOFF=1; rm -f "$AGENT_DIR/state/.cost-cutoff"; }
 [ "$rc" -eq 124 ] && log "tick TIMED OUT — killed after ${TICK_TIMEOUT:-2400}s (loop recovers)"
-[ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && log "tick error (exit $rc)"
+[ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ -z "$CUTOFF" ] && log "tick error (exit $rc)"
+# COST CUTOFF fired → clear session (lean resume) + ensure a handoff exists for the fresh tick
+if [ -n "$CUTOFF" ]; then
+  log "tick cost-cut-off at the hard budget — clearing session for a lean resume next tick"
+  rm -f "$WORK_SID_FILE"
+  [ ! -s "$AGENT_DIR/state/handoff.md" ] && printf '# handoff.md (harness fallback — no agent handoff before cutoff)\nOBJECTIVE: see inbox.md (open directive).\nNOW-DOING: the previous tick was cost-cut-off mid-work.\nEXACT NEXT STEP: reconstruct from state/rollup.md (top) + work.json + recent git commits, then continue — and THIS tick, write state/budget.json {"package","soft_usd","hard_usd"} FIRST and keep state/handoff.md current as you go.\n' > "$AGENT_DIR/state/handoff.md"
+fi
+# Warm-session self-heal: if a --resume failed because the session is gone (e.g. .claude volume reset),
+# clear the pinned id so the NEXT tick starts a fresh session instead of erroring forever.
+if [ ${#SESS[@]} -gt 0 ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
+   && tail -40 "$LOG" 2>/dev/null | grep -qiE "no conversation found|session.*not found|no session with"; then
+  log "work session not found — resetting (fresh session next tick)"; rm -f "$WORK_SID_FILE"
+fi
+# Reactive overflow recovery (OpenHands pattern): if a tick died because the context window actually
+# overflowed, clear the session so the next tick starts fresh instead of re-resuming the over-full one.
+if [ -f "$WORK_SID_FILE" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
+   && tail -60 "$LOG" 2>/dev/null | grep -qiE "context.{0,12}(length|window).{0,12}(exceed|too|limit)|request_too_large|prompt is too long|conversation is too long|maximum context"; then
+  log "context overflow detected — clearing session (fresh + lean next tick)"; rm -f "$WORK_SID_FILE"
+fi
 log "tick end"
 
 # Auto-snapshot the vault so memory is saved BY DEFAULT (survives a machine wipe). Only if the

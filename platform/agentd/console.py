@@ -322,6 +322,24 @@ def _agent_activity(home):
         out["commits"] = _recent_commits(work_dir or str(home / "work"))
     except Exception:
         out["commits"] = []
+    # --- LIVE budget: this tick's running cost + context occupancy vs the agent's planned package budget
+    #     (state/.ctx-budget.json from the parser + state/budget.json the agent plans). Lets us SEE cost
+    #     climbing mid-tick + intervene, instead of learning the bill at tick end. ---
+    try:
+        b = json.loads((st / ".ctx-budget.json").read_text())
+        plan = {}
+        try: plan = json.loads((st / "budget.json").read_text())
+        except Exception: pass
+        hard = float(plan.get("hard_usd") or 3.5)        # the agent's planned package $ budget (primary)
+        soft = min(float(plan.get("soft_usd") or 2.0), hard)
+        cost = float(b.get("cost_est", 0) or 0)          # cumulative $ this tick — the cost bound
+        out["budget"] = {"cost": round(cost, 2), "soft_usd": soft, "hard_usd": hard,
+                         "occ": int(b.get("ctx_tokens", 0) or 0), "turn": b.get("turn"),
+                         "package": (str(plan.get("package") or ""))[:80],
+                         "pct": round(100 * cost / hard, 0) if hard else 0,
+                         "fresh": (now - (b.get("ts") or 0)) < 120}  # only "live" if updated in the last 2 min
+    except Exception:
+        out["budget"] = None
     return out
 
 
@@ -1594,6 +1612,18 @@ async function renderActivity(quiet){const p=document.getElementById("pane");if(
   if(live){head=`<b style="font-size:15px;color:var(--ok)">● WORKING</b>`+(tickHM?`<span class="s">tick started ${tickHM} ${_tzLabel()}${tickAgo?" · "+tickAgo:""}</span>`:"")+(d.last_event_age_s!=null?`<span class="s">last action ${_agoS(d.last_event_age_s)}</span>`:"");}
   else if(ts.status==="idle"){head=`<b style="font-size:15px;color:var(--idle)">● IDLE</b>`+(ts.waiting_on?`<span class="s">waiting on ${esc(ts.waiting_on)}</span>`:"")+(tickHM?`<span class="s">last tick ${tickHM}${tickAgo?" · "+tickAgo:""}</span>`:"");}
   else{head=`<b style="font-size:15px;color:var(--off)">● between ticks</b>`+(tickHM?`<span class="s">last tick ${tickHM}${tickAgo?" · "+tickAgo:""}</span>`:"")+(lp.CONTINUOUS_COOLDOWN?`<span class="s" style="color:var(--mut)">next within ~${lp.CONTINUOUS_COOLDOWN}s</span>`:"");}
+  /* LIVE budget bar — this tick's running cost + context occupancy vs the agent's package budget */
+  let budg="";
+  if(d.budget&&d.budget.fresh){const bd=d.budget;const pct=Math.min(100,bd.pct||0);
+    const col=bd.cost>=bd.hard_usd?"var(--err)":(bd.cost>=bd.soft_usd?"var(--idle)":"var(--ok)");
+    const softpct=bd.hard_usd?Math.round(100*bd.soft_usd/bd.hard_usd):60;
+    budg=`<div class="card" style="margin-bottom:10px;padding:9px 14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span class="s"><b style="color:${col}">${usd(bd.cost)}</b> / ${usd(bd.hard_usd)} budget (${pct}%)${bd.turn?` · turn ${bd.turn}`:""} · ctx ${Math.round(bd.occ/1000)}k</span>
+        ${bd.package?`<span class="s" style="color:var(--mut)">pkg: ${esc(bd.package)}</span>`:""}</div>
+      <div style="height:7px;border-radius:4px;background:var(--hover);margin-top:7px;position:relative;overflow:hidden">
+        <div style="position:absolute;left:${softpct}%;top:0;bottom:0;width:2px;background:var(--idle);z-index:1" title="soft budget"></div>
+        <div style="height:100%;width:${pct}%;background:${col};transition:width .4s"></div></div></div>`;}
   const evs=(d.events||[]).map(e=>{const ea=(typeof e.ts==="number")?_agoS(now-e.ts):"";return `<div class="s" style="display:flex;gap:8px;padding:2px 0"><span class="mono" style="color:var(--mut);min-width:52px;text-align:right">${ea}</span><span class="mono" style="color:var(--accent);min-width:46px">${esc(e.tool||"")}</span><span style="flex:1;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.summary||"")}</span></div>`;}).join("")||'<div class="s" style="color:var(--mut)">no recent tool events</div>';
   const wk=d.work||{};
   const wrow=(it,col)=>`<div class="s" style="padding:2px 0"><span style="color:var(${col})">●</span> <span style="color:var(--mut)">#${it.id}</span> ${esc(it.text||"")}</div>`;
@@ -1606,6 +1636,7 @@ async function renderActivity(quiet){const p=document.getElementById("pane");if(
     <div class="card" style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
       ${head}<span style="flex:1"></span>
       <span class="s" style="color:var(--mut)">loop: every ${lp.CONTINUOUS_COOLDOWN||"?"}s active · ${lp.INTERVAL_SECONDS||"?"}s safeguard · ${esc(lp.BRAIN||"")} · ${esc(lp.SUPERVISE||"")}</span></div></div>
+    ${budg}
     ${secCard("commits","✅ recent commits"+ic("The agent's own git commits — the clearest record of what it actually SHIPPED, newest first."),`<div style="max-height:170px;overflow:auto">${commits}</div>`)}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       ${secCard("doing","▶ doing right now"+ic("Live tool-call stream from the agent's events.jsonl — the literal actions it is taking this tick (newest first), each with how long ago. Refreshes every 3s."),`<div style="max-height:250px;overflow:auto">${evs}</div>`)}
