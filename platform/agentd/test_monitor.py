@@ -173,6 +173,33 @@ fleet_monitor.cycle(pol, st2, cq, now=time.time() + 1, dryrun=True, log=logs.app
 check("e2e: repeat cycle suppresses the duplicate", esc.read_text().count("memory_path_broken") == before)
 
 
+# --- (6b) per-agent mute is symmetric: a SUPPRESSED finding leaks no RECOVERED line either ---------
+# Regression for the context_bloat flapping: the ALERT edge honoured per_agent.suppress but the
+# RECOVERED edge did not, so a muted playbook still spammed "… RECOVERED" every time its condition
+# cleared. A non-suppressed agent must still get its RECOVERED line (the fix is targeted, not blanket).
+broken_runner = "python3: can't open file '/agent/bin/memory.py': No such file or directory\n"
+sup_bad, ctl_bad = mkhome(runner=broken_runner, memory_shim=False), mkhome(runner=broken_runner, memory_shim=False)
+sup_ok,  ctl_ok  = mkhome(runner="tick end\n", memory_shim=True),    mkhome(runner="tick end\n", memory_shim=True)
+mk_snap = lambda sh, ch: {
+    "sup": {"id": "sup", "up": True, "status": "running", "port": 8803, "home": sh, "last_seen": time.time()},
+    "ctl": {"id": "ctl", "up": True, "status": "running", "port": 8804, "home": ch, "last_seen": time.time()}}
+pol_sup = Policy({"default_mode": "alert", "playbooks": {}, "autofix_allowlist": [], "thresholds": {},
+                  "per_agent": {"sup": {"suppress": ["memory_path_broken"]}}})
+st6 = mstate.MonitorState(path=pathlib.Path(tempfile.mkdtemp()) / "s6.json")
+# cycle 1: both agents broken. sup is muted (no ALERT); ctl alerts.
+fleet_monitor.fleet.snapshot = lambda: mk_snap(sup_bad, ctl_bad)
+fleet_monitor.cycle(pol_sup, st6, cq, now=5_000.0, dryrun=True, log=lambda *_: None)
+sup_esc1 = pathlib.Path(sup_bad) / "state" / "escalations.log"
+check("mute: suppressed agent gets NO alert line", not sup_esc1.exists() or "memory_path_broken" not in sup_esc1.read_text())
+# cycle 2: both recover (homes now healthy). sup must stay silent; ctl must emit RECOVERED.
+fleet_monitor.fleet.snapshot = lambda: mk_snap(sup_ok, ctl_ok)
+fleet_monitor.cycle(pol_sup, st6, cq, now=5_060.0, dryrun=True, log=lambda *_: None)
+sup_esc2, ctl_esc2 = pathlib.Path(sup_ok) / "state" / "escalations.log", pathlib.Path(ctl_ok) / "state" / "escalations.log"
+check("mute: suppressed recovery emits NO line", not sup_esc2.exists() or "RECOVERED" not in sup_esc2.read_text())
+check("mute: non-suppressed agent still gets RECOVERED", ctl_esc2.exists() and "RECOVERED" in ctl_esc2.read_text())
+fleet_monitor.fleet.snapshot = lambda: fake_snap   # restore for downstream tests
+
+
 # --- (7) D2b: off-Opus LLM layer (intel) — parse, gating, cache, cycle integration ---------------
 from monitor import intel
 

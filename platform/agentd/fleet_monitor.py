@@ -232,6 +232,13 @@ def cycle(policy, st, control_queue, now=None, dryrun=False, log=print):
                                       f"{lf.get('cause')} → {lf.get('recommendation')} (LLM)", now, log)
 
         for k in st.reconcile_recoveries(aid, active, now):
+            # Mirror the alert gate above: a per-agent muted playbook stays OUT of the escalation
+            # channel on BOTH edges. Without this, a suppressed finding (e.g. context_bloat on a
+            # deliberately tool-heavy agent) emits no ALERT but still leaks a RECOVERED line every
+            # time its warm session clears — flapping noise in the operator's inbox.
+            if policy.suppressed(aid, k):
+                log(f"[monitor] RECOVERED {aid} {k} (suppressed — no escalation)")
+                continue
             escalate(home, f"[monitor:{k}] {aid} — RECOVERED: the '{k}' condition has cleared.")
             log(f"[monitor] RECOVERED {aid} {k}")
 
