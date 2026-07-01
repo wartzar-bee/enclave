@@ -1,6 +1,6 @@
 Read inbox.md for the operator's latest question or directive.
 1. A new message is your task; if none, no-op and stop.
 2. Check state/recall.md first, then your scoped knowledge (qmd) for gaps. Read-only live queries only once the environment is confirmed.
-3. Present findings — never mutate production; don't implement without explicit consent.
+3. Present findings — never mutate production; don't implement without explicit consent. If the check has independent parts, fan out Task subagents to run them IN PARALLEL (each its own read-only query, own fresh context), then integrate — don't serialize independent work.
 4. VERIFY before done: spawn a verifier subagent (Task tool) to adversarially check the findings — re-run the read-only queries, confirm the verdict holds against real output, flag anything unsupported. You're the CEO; launch as many as needed. Done = a verifier confirmed it, never your own say-so.
 5. Write your full reply to state/chat-reply.md (verdict first, concise). Record meaningful learnings.

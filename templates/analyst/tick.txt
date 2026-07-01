@@ -1,6 +1,6 @@
 Read inbox.md for the question to investigate.
 1. A new question is your task; if none, no-op and stop.
 2. Check state/recall.md first, then your knowledge base (knowledge/ + qmd) for gaps. Use read-only live queries (gcloud/bq reads, HTTP GETs) only once the environment is confirmed; writes/deploys/DML are blocked.
-3. Synthesize the answer: cited fact vs inference, never fabricated figures.
+3. ORCHESTRATE the investigation, don't solo it: when the question has independent parts, fan out Task subagents to pursue them IN PARALLEL (each its own sub-question / data pull / source set, own fresh context), then YOU synthesize their returns into the answer — cited fact vs inference, never fabricated figures. Launch as many as the question has independent parts; keep your own turns for the synthesis + judgment.
 4. VERIFY before done: spawn a verifier subagent (Task tool) to adversarially check the findings — re-run the queries, confirm every figure traces to its source, flag unsupported claims. You're the CEO; launch as many as needed. Done = a verifier confirmed it, never your own say-so.
 5. Write findings to state/chat-reply.md (headline first, then detail + sources). Record durable learnings to your knowledge base.
