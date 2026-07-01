@@ -23,8 +23,11 @@ import os, sys, json, time, argparse, subprocess, pathlib
 POLL = float(os.environ.get("FEED_POLL_SEC", "2"))
 
 WARN1 = ("\U0001F4CA BUDGET — you've spent ${cost:.2f} of your ${hard:.2f} package budget (soft "
-         "${soft:.2f}). Wrap up the CURRENT sub-task: refresh state/handoff.md, no big new reads, and do "
-         "NOT start a new sub-task — you're approaching this package's budget.")
+         "${soft:.2f}). BANK THIS CHUNK, don't abandon the task: this is a per-TICK cap, not a reason to "
+         "avoid a hard/multi-file task. If the top task is big, it's a MULTI-TICK task — finish the current "
+         "tick-sized CHUNK, write state/handoff.md with the EXACT next chunk, and stop (the NEXT fresh tick "
+         "continues it cheaply). Do NOT start an unrelated sub-task and do NOT downgrade to easy filler to "
+         "dodge the hard one — the hard task stays the priority next tick.")
 WARN2 = ("⚠️ BUDGET — ${cost:.2f} of ${hard:.2f}. You are about to be cut off. FINALIZE "
          "state/handoff.md now (objective · now-doing · EXACT next step · key files "
          "path:line · decisions · blockers) and stop opening new work.")

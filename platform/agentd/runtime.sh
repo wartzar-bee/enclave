@@ -376,25 +376,43 @@ if [ -f "$WORK_SID_FILE" ] && [ -f "$AGENT_DIR/state/.ctx-budget.json" ] && [ "$
     rm -f "$WORK_SID_FILE"
   fi
 fi
-# SAFETY NET ($ cost floor): same idea as the occupancy net above, but on cumulative session COST. A warm
-# --resume re-charges the whole context cache on turn 1, so a long-lived session can arrive already at/over
-# the hard $ budget BEFORE any work — the ctx_budget hook then blocks every work tool (including the Write
-# that would signal session:clear): a deadlock the agent CANNOT escape (it burns ~$ doing nothing, forever).
-# If the last turn's cumulative cost_est is at/over the hard $ cap, auto-clear → this tick starts a FRESH
-# (cheap) session and reconstructs from handoff.md. Makes lean-resume self-healing, not agent-dependent.
+# SAFETY NET ($ cost floor): cumulative session COST. A warm --resume re-charges the whole context cache on
+# turn 1, so a long-lived session can arrive already OVER budget BEFORE any work — the ctx_budget hook then
+# fires WARN1 ("wrap up, no new sub-task") immediately, so the agent can't open a HARD/multi-file task at all
+# and does easy filler instead (the "avoid the difficult task" incentive, operator 2026-07-01). Clearing at
+# the SOFT cap (not hard) kills that dead-zone: if the resumed session is already over SOFT it can't do
+# meaningful work anyway, so drop it → this tick COLD-starts CHEAP (<soft) with FULL budget to advance the
+# next tick-sized CHUNK of the top task (reconstructs from handoff.md). A hard task then gets DONE across
+# fresh ticks; difficulty stops mattering. Bounds warm-session growth to ~soft. Self-healing, not agent-dependent.
 if [ -f "$WORK_SID_FILE" ] && [ -f "$AGENT_DIR/state/.ctx-budget.json" ]; then
   read -r COST_OVER COST_NOW <<EOF
 $(python3 -c "import json
 try: c=float(json.load(open('$AGENT_DIR/state/.ctx-budget.json')).get('cost_est',0) or 0)
 except Exception: c=0.0
-h=float('${CTX_COST_HARD_USD:-4.5}')
+h=float('${CTX_COST_SOFT_USD:-20.0}')
 print(('1' if c>=h else '0'), round(c,2))" 2>/dev/null || echo "0 0")
 EOF
   if [ "${COST_OVER:-0}" = "1" ]; then
-    log "session cumulative cost \$${COST_NOW} ≥ hard \$${CTX_COST_HARD_USD:-4.5} on resume (cache-rewarm deadlock) — auto-clearing → fresh lean session this tick"
+    log "session cost \$${COST_NOW} ≥ soft \$${CTX_COST_SOFT_USD:-20.0} on resume — auto-clearing → fresh CHEAP tick with full budget to advance the next chunk (no dead-zone / no hard-task avoidance)"
     rm -f "$WORK_SID_FILE"
   fi
 fi
+# OPERATOR OVERRIDE (one-lever redirect): a NEW open [tier:top] inbox directive must WIN over a warm session +
+# stale handoff/plan. Without this, the tick warm-resumes the previous unit of work and its handoff.md steers
+# the OLD task, so a fresh operator directive is silently ignored (the "had to hand-sync 4 files" bug,
+# 2026-07-01). Fix: if inbox.md has an OPEN `- [ ] … [tier:top] …` item AND inbox changed since we last acted
+# on it (ack marker), drop the warm session so THIS tick COLD-starts and reconstructs from inbox/recall (which
+# override the default priority). Fires ONCE per new directive (ack mtime), then resumes warm normally — so
+# routine inbox notes don't thrash the session, only a top-priority redirect does. Result: operator writes
+# ONLY inbox (dashboard Send / `enclave fleet send`); it always wins.
+INBOX_F="$AGENT_DIR/inbox.md"; ACK_F="$AGENT_DIR/state/.inbox-override-acked"
+if [ -f "$WORK_SID_FILE" ] && [ -f "$INBOX_F" ] \
+   && grep -qiE '^- \[ \].*\[tier:top\]' "$INBOX_F" 2>/dev/null \
+   && { [ ! -f "$ACK_F" ] || [ "$INBOX_F" -nt "$ACK_F" ]; }; then
+  log "NEW [tier:top] inbox directive — dropping warm session so this tick cold-starts on the operator override"
+  rm -f "$WORK_SID_FILE"
+fi
+[ -f "$INBOX_F" ] && touch "$ACK_F" 2>/dev/null || true
 SESS=()
 if [ "${BRAIN:-claude}" = "claude" ] && [ "${WARM_SESSION:-1}" != "0" ]; then
   if [ -s "$WORK_SID_FILE" ]; then
