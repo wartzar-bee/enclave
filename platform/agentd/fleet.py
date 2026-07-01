@@ -121,7 +121,22 @@ def _state(home):
                 last_start = l[:20]
             elif "tick end" in l or "tick TIMED OUT" in l:
                 last_end = l[:20]
-        s["tick"] = "working" if (last_start and last_start > last_end) else "idle"
+        # "working" only while a tick is GENUINELY in progress: latest start newer than latest end AND
+        # recent. A tick that dies WITHOUT writing "tick end" (crash / OOM / kill / container killed
+        # mid-tick) leaves an orphaned "tick start" that would otherwise LATCH the badge to "working"
+        # forever (the "shut it down but it says working for hours" bug). Require the start to be within
+        # the max tick window (TICK_TIMEOUT + 10m grace); a stale unmatched start reads idle, not working.
+        working = bool(last_start and last_start > last_end)
+        if working:
+            try:
+                import calendar
+                st_epoch = calendar.timegm(time.strptime(last_start[:19], "%Y-%m-%dT%H:%M:%S"))
+                max_tick = int(os.environ.get("TICK_TIMEOUT", "2400")) + 600
+                if (time.time() - st_epoch) > max_tick:
+                    working = False   # orphaned/stale start — the tick died; nothing is running
+            except Exception:
+                pass
+        s["tick"] = "working" if working else "idle"
     except Exception:
         pass
     return s
