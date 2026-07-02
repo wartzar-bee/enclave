@@ -296,6 +296,22 @@ if [ -f "$MEM" ]; then
   python3 "$MEM" --base "$AGENT_DIR" digest > "$AGENT_DIR/state/recall.md" 2>>"$LOG" || true
 fi
 
+# Deterministic capability PREFLIGHT (off-Opus) — FUNCTIONALLY verify the toolchain works BEFORE spending an
+# Opus turn (writes state/capabilities.json; escalates broken required caps). Runs once (cached); re-runs on
+# tooling change / --force. With PREFLIGHT_GATE=1 a broken REQUIRED capability DEFERS the tick (exit 75 →
+# agentloop re-queues, zero Opus burned) instead of the model discovering + mis-diagnosing it mid-tick. This is
+# the framework fix for the "8 wasted ticks" (an HTTPS server was fine but mis-checked → false 'sandbox-blocked').
+PREFLIGHT="$SCRIPT_DIR/preflight.py"
+if [ -n "${REQUIRES:-}" ] && [ -f "$PREFLIGHT" ]; then
+  if REQUIRES="$REQUIRES" python3 "$PREFLIGHT" --state "$AGENT_DIR/state" >>"$LOG" 2>&1; then :; else
+    log "preflight: a REQUIRED capability is broken (see state/capabilities.json + state/escalations.log)"
+    if [ "${PREFLIGHT_GATE:-0}" = "1" ]; then
+      log "PREFLIGHT_GATE=1 → deferring this tick (no Opus burn) until the toolchain is fixed/escalation cleared"
+      exit 75
+    fi
+  fi
+fi
+
 # Housekeeping (continuous mode makes stores grow fast): rotate the runner log + a daily memory
 # compaction. FULLY ISOLATED in a subshell with `|| true` so it can NEVER abort the tick (a bug here
 # must not stop the agent from working).

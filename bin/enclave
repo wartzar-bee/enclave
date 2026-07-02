@@ -342,6 +342,17 @@ def _apply_spec_extras(spec, home, secrets, envf):
         _set_env_kv(home / "agent.env", {"INTERVAL_SECONDS": str(iv)})
         _set_env_kv(envf, {"INTERVAL_SECONDS": str(iv)})
 
+    # requires[]: the tools/bridges/skills this mission needs → REQUIRES for the deterministic startup
+    # preflight (runtime.sh + preflight.py). Known probes: route, render, qmd, codegraph, image, deploy_key,
+    # voice, gcloud. The agent's toolchain is FUNCTIONALLY verified before the first Opus turn; a broken
+    # required capability escalates (and, with preflight_gate, defers the tick — no Opus burn).
+    reqs = spec.get("requires")
+    if reqs:
+        req_str = ",".join(str(r).strip() for r in reqs) if isinstance(reqs, (list, tuple)) else str(reqs).strip()
+        _set_env_kv(home / "agent.env", {"REQUIRES": req_str})
+        if spec.get("preflight_gate"):
+            _set_env_kv(home / "agent.env", {"PREFLIGHT_GATE": "1"})
+
     # BRAIN=api endpoint wiring (the no-Claude path): a `provider` shorthand (nvidia/openrouter) expands to
     # base + key-env; explicit brain_api_base / brain_api_key_env / escalation_* win. Written into agent.env
     # so runtime.sh's BRAIN=api block drives local_agent.py against that endpoint with no Claude in the loop.
