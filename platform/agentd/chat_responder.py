@@ -183,6 +183,22 @@ def _disallowed_tools():
     return d
 
 
+# Appended to BOTH chat system prompts: how the read-only chat plane hands a work DIRECTIVE to the work
+# loop. The model supplies the JUDGMENT (is this a directive? distill it); Python (_promote_directive)
+# does the deterministic merge-vs-append file op. The operator never sees the block (stripped before reply).
+PROMOTE_INSTRUCTION = (
+    "\n\nWORK DIRECTIVES — HAND THEM TO THE WORK LOOP (don't just acknowledge; don't let them evaporate). "
+    "When the operator's message tells you to DO / CHANGE / FIX / BUILD / STOP / reprioritize the autonomous "
+    "work (an instruction or correction, NOT a question or chit-chat), you cannot run it here — so END your "
+    "reply with a machine block the harness acts on:\n"
+    "<promote-directive>ONE crisp imperative line telling the work loop exactly what to do — and incorporate "
+    "EVERY still-pending ask from THIS conversation: if the operator has added or changed things since the "
+    "last message, restate the FULL combined instruction, not just the latest bit</promote-directive>\n"
+    "Emit AT MOST ONE block, ONLY for a real work directive. For a question / status ask / acknowledgement, "
+    "emit NO block. The operator does NOT see the block; your visible reply should still confirm in ONE short "
+    "line that you've got it and it's queued as top priority. The harness MERGES it into the pending "
+    "instruction if the work hasn't started yet, or queues it as a NEW instruction if a tick is already on it.")
+
 # Established once on the first turn; session resume carries it across the whole thread.
 CHAT_PREAMBLE = (
     "You are in a LIVE, CONTINUOUS chat with the operator through a web UI — treat it EXACTLY like an "
@@ -211,7 +227,7 @@ CHAT_PREAMBLE = (
     "the operator wins for their own domain: save it as the new truth and note what it supersedes (don't "
     "silently keep the old fact). Then tell the operator in ONE line what you saved and at which "
     "confidence, so they can confirm or bump it. Only capture things with LASTING value — real facts, "
-    "corrections, preferences, decisions — never chit-chat or one-off task steps.")
+    "corrections, preferences, decisions — never chit-chat or one-off task steps." + PROMOTE_INSTRUCTION)
 
 # Appended to EVERY chat turn via --append-system-prompt (including resumed sessions, where CHAT_PREAMBLE
 # is NOT re-injected). cwd=/agent auto-loads the agent's CLAUDE.md (its autonomous WORK-TICK mission —
@@ -227,9 +243,9 @@ CHAT_SYSTEM = (
     "so do NOT try to start a game build, launch a server, render screenshots, or run the per-tick mission — "
     "that work happens on the WORK TICK, not in chat (and trying burns the turn with no answer). If the "
     "operator asks you to DO or CHANGE something (e.g. 'keep working', 'fix X', 'build Y'), briefly confirm you "
-    "understood and tell them it'll be handled on the work tick (or to queue it via the work queue / inbox) — "
-    "then STOP. Never read inbox.md or follow the 'pick the next build step' protocol here. Remember everything "
-    "earlier in this thread, and output only your reply (shown directly in chat).")
+    "understood — it is queued to the work loop automatically via the WORK DIRECTIVES block below — then STOP. "
+    "Never read inbox.md or follow the 'pick the next build step' protocol here. Remember everything "
+    "earlier in this thread, and output only your reply (shown directly in chat)." + PROMOTE_INSTRUCTION)
 
 
 def _conv_history(agent_dir, conv_id):
@@ -458,6 +474,80 @@ def _set_title(agent_dir, conv_id, title):
     except Exception:
         pass
 
+# ── Directive promotion: chat plane → work plane ──────────────────────────────────────────────────────
+# A direct operator chat message is the highest-authority signal, so a work directive in chat must reach
+# inbox.md (which the [tier:top] override in runtime.sh makes WIN over the warm session). Rule (operator):
+# coalesce follow-ups into the pending instruction while the agent hasn't started, else append a new one.
+CHAT_DIR_TAG = "[tier:top][chat]"
+PROMOTE_RE = re.compile(r"<promote-directive>\s*(.*?)\s*</promote-directive>", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_directive(reply):
+    """Split a chat reply into (visible_text, directive_or_None): pull out the hidden <promote-directive>
+    block the model emits for a work directive so the operator never sees the XML."""
+    m = PROMOTE_RE.search(reply or "")
+    if not m:
+        return reply, None
+    directive = " ".join(m.group(1).split()).strip()
+    cleaned = PROMOTE_RE.sub("", reply).strip()
+    return cleaned, (directive or None)
+
+
+def _tick_running(agent_dir):
+    """True if a work tick currently holds runtime.sh's per-agent lock (mkdir-lock at /tmp/agent-<id>.lock)
+    — i.e. the agent is ACTIVELY working. This is the 'has it started' signal for merge-vs-append."""
+    aid = os.environ.get("AGENT_ID", "").strip() or pathlib.Path(agent_dir).name
+    tmp = (os.environ.get("TMPDIR", "/tmp") or "/tmp").rstrip("/")
+    for lock in (f"{tmp}/agent-{aid}.lock", f"/tmp/agent-{aid}.lock"):
+        if os.path.isdir(lock):
+            return True
+    return False
+
+
+def _promote_directive(agent_dir, directive, log):
+    """Promote an operator chat DIRECTIVE into the work plane (inbox.md) as a top-priority line so the work
+    loop obeys it. Operator's rule: if a chat-promoted directive is still pending (agent hasn't started it),
+    UPDATE it in place (coalesce the follow-ups); if a tick is already on it (or it was consumed), APPEND a
+    NEW instruction. Returns a one-line confirmation for the reply, or None on no-op/failure."""
+    directive = " ".join((directive or "").split()).strip()
+    if not directive:
+        return None
+    inbox = pathlib.Path(agent_dir) / "inbox.md"
+    ack = pathlib.Path(agent_dir) / "state" / ".inbox-override-acked"
+    ts = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime())
+    line = f"- [ ] {ts} — {CHAT_DIR_TAG} {directive}"
+    try:
+        lines = inbox.read_text().splitlines() if inbox.exists() else []
+    except Exception:
+        lines = []
+    # the LAST still-open chat-promoted directive = the current pending/active one
+    open_idx = next((i for i in range(len(lines) - 1, -1, -1)
+                     if lines[i].lstrip().startswith("- [ ]") and CHAT_DIR_TAG in lines[i]), None)
+    # started? = a tick is actively running, OR the pending directive was already consumed by a tick
+    #            (inbox not newer than the override-ack marker runtime.sh touches at each tick start).
+    started = _tick_running(agent_dir)
+    if not started and open_idx is not None:
+        try:
+            started = ack.exists() and inbox.stat().st_mtime <= ack.stat().st_mtime
+        except Exception:
+            started = False
+    if open_idx is not None and not started:
+        lines[open_idx] = line                       # MERGE — update the not-yet-started directive in place
+        action = "updated the pending top-priority instruction"
+    else:
+        if lines and lines[-1].strip():
+            lines.append("")                         # blank separator for readability
+        lines.append(line)                           # APPEND — a new instruction
+        action = "queued a new top-priority instruction"
+    try:
+        inbox.write_text("\n".join(lines).rstrip("\n") + "\n")   # bumps mtime → loop wakes + [tier:top] wins
+        log(f"chat promoted directive → inbox.md ({action}): {directive[:90]}")
+        return f"✅ Queued to the work loop as top priority — {action}."
+    except Exception as e:
+        log(f"chat promote failed: {e}")
+        return None
+
+
 def chat_loop(agent_dir, log=print):
     agent_dir = pathlib.Path(agent_dir)
     chat_inbox = agent_dir / "state" / "chat-inbox.jsonl"
@@ -495,6 +585,14 @@ def chat_loop(agent_dir, log=print):
                 if reply == "STOPPED":
                     _write_reply(reply_file, conv_id, "_(stopped)_")
                 elif reply:
+                    # Promote a work directive (if the model emitted one) into inbox.md so the work loop
+                    # obeys it — strip the hidden block first so the operator never sees the XML.
+                    if os.environ.get("CHAT_PROMOTE", "1") != "0" and not reply.startswith(ERR):
+                        reply, directive = _extract_directive(reply)
+                        if directive:
+                            confirm = _promote_directive(agent_dir, directive, log)
+                            if confirm:
+                                reply = (reply + "\n\n" + confirm).strip() if reply else confirm
                     _write_reply(reply_file, conv_id, reply)
                     log(f"chat reply sent ({len(reply)} chars)")
                     if first and not reply.startswith(ERR):   # don't title a conversation off an error message

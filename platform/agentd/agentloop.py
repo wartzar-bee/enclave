@@ -165,6 +165,20 @@ class Loop:
         threading.Thread(target=chat_responder.chat_loop, args=(str(self.dir),),
                          kwargs={"log": self.log}, daemon=True, name="chat-responder").start()
 
+    def _run_boot_hook(self):
+        """Run an optional per-pod boot command once at container start (env BOOT_HOOK) — e.g. bring the
+        pod's playtest servers up so a container restart SELF-HEALS them, independent of the tick cadence.
+        Fire-and-forget + fail-open: a missing/broken hook never blocks the loop. Unset by default."""
+        cmd = os.environ.get("BOOT_HOOK", "").strip()
+        if not cmd:
+            return
+        try:
+            subprocess.Popen(["sh", "-c", cmd], cwd=str(self.dir),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.log(f"boot hook launched: {cmd[:80]}")
+        except Exception as e:
+            self.log(f"boot hook failed: {e}")
+
     def run_tick(self, reason):
         """One synchronous cap-guarded turn via the baked runtime.sh. Synchronous ⇒ the loop
         serialises with the tick (and runtime.sh's own lock), so turns never overlap."""
@@ -250,6 +264,7 @@ class Loop:
         self._ensure_supervisor()                  # co-located off-opus supervisor (BRAIN=local)
         self._start_supervisor_watchdog()          # tick-independent self-heal (the loop blocks during a tick)
         self._start_chat_responder()               # REAL-TIME chat plane (concurrent; never blocked by a work tick)
+        self._run_boot_hook()                      # optional per-pod boot cmd (e.g. start playtest servers) — self-heals on restart
         if os.environ.get("INITIAL_TICK", "1") != "0":
             self.tick_cycle("startup")             # default: tick now (matches the old while/sleep loop)
         else:
