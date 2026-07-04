@@ -1,6 +1,9 @@
 # Within-tick context compactor — scope
 
-**Status:** SCOPE / not built. Sibling to [`CONTEXT-AND-TICKS.md`](CONTEXT-AND-TICKS.md) (which covers
+**Status:** Tier-1 SHIPPED (`hooks/compactor.py` PreToolUse deny+steer, `COMPACT_ENFORCE`
+report/enforce, `hooks/test_compactor.py`); Tier-2 (rtk rules engine, `policies/compact.toml`) was
+never built — treat §A as backlog. (Header corrected 2026-07-04 — it stale-claimed "not built".)
+Sibling to [`CONTEXT-AND-TICKS.md`](CONTEXT-AND-TICKS.md) (which covers
 *between-tick* fixed cost) — this covers the gap that doc leaves open: **within-tick bloat**, the #1
 live cost driver on stoneforge today.
 

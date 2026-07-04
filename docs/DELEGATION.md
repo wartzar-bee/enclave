@@ -1,6 +1,8 @@
 # Delegation — manager coordinates, local workers do the labor
 
-**Status:** SPEC (pre-build), 2026-06-25. Distilled (not ported) from Hermes `delegate_tool` +
+**Status:** SHIPPED (built + live — `delegate.py`, `hooks/delegation_guard.py`, `local_agent.py`
+WORKER_MODE; header corrected 2026-07-04 — it stale-claimed "pre-build" long after the build).
+Originally distilled (not ported) from Hermes `delegate_tool` +
 `verification_stop`, NVIDIA NemoClaw's per-agent model-pinning + spawn-allowlist, OpenJarvis's
 router-policy. Adopts NONE of those repos — they failed our install-vetting bar; this is our own
 implementation of the convergent pattern.

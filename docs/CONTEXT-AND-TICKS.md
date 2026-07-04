@@ -14,6 +14,9 @@ session. So:
   tokens**. On a loop slower than the ~5-min prompt-cache TTL (our heartbeat is 15 min+), that replay
   is re-billed **uncached** every fire, and the thread only grows. That is the failure mode that once
   burned 136M tokens. **Never use `--resume`/`--continue` for an autonomous loop.**
+  *(⚠ SUPERSEDED 2026-07-04: the runtime now DOES warm-resume by default (`WARM_SESSION=1`) —
+  bounded by the calibrated cost caps, session-clear signals and auto-clear nets. The ban above is
+  kept as history of WHY the bounds exist; the current mechanism is [`COST-CONTROL.md`](COST-CONTROL.md).)*
 
 The win is therefore not "keep a session alive" — it's **make each fresh tick cheap**.
 
