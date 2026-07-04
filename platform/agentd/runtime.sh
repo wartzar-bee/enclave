@@ -57,17 +57,32 @@ if [ -f "$HEARTBEAT" ]; then
 fi
 echo "$NOW" > "$HEARTBEAT"
 
-# Stale-lock reclaim (can't wedge permanently after a killed tick).
+# Stale-lock reclaim (can't wedge permanently after a killed tick). PID-liveness first (2026-07-04
+# review fix #9): an UNGRACEFULLY killed tick (SIGKILL/OOM) skips the EXIT trap and used to freeze the
+# agent for up to STALE_LOCK_SECS (45 min) of mtime-based waiting. The lock now records its holder's
+# PID — a dead holder is reclaimed IMMEDIATELY; a live holder is respected (never start a second
+# claude beside a running tick; TICK_TIMEOUT bounds the real work).
 if ! mkdir "$LOCK" 2>/dev/null; then
   AGE=$(( NOW - $(_mtime "$LOCK") ))
-  if [ "$AGE" -gt "$STALE_LOCK_SECS" ] 2>/dev/null; then
-    log "stale lock (age ${AGE}s) — reclaiming"; rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK" 2>/dev/null
-    mkdir "$LOCK" 2>/dev/null || { log "could not reclaim lock, skip"; exit 75; }   # 75 = DEFERRED (agentloop re-queues)
+  LOCK_PID="$(cat "$LOCK/pid" 2>/dev/null)"
+  if [ -n "$LOCK_PID" ] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
+    log "lock holder (pid $LOCK_PID) is DEAD — reclaiming immediately (was age ${AGE}s)"
+    rm -rf "$LOCK" 2>/dev/null
+    mkdir "$LOCK" 2>/dev/null || { log "could not reclaim lock, skip"; exit 75; }   # 75 = DEFERRED
+  elif [ -n "$LOCK_PID" ]; then
+    [ "$AGE" -gt "$STALE_LOCK_SECS" ] 2>/dev/null && \
+      log "⚠ lock holder pid $LOCK_PID still ALIVE after ${AGE}s (> ${STALE_LOCK_SECS}s) — a tick may be wedged; NOT reclaiming a live process"
+    log "previous tick running (lock age ${AGE}s, pid $LOCK_PID), skip"; exit 75      # 75 = DEFERRED, not done
+  elif [ "$AGE" -gt "$STALE_LOCK_SECS" ] 2>/dev/null; then
+    # legacy lock without a pid file — fall back to the old age-based reclaim
+    log "stale lock (age ${AGE}s, no pid) — reclaiming"; rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK" 2>/dev/null
+    mkdir "$LOCK" 2>/dev/null || { log "could not reclaim lock, skip"; exit 75; }
   else
-    log "previous tick running (lock age ${AGE}s), skip"; exit 75                     # 75 = DEFERRED, not done
+    log "previous tick running (lock age ${AGE}s), skip"; exit 75
   fi
 fi
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+echo $$ > "$LOCK/pid" 2>/dev/null
+trap 'rm -rf "$LOCK" 2>/dev/null' EXIT
 
 # Soft pause (control-plane, 2026-06-13): a WARM hold the operator toggles from the dashboard. The
 # container + loop stay up but every tick no-ops until state/paused is removed (resume) — covers both
@@ -84,6 +99,54 @@ OVR="$AGENT_DIR/state/model.override"
 if [ -f "$OVR" ]; then
   _m="$(head -1 "$OVR" 2>/dev/null | tr -d '[:space:]')"
   if [ -n "$_m" ]; then export MODEL="$_m" BRAIN_MODEL="$_m"; log "model override (web chat) → $_m"; fi
+fi
+
+# ── Out-of-pocket spend cap, ALL brains (2026-07-04 review fix #8) ──────────────────────────────
+# api_spending.jsonl is REAL money (image-gen, paid LLM routing, BRAIN=api ticks) regardless of which
+# brain drives the tick — the old cap only guarded BRAIN=api, so a BRAIN=claude agent held the same
+# metered key uncapped. WINDOWED (last 7d), not cumulative-forever: a lifetime sum can never reset, so
+# it eventually bricks the agent no matter how modest the burn rate (the old $10 default was already
+# permanently exceeded). At the wall: escalate LOUDLY (deduped 6h) + DEFER, never silently die.
+# API_BUDGET_WEEKLY_USD (default 15); a legacy explicit API_BUDGET_USD is honored as the weekly value.
+WEEKLY_CAP="${API_BUDGET_WEEKLY_USD:-${API_BUDGET_USD:-15}}"
+if [ -n "$WEEKLY_CAP" ] && [ "$WEEKLY_CAP" != "0" ] && [ -f "$AGENT_DIR/state/api_spending.jsonl" ]; then
+  WK_SPENT="$(python3 - "$AGENT_DIR/state/api_spending.jsonl" <<'PY' 2>/dev/null || echo 0
+import sys, json, time, datetime
+cut = time.time() - 7 * 86400
+tot = 0.0
+try:
+    for l in open(sys.argv[1]):
+        l = l.strip()
+        if not l:
+            continue
+        try:
+            r = json.loads(l)
+        except Exception:
+            continue
+        ts = r.get("ts")
+        try:
+            e = float(ts) if isinstance(ts, (int, float)) else \
+                datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            continue
+        if e >= cut:
+            tot += float(r.get("usd") or 0)
+except Exception:
+    pass
+print(round(tot, 2))
+PY
+)"
+  if python3 -c "import sys; sys.exit(0 if float('${WK_SPENT:-0}') < float('${WEEKLY_CAP}') else 1)" 2>/dev/null; then
+    log "external spend (7d): \$${WK_SPENT} of \$${WEEKLY_CAP} weekly cap"
+  else
+    log "EXTERNAL SPEND CAP: \$${WK_SPENT} ≥ \$${WEEKLY_CAP} in the last 7d — DEFER (raise API_BUDGET_WEEKLY_USD or wait for the window to roll)"
+    SPEND_STAMP="$AGENT_DIR/state/.spend-cap-alerted"
+    if [ ! -f "$SPEND_STAMP" ] || [ $(( NOW - $(_mtime "$SPEND_STAMP") )) -gt 21600 ] 2>/dev/null; then
+      echo "$(date -u +%FT%TZ) ESCALATE :: [budget:external] ${AGENT_ID} — out-of-pocket spend \$${WK_SPENT} over the last 7d ≥ the \$${WEEKLY_CAP} weekly cap (state/api_spending.jsonl); ticks DEFER until the window rolls or the operator raises API_BUDGET_WEEKLY_USD." >> "$AGENT_DIR/state/escalations.log"
+      : > "$SPEND_STAMP"
+    fi
+    exit 75
+  fi
 fi
 
 # BRAIN=local (D-061 Phase-2, offline): drive the tick with the LOCAL model brain instead of the
@@ -112,23 +175,8 @@ fi
 # for xAI, etc.). Hard judgment escalates to ESCALATION_MODEL (defaults to the driver model, same endpoint).
 # Budget guard: API_BUDGET_USD (default $10/agent) caps cumulative spend tracked in state/api_spending.jsonl.
 if [ "${BRAIN:-claude}" = "api" ]; then
-  API_BUDGET="${API_BUDGET_USD:-10.0}"
-  # Read cumulative spend from log (fail-open: if log absent/corrupt, assume $0)
-  SPENT="0"
-  if [ -f "$AGENT_DIR/state/api_spending.jsonl" ]; then
-    SPENT="$(python3 -c "
-import sys, json, pathlib
-try:
-  lines = pathlib.Path('$AGENT_DIR/state/api_spending.jsonl').read_text().splitlines()
-  print(sum(json.loads(l).get('usd',0) for l in lines if l.strip()))
-except Exception: print(0)
-" 2>/dev/null || echo 0)"
-  fi
-  if python3 -c "import sys; sys.exit(0 if float('${SPENT:-0}') < float('${API_BUDGET}') else 1)" 2>/dev/null; then
-    log "api spend: \$${SPENT} of \$${API_BUDGET} budget used"
-  else
-    log "API budget cap: \$${SPENT} >= \$${API_BUDGET} — DEFER (raise API_BUDGET_USD to continue)"; exit 75
-  fi
+  # Spend cap: handled by the brain-agnostic WEEKLY gate above (fix #8) — the old cumulative-forever
+  # API_BUDGET_USD check lived here and permanently bricked an agent once lifetime spend crossed it.
   # Resolve the API key by its CONFIGURED env-var name (BRAIN_API_KEY_ENV) — generic across providers
   # (OPENROUTER_API_KEY by default; NVIDIA_API_KEY / XAI_API_KEY / OPENAI_API_KEY / … for others). Look in
   # the live env first, then scan any scoped .secrets/*.env for "<NAME>=…" (same pattern as the optimize path).
@@ -236,16 +284,30 @@ if [ -f "$USAGE_HELPER" ]; then
 fi
 
 # FALLBACK 5h cap guard (ccusage local block data) — only when the real-% helper gave no reading
-# (no token / offline / no headers). Uses ccusage's own block token-limit; STUDIO_MIN_CAP_REMAINING /
-# STUDIO_SESSION_LIMIT_PCT_FLOOR set the % threshold (see MIN_CAP_REMAINING derivation above).
+# (exit 66: no token / offline / no headers / stale cache). Uses ccusage's own block token-limit;
+# STUDIO_MIN_CAP_REMAINING / STUDIO_SESSION_LIMIT_PCT_FLOOR set the % threshold (see above).
+# If ccusage ALSO has no data, the tick still proceeds (fail-open) but the blindness is ALARMED —
+# an unguarded agent must be visible, not silent (2026-07-04 review fix #5).
 if [ "$USAGE_GUARDED" = 0 ] && [ "$MIN_CAP_REMAINING" -gt 0 ] 2>/dev/null; then
-  REMAIN="$(npx -y ccusage@latest blocks --json --token-limit max 2>/dev/null \
-    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);const b=(j.blocks||[]).find(x=>x.isActive);if(!b){console.log(100);return;}const l=(b.tokenLimitStatus||{}).limit,t=b.totalTokens;console.log(l&&t!=null?Math.max(0,Math.round((1-t/l)*100)):100);}catch(e){console.log(100);}});' 2>/dev/null)"
-  REMAIN="${REMAIN:-100}"
-  if [ "$REMAIN" -lt "$MIN_CAP_REMAINING" ] 2>/dev/null; then
-    log "session cap guard (fallback): 5h block ${REMAIN}% remaining (used $((100-REMAIN))% ≥ $((100-MIN_CAP_REMAINING))% floor) — DEFER"; exit 75
-  elif [ "$REMAIN" -le 15 ] 2>/dev/null; then
-    log "session WARN (fallback): 5h block ${REMAIN}% remaining (≥85% used)"
+  CC_RAW="$(npx -y ccusage@latest blocks --json --token-limit max 2>/dev/null || true)"
+  if [ -z "$CC_RAW" ]; then
+    log "⚠ SPEND-GUARD BLIND: subscription headers AND ccusage both unavailable — tick proceeds UNGUARDED"
+    BLIND_STAMP="$AGENT_DIR/state/.guard-blind-alerted"
+    if [ ! -f "$BLIND_STAMP" ] || [ $(( NOW - $(_mtime "$BLIND_STAMP") )) -gt 21600 ] 2>/dev/null; then
+      echo "$(date -u +%FT%TZ) ESCALATE :: [guard:blind] ${AGENT_ID} — spend guard has NO usage reading (ratelimit-header probe + ccusage both failed); the agent is running with NO subscription ceiling. Check CLAUDE_CODE_OAUTH_TOKEN / network, then verify 'claude_usage.py fetch' works." >> "$AGENT_DIR/state/escalations.log"
+      : > "$BLIND_STAMP"
+    fi
+  else
+    REMAIN="$(printf '%s' "$CC_RAW" \
+      | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);const b=(j.blocks||[]).find(x=>x.isActive);if(!b){console.log(100);return;}const l=(b.tokenLimitStatus||{}).limit,t=b.totalTokens;console.log(l&&t!=null?Math.max(0,Math.round((1-t/l)*100)):100);}catch(e){console.log(100);}});' 2>/dev/null)"
+    REMAIN="${REMAIN:-100}"
+    if [ "$REMAIN" -lt "$MIN_CAP_REMAINING" ] 2>/dev/null; then
+      log "session cap guard (fallback): 5h block ${REMAIN}% remaining (used $((100-REMAIN))% ≥ $((100-MIN_CAP_REMAINING))% floor) — DEFER"; exit 75
+    elif [ "$REMAIN" -le 15 ] 2>/dev/null; then
+      log "session WARN (fallback): 5h block ${REMAIN}% remaining (≥85% used)"
+    else
+      log "guard OK (ccusage fallback): 5h block ${REMAIN}% remaining"
+    fi
   fi
 fi
 
@@ -286,6 +348,26 @@ ADD_DIRS=(--add-dir "$AGENT_DIR")
 # The WORK_DIR project tree (mounted at /work) is in scope too — so the agent can work on it AND
 # Claude Code discovers the working folder's .claude/skills (e.g. a project's own skill set). See docs/WORK-DIR.md.
 [ -d /work ] && [ "$AGENT_DIR" != /work ] && ADD_DIRS+=(--add-dir /work)
+
+# ── Runtime-owned work-repo sync, pre-tick half (2026-07-04 review fix #10) ────────────────────
+# The RUNTIME owns the deploy key + all git NETWORK ops (clone/pull here, push post-tick), exactly
+# like it owns the vault snapshot — the agent only commits locally (GUARD_ALLOW_GIT=1) and NEVER
+# touches the key: guard.py blocks GIT_SSH_COMMAND (loader-hijack rule), so a prompt-injected agent
+# cannot push/force-push or exfil with the credential. Spec-driven + optional: set WORK_GIT_DIR,
+# WORK_GIT_KEY (and WORK_GIT_URL for first clone) in agent.env. Fully isolated; never aborts a tick.
+if [ -n "${WORK_GIT_DIR:-}" ] && [ -n "${WORK_GIT_KEY:-}" ] && [ -f "$WORK_GIT_KEY" ]; then
+  (
+    export GIT_SSH_COMMAND="ssh -i $WORK_GIT_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    if [ ! -d "$WORK_GIT_DIR/.git" ]; then
+      if [ -n "${WORK_GIT_URL:-}" ]; then
+        git clone -q "$WORK_GIT_URL" "$WORK_GIT_DIR" >>"$LOG" 2>&1 \
+          && log "work repo: cloned $WORK_GIT_URL" || log "work repo: clone FAILED (tick continues)"
+      fi
+    else
+      git -C "$WORK_GIT_DIR" pull -q --ff-only >>"$LOG" 2>&1 || log "work repo: pull failed (dirty tree or diverged — tick continues)"
+    fi
+  ) || true
+fi
 
 # Memory recall (P3): pre-load the agent's open work + most-relevant past memory into
 # state/recall.md so a context-wiped tick doesn't re-derive the world (agents forget — lean
@@ -339,6 +421,10 @@ fi
 # → the configured top MODEL. TICK_REASON/TICK_TIER are passed by agentloop.
 MODEL_EFF="$MODEL"
 if [ "${ROUTER:-off}" = "on" ]; then
+  # Router-nullification tripwire: ROUTER=on with MODEL_ROUTINE==MODEL means every "cheap" tick still
+  # runs the top model — a silent config error that cost weeks of Opus-on-heartbeat before it was seen.
+  [ -n "${MODEL_ROUTINE:-}" ] && [ "$MODEL_ROUTINE" = "$MODEL" ] && \
+    log "⚠ ROUTER NULLIFIED: MODEL_ROUTINE == MODEL ($MODEL) — routine ticks are NOT downgraded; set MODEL_ROUTINE to a cheaper tier"
   RT="$SCRIPT_DIR/route_tier.py"; [ -f "$RT" ] || RT="${TOOLS_ROOT:-/workspace}/platform/agentd/route_tier.py"
   if [ -f "$RT" ]; then
     PICK="$(python3 "$RT" "$AGENT_DIR" --reason "${TICK_REASON:-heartbeat}" --model "$MODEL" \
@@ -464,7 +550,9 @@ sys.exit(0 if cost>=hard else 1)
 " 2>/dev/null; then
         touch "$AGENT_DIR/state/.cost-cutoff"
         log "COST CUTOFF — live spend hit the hard budget; killing the tick (resumes lean from handoff)"
-        pkill -TERM -f "claude -p" 2>/dev/null; sleep 2; pkill -KILL -f "claude -p" 2>/dev/null
+        # Scoped kill (fix #9): match THIS agent's claude (its cmdline carries --add-dir $AGENT_DIR).
+        # A bare 'claude -p' pattern killed EVERY agent's in-flight tick when host-run multi-agent.
+        pkill -TERM -f "claude .*$AGENT_DIR" 2>/dev/null; sleep 2; pkill -KILL -f "claude .*$AGENT_DIR" 2>/dev/null
         break
       fi
     done ) & CW_PID=$!
@@ -547,6 +635,21 @@ if [ -f "$WORK_SID_FILE" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
   log "context overflow detected — clearing session (fresh + lean next tick)"; rm -f "$WORK_SID_FILE"
 fi
 log "tick end"
+
+# ── Runtime-owned work-repo sync, post-tick half (fix #10): push the agent's local commits ─────
+# Push-only (the agent authored + committed; the runtime holds the key). Skips clean; a failed push
+# is logged and retried next tick (commits are safe locally). FULLY ISOLATED — never aborts the loop.
+if [ -n "${WORK_GIT_DIR:-}" ] && [ -n "${WORK_GIT_KEY:-}" ] && [ -f "$WORK_GIT_KEY" ] && [ -d "$WORK_GIT_DIR/.git" ]; then
+  (
+    export GIT_SSH_COMMAND="ssh -i $WORK_GIT_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    AHEAD="$(git -C "$WORK_GIT_DIR" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)"
+    if [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
+      git -C "$WORK_GIT_DIR" push -q >>"$LOG" 2>&1 \
+        && log "work repo: pushed ${AHEAD} agent commit(s)" \
+        || log "work repo: push FAILED (${AHEAD} commit(s) stay local; retry next tick)"
+    fi
+  ) || true
+fi
 
 # Auto-snapshot the vault so memory is saved BY DEFAULT (survives a machine wipe). Only if the
 # operator made home/ a git vault (`enclave init`); SCAN-GATED (a leaked credential blocks the commit,

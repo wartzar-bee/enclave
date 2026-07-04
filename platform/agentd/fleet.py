@@ -163,6 +163,7 @@ def snapshot():
             "brain": env.get("BRAIN", "?"),
             "model": env.get("MODEL") or env.get("BRAIN_MODEL", "?"),
             "port": _port(env),
+            "chat_token": env.get("WEB_CHAT_TOKEN", ""),
             "dir": row["dir"],
             "configfile": row["configfile"],
             "home": str(home) if home else "",
@@ -186,7 +187,7 @@ def snapshot():
         agents[aid] = {
             "id": aid, "up": False, "status": "stopped",
             "brain": env.get("BRAIN", "?"), "model": env.get("MODEL") or env.get("BRAIN_MODEL", "?"),
-            "port": _port(env), "dir": dep,
+            "port": _port(env), "chat_token": env.get("WEB_CHAT_TOKEN", ""), "dir": dep,
             "configfile": str(pathlib.Path(dep) / "docker-compose.yml"),
             "home": str(home) if home else "",
             "manager": m.get("manager", ""), "tags": m.get("tags", []),

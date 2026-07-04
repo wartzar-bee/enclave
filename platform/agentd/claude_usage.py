@@ -206,6 +206,8 @@ def main():
     pg.add_argument("--weekly-floor", type=float, default=0, help="defer when 7d util ≥ this %% (0=off)")
     pg.add_argument("--session-warn", type=float, default=70)
     pg.add_argument("--weekly-warn", type=float, default=85)
+    pg.add_argument("--stale-after", type=int, default=3600,
+                    help="a cached reading older than this many seconds counts as BLIND (exit 66)")
     args = ap.parse_args()
 
     if args.cmd == "show":
@@ -226,9 +228,19 @@ def main():
 
     if args.cmd == "guard":
         data = fetch(args.out, args.max_age)
+        # BLIND is loud, not silent (2026-07-04 enclave review fix #5). This guard is the fleet's only
+        # real spend ceiling; returning rc 0 with no output when it can't read usage made blindness
+        # indistinguishable from health, and runtime.sh's ccusage fallback (gated on rc 66) was
+        # unreachable dead code because nothing ever exited 66. Now: no reading, or a reading staler
+        # than --stale-after, exits 66 → the caller falls back to ccusage and alarms if that's blind
+        # too. Still fail-OPEN (66 never defers a tick by itself).
         if not data or "five_hour" not in data:
-            # fail-open: can't read usage → never block
-            return
+            print("guard BLIND: no subscription usage reading (probe failed / no token / no cache)")
+            sys.exit(66)
+        age = int(time.time()) - int(data.get("ts", 0) or 0)
+        if age > args.stale_after:
+            print(f"guard BLIND: last usage reading is {age // 60}m old (> {args.stale_after // 60}m) — treating as no reading")
+            sys.exit(66)
         sess = data.get("five_hour") or {}
         wk = data.get("seven_day") or {}
         sp, wp = sess.get("pct"), wk.get("pct")
@@ -243,8 +255,11 @@ def main():
             defer = True
         elif wp is not None and wp >= args.weekly_warn:
             lines.append(f"weekly WARN: week at {wp}% used (resets {_fmt_eta(_reset_in(wk))})")
-        if lines:
-            print(" ; ".join(lines))
+        if not lines:
+            # Positive health line (fix #5): guard silence used to be ambiguous between "healthy,
+            # under thresholds" and "blind". Every guarded tick now states its reading.
+            lines.append(f"guard OK: 5h {sp if sp is not None else '?'}% / wk {wp if wp is not None else '?'}%")
+        print(" ; ".join(lines))
         sys.exit(75 if defer else 0)
 
 

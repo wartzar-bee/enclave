@@ -35,11 +35,35 @@ STOP  = ("\U0001F6D1 STOP NOW — ${cost:.2f} ≥ your ${hard:.2f} budget. Do ON
          "(1) finish writing state/handoff.md; (2) write state/tick-status.json "
          "{{\"status\":\"continue\",\"session\":\"clear\"}}; (3) finish this turn. You will be "
          "hard-stopped in ~{grace}s.")
+# Turn-cap wrap-up (2026-07-04 fix #4/#9-adjacent): MAX_TURNS used to GUILLOTINE mid-work
+# (57 ticks / $111 on stoneforge died error_max_turns, the truncated work re-derived next tick).
+# Inject a wrap-up order near the cap so the agent banks state and exits cleanly instead.
+TURNWRAP = ("⏳ TURN CAP — you are at turn {turn} of a {max_turns}-turn tick cap. WRAP UP NOW: "
+            "bank the current chunk (commit if applicable), write state/handoff.md with the EXACT "
+            "next step, write state/tick-status.json {{\"status\":\"continue\"}}, and finish this "
+            "turn cleanly. Do NOT start anything new — hitting the cap wipes this tick's unsaved "
+            "work and the next tick pays to re-derive it.")
 
 
 def umsg(text):
     return json.dumps({"type": "user", "message": {"role": "user",
                        "content": [{"type": "text", "text": text}]}})
+
+
+def next_injection(cost, turn, soft, hard, max_turns, sent):
+    """PURE decision: which injection (if any) fires now. Order matters — STOP wins, then the
+    turn-cap wrap-up (independent of $), then the graduated $ warnings. `sent` dedups. Unit-tested."""
+    if sent.get("stop"):
+        return None                       # STOP already delivered — nothing may follow it
+    if cost >= hard:
+        return "stop"
+    if max_turns and turn >= max(3, int(max_turns * 0.8)) and not sent.get("turnwrap"):
+        return "turnwrap"
+    if cost >= soft + (hard - soft) * 0.6 and not sent.get("w2"):
+        return "w2"
+    if cost >= soft and not sent.get("w1"):
+        return "w1"
+    return None
 
 
 def read_json(p, d):
@@ -81,17 +105,24 @@ def main():
     fh.write(umsg(prompt) + "\n")
     fh.flush()
 
-    sent = {"w1": False, "w2": False, "stop": False}
+    sent = {"w1": False, "w2": False, "stop": False, "turnwrap": False}
     stop_ts = None
+    max_turns = int(os.environ.get("MAX_TURNS", "0") or 0)   # 0/unset = no turn-cap wrap-up
 
     def kill_now():
         try:
             cutoff.write_text(str(int(time.time())))
         except Exception:
             pass
-        subprocess.run(["pkill", "-TERM", "-f", "claude -p"], check=False)
+        # Scoped kill (2026-07-04 fix #9): this agent's claude carries --add-dir <agent_dir> on its
+        # cmdline — match THAT, not every 'claude -p' on the machine (which, host-run multi-agent,
+        # killed every other agent's in-flight tick too).
+        import re as _re
+        agent_dir = str(st.resolve().parent)
+        pat = f"claude .*{_re.escape(agent_dir)}"
+        subprocess.run(["pkill", "-TERM", "-f", pat], check=False)
         time.sleep(2)
-        subprocess.run(["pkill", "-KILL", "-f", "claude -p"], check=False)
+        subprocess.run(["pkill", "-KILL", "-f", pat], check=False)
         try:
             fh.close()
         except Exception:
@@ -110,22 +141,26 @@ def main():
         b = read_json(bud, None)
         if b:
             cost = float(b.get("cost_est", 0) or 0)
+            turn = int(b.get("turn", 0) or 0)
             plan = read_json(st / "budget.json", {})
             # The budget is a runaway CAP, not a target — clamp the agent's plan UP to the floor (so a
             # too-tight self-budget can't thrash: a warm-resume tick spends ~$1+ on turn-1 cache rewarm
             # before any work) and DOWN to the absolute max (so it can't blow past the runaway ceiling).
             hard = min(max(float(plan.get("hard_usd") or a.hard_floor), a.hard_floor), a.hard_max)
             soft = min(max(float(plan.get("soft_usd") or a.soft_floor), a.soft_floor), hard)
-            w2_at = soft + (hard - soft) * 0.6
+            which = next_injection(cost, turn, soft, hard, max_turns, sent)
             try:
-                if cost >= hard and not sent["stop"]:
+                if which == "stop":
                     fh.write(umsg(STOP.format(cost=cost, hard=hard, grace=int(a.grace))) + "\n"); fh.flush()
                     sent["stop"] = True
                     stop_ts = time.time()
-                elif cost >= w2_at and not sent["w2"]:
+                elif which == "turnwrap":
+                    fh.write(umsg(TURNWRAP.format(turn=turn, max_turns=max_turns)) + "\n"); fh.flush()
+                    sent["turnwrap"] = True
+                elif which == "w2":
                     fh.write(umsg(WARN2.format(cost=cost, hard=hard)) + "\n"); fh.flush()
                     sent["w2"] = True
-                elif cost >= soft and not sent["w1"]:
+                elif which == "w1":
                     fh.write(umsg(WARN1.format(cost=cost, hard=hard, soft=soft)) + "\n"); fh.flush()
                     sent["w1"] = True
             except BrokenPipeError:

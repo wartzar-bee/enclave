@@ -23,6 +23,11 @@ services:
     container_name: ${AGENT_ID:-enclave-agent}
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # Resource ceilings (2026-07-04): an uncapped agent container can exhaust the HOST (RAM freeze /
+    # fork bomb / CPU starvation of sibling bridges). Generous for real work, fatal for runaways.
+    mem_limit: ${AGENT_MEM_LIMIT:-8g}
+    cpus: ${AGENT_CPUS:-4}
+    pids_limit: ${AGENT_PIDS_LIMIT:-512}
     extra_hosts: ["host.docker.internal:host-gateway"]   # reach host tools on Linux too
     env_file:                                             # CLAUDE_CODE_OAUTH_TOKEN (BRAIN=claude) — optional so api/local don't need it
       - path: ./secrets/anthropic.env
@@ -51,6 +56,13 @@ services:
       dockerfile: Dockerfile.chat
     image: ${ENCLAVE_CHAT_IMAGE:-enclave-chat:latest}    # set to a registry path to pull a prebuilt image
     container_name: ${AGENT_ID:-enclave-agent}-chat
+    # Same kernel posture as the agent (2026-07-04): this is the only network-exposed service and it
+    # mounts the agent's home rw — it must not be the weakest container in the stack.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: ${CHAT_MEM_LIMIT:-2g}
+    cpus: ${CHAT_CPUS:-2}
+    pids_limit: ${CHAT_PIDS_LIMIT:-256}
     volumes:
       - ./home:/agent                        # shares inbox.md + state/chat-reply.md + outputs/ with the agent
       - ${WORK_DIR:-./home/work}:/work:ro    # read-only: enumerate the working folder's .claude/skills for the slash menu

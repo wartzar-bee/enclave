@@ -55,14 +55,67 @@ _RATE_CR  = float(os.environ.get("RATE_CACHE_READ_PER_MTOK", "1.5"))
 _RATE_CW  = float(os.environ.get("RATE_CACHE_WRITE_PER_MTOK", "18.75"))
 _RATE_OUT = float(os.environ.get("RATE_OUTPUT_PER_MTOK", "75"))
 
-def _emit_budget(out_path, turn, ctx_tokens, cum):
-    """Write state/.ctx-budget.json {turn, ctx_tokens(current occupancy), cost_est(running $)}."""
+
+def _raw_est(cum):
+    """Uncalibrated running $ estimate from the SUMMED per-turn tokens at the list rates above.
+    Structurally biased HIGH vs the result event's authoritative total_cost_usd (measured ~7× on
+    stoneforge: real $0.43 read as $3.04) — every $ control gates on this number, which is why it
+    gets CALIBRATED (below) instead of consumers inflating their caps to compensate."""
+    return (cum["input"] * _RATE_IN + cum["cache_read"] * _RATE_CR
+            + cum["cache_write"] * _RATE_CW + cum["output"] * _RATE_OUT) / 1e6
+
+
+# ── Cost calibration (2026-07-04 enclave review fix #4) ────────────────────
+# state/.cost-calibration.json {model: {ratio, n, ts}} — ratio = EMA of (authoritative
+# total_cost_usd / raw estimate), learned at every result event. _emit_budget applies it so
+# cost_est ≈ real dollars, which lets the budget caps (ctx_budget hook, tick_feeder inject,
+# runtime auto-clear nets) be set as HONEST dollar amounts instead of 7×-inflated fudge.
+# A model with no history uses ratio 1.0 (conservative: over-estimates → caps fire early, then
+# self-corrects after the first completed tick).
+def _load_cal(state_dir):
+    try:
+        d = json.loads((state_dir / ".cost-calibration.json").read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cal_ratio(cal, model):
+    try:
+        r = float((cal.get(model or "") or {}).get("ratio", 0) or 0)
+        return r if r > 0 else 1.0
+    except Exception:
+        return 1.0
+
+
+def _update_cal(state_dir, cal, model, raw_est, actual):
+    """Fold one observed (actual / raw-estimate) into the model's EMA. Atomic write; best-effort."""
+    try:
+        if not model or raw_est <= 0 or not actual or actual <= 0:
+            return
+        obs = actual / raw_est
+        e = cal.get(model) or {}
+        n = int(e.get("n", 0) or 0)
+        old = float(e.get("ratio", 0) or 0)
+        ratio = obs if n == 0 or old <= 0 else (0.7 * old + 0.3 * obs)
+        cal[model] = {"ratio": round(ratio, 4), "n": n + 1, "ts": int(time.time())}
+        tmp = state_dir / ".cost-calibration.json.tmp"
+        tmp.write_text(json.dumps(cal))
+        tmp.replace(state_dir / ".cost-calibration.json")
+    except Exception:
+        pass
+
+
+def _emit_budget(out_path, turn, ctx_tokens, cum, ratio=1.0):
+    """Write state/.ctx-budget.json {turn, ctx_tokens(current occupancy), cost_est(calibrated
+    running $), cost_raw(uncalibrated, for calibration debugging)}."""
     try:
         bp = pathlib.Path(out_path).parent / ".ctx-budget.json"
-        cost = (cum["input"] * _RATE_IN + cum["cache_read"] * _RATE_CR
-                + cum["cache_write"] * _RATE_CW + cum["output"] * _RATE_OUT) / 1e6
+        raw = _raw_est(cum)
         bp.write_text(json.dumps({"ts": int(time.time()), "turn": turn,
-                                  "ctx_tokens": int(ctx_tokens), "cost_est": round(cost, 4)}))
+                                  "ctx_tokens": int(ctx_tokens),
+                                  "cost_est": round(raw * ratio, 4),
+                                  "cost_raw": round(raw, 4)}))
         if turn == 1:  # fresh tick → re-arm the per-tick warning dedup the hook keys off
             try: (bp.parent / ".ctx-warned").unlink()
             except OSError: pass
@@ -82,6 +135,8 @@ def main():
     seen_usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
     _turn = 0  # assistant-message count this tick (for the live budget signal)
     _cum = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}  # SUMMED (for the running $ estimate)
+    _state_dir = pathlib.Path(args.out).parent
+    _cal = _load_cal(_state_dir)   # per-model actual/estimate ratios (fix #4)
     seen_model = args.model or None
     result_written = False
     started = time.time()
@@ -143,7 +198,8 @@ def main():
                 _tw = u.get("cache_creation_input_tokens", 0) or 0
                 _cum["input"] += _ti; _cum["output"] += u.get("output_tokens", 0) or 0
                 _cum["cache_read"] += _tr; _cum["cache_write"] += _tw
-                _emit_budget(args.out, _turn, _ti + _tr + _tw, _cum)
+                _emit_budget(args.out, _turn, _ti + _tr + _tw, _cum,
+                             ratio=_cal_ratio(_cal, seen_model))
             for block in msg.get("content", []) or []:
                 bt = block.get("type")
                 if bt == "text":
@@ -217,6 +273,20 @@ def main():
             }
             _append_record(args.out, rec)
             result_written = True
+            # Calibration loop (fix #4): fold the authoritative cost into the per-model ratio, and
+            # close the budget-calibration ledger with a REAL actual (it used to record the
+            # circular "see tick cost_est").
+            _update_cal(_state_dir, _cal, seen_model, _raw_est(_cum), ev.get("total_cost_usd"))
+            try:
+                plan = json.loads((_state_dir / "budget.json").read_text())
+                if isinstance(plan, dict) and plan.get("package") and ev.get("total_cost_usd") is not None:
+                    with open(_state_dir / "budget-calibration.jsonl", "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({"ts": rec["ts"], "package": plan.get("package"),
+                                             "est_usd": plan.get("hard_usd"),
+                                             "actual_usd": round(ev["total_cost_usd"], 4),
+                                             "by": "usage_capture"}) + "\n")
+            except Exception:
+                pass
             # Signal the stream-json feeder (tick_feeder.py) that this tick produced a result, so it can
             # close stdin (EOF → claude exits cleanly) instead of holding the session open for more input.
             try:

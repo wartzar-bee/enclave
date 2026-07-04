@@ -94,6 +94,7 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
         log(f"chat spawn failed: {e}"); return None
     deadline = time.time() + timeout
     result, session_id, n_tools = None, None, 0
+    result_ev, seen_model, t0 = None, None, time.time()   # chat spend metering (2026-07-04 fix #6)
     actfile = pathlib.Path(cwd) / "state" / "chat-activity"   # live progress the web UI polls during a turn
     steps = []
     def _act(s):
@@ -133,6 +134,9 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
             continue
         t = ev.get("type")
         if t == "assistant":
+            m = (ev.get("message", {}) or {}).get("model")
+            if m:
+                seen_model = m
             for c in (ev.get("message", {}) or {}).get("content", []) or []:
                 if isinstance(c, dict) and c.get("type") == "tool_use":
                     n_tools += 1
@@ -142,14 +146,50 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
         elif t == "result":
             result = ev.get("result")
             session_id = ev.get("session_id")
+            result_ev = ev
     try:
         _, err = p.communicate(timeout=5)
     except Exception:
         err = ""
     if n_tools:
         log(f"chat turn used {n_tools} tool call(s)")
+    _chat_usage_record(cwd, result_ev, seen_model, n_tools, t0)
     _act("")
     return (p.returncode if p.returncode is not None else 0, result, session_id, err or "")
+
+
+def _chat_usage_record(cwd, result_ev, model, n_tools, t0):
+    """Meter the chat plane (2026-07-04 enclave review fix #6): chat turns are real Claude spend —
+    [tier:top]-tagged sessions, writes allowed, up to CHAT_TURN_TIMEOUT — but appeared in NO budget
+    view, so every spend total was an undercount. Append one usage.jsonl record per turn
+    (reason="chat", same schema as usage_capture.py) so the dashboard/rollups see it. Best-effort:
+    a metering failure must never break a chat reply. A turn with no result event (timeout/stop)
+    still records subtype="no_result" with cost unknown."""
+    try:
+        ev = result_ev or {}
+        usage = ev.get("usage") or {}
+        rec = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "agent": os.environ.get("AGENT_ID", pathlib.Path(cwd).name),
+            "reason": "chat",
+            "model": model,
+            "input": usage.get("input_tokens", 0) or 0,
+            "output": usage.get("output_tokens", 0) or 0,
+            "cache_read": usage.get("cache_read_input_tokens", 0) or 0,
+            "cache_write": usage.get("cache_creation_input_tokens", 0) or 0,
+            "cost_usd": ev.get("total_cost_usd"),
+            "duration_s": round(time.time() - t0, 1),
+            "turns": ev.get("num_turns"),
+            "rc": 1 if ev.get("is_error") else (0 if result_ev else None),
+            "subtype": ev.get("subtype") if result_ev else "no_result",
+            "runtime": {"tool_calls": n_tools} if n_tools else None,
+        }
+        out = pathlib.Path(cwd) / "state" / "usage.jsonl"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def _chat_model(agent_dir, brain):

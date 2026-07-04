@@ -947,12 +947,14 @@ async function loadAgBlockers(){const b=document.getElementById("agblockers");if
     <span style="flex:1"></span>${x.cfg?'<button class="btn" style="padding:2px 8px;font-size:11px" onclick="tab(\'config\')" title="set how the monitor handles this">⚙ handle</button>':""}</div>`).join("")
     +(more>0?`<div class="s" style="padding:2px 10px 6px;cursor:pointer;color:var(--mut)" onclick="_blkOpen=true;loadAgBlockers()">+${more} more issue${more>1?"s":""}…</div>`
       :(_blkOpen&&rows.length>3?`<div class="s" style="padding:2px 10px 6px;cursor:pointer;color:var(--mut)" onclick="_blkOpen=false;loadAgBlockers()">collapse</div>`:""));}
-function openChat(){if(sel)window.open("http://127.0.0.1:"+agents[sel].port+"/","_blank");}
+/* chat auth: web_chat requires ?token= when WEB_CHAT_TOKEN is set (fleet snapshot carries it) */
+function chatTok(a){return a&&a.chat_token?"&token="+encodeURIComponent(a.chat_token):"";}
+function openChat(){if(sel)window.open("http://127.0.0.1:"+agents[sel].port+"/?_="+Date.now()+chatTok(agents[sel]),"_blank");}
 function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);window._logTimer=null;}
   document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("sel",e.dataset.t===t));
   const p=document.getElementById("pane");if(!sel){p.innerHTML='<div class="empty">Select an agent.</div>';return;}
   const a=agents[sel];
-  if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/?theme=${theme()}" allow="microphone; clipboard-write"></iframe>`;}
+  if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/?theme=${theme()}${chatTok(a)}" allow="microphone; clipboard-write"></iframe>`;}
   else if(t==="activity"){renderActivity();window._logTimer=setInterval(()=>{if(curtab==="activity"&&!_paused&&_due("act"))renderActivity(true);},3000);}
   else if(t==="status"){renderDiag(a);}   /* Status merged into Diagnostics (2026-06-27) */
   else if(t==="diag"){renderDiag(a);}

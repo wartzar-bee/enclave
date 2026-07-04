@@ -306,10 +306,33 @@ class Loop:
                 pass
             except Exception as e:
                 self.log(f"session CLEAR signal: could not drop session id ({e})")
-        if st.get("status") == "idle":
+        if st.get("status") == "blocked":
+            # BLOCKED (2026-07-04 enclave review fix #7): the agent is waiting on something EXTERNAL
+            # (operator answer / dead key / broken bridge) — park at the slow heartbeat instead of
+            # re-firing paid continuous ticks that can only re-log "still blocked" (stoneforge burned
+            # 8 back-to-back Opus WAIT ticks polling a dead image key). Wake-on-inbox/comms still
+            # applies, so an operator reply resumes it within seconds; the INTERVAL heartbeat
+            # self-checks the blocker a couple of times an hour. Anti-gaming: a real block names its
+            # dependency (waiting_on, or a state/blockers/ file) — the marker feeds the monitor/console
+            # so a long-standing block is VISIBLE, not an excuse.
+            why = str(st.get("waiting_on") or "").strip()
+            bdir = self.dir / "state" / "blockers"
+            try:
+                has_file = bdir.is_dir() and any(bdir.iterdir())
+            except OSError:
+                has_file = False
+            self.next_heartbeat = now + self.interval
+            if why or has_file:
+                self._write_blocked_marker(now, why or "see state/blockers/")
+                self.log(f"BLOCKED ({why or 'see state/blockers/'}) → parked at heartbeat {self.interval}s (wakes on inbox/comms)")
+            else:
+                self.log(f"blocked status without waiting_on or a state/blockers/ file — parked at heartbeat {self.interval}s; NAME the dependency next time")
+        elif st.get("status") == "idle":
+            self._clear_blocked_marker()
             self.next_heartbeat = now + self.interval
             self.log(f"idle ({st.get('waiting_on','-')}) → heartbeat {self.interval}s (wakes on events)")
         elif st.get("status") == "continue":
+            self._clear_blocked_marker()
             cd = max(self.min_cooldown, int(st.get("cooldown_s") or self.cont_cooldown))
             self.next_heartbeat = now + cd
             self.log(f"continue → next tick in {cd}s")
@@ -319,6 +342,7 @@ class Loop:
             # idle only when the queue is genuinely empty (then wake on events). This is the robust
             # default: continuous work doesn't depend on agent discipline.
             if self._has_open_work():
+                self._clear_blocked_marker()
                 self.next_heartbeat = now + self.cont_cooldown
                 self.log(f"no tick-status + open work → continue in {self.cont_cooldown}s")
             else:
@@ -334,6 +358,28 @@ class Loop:
             return any(i.get("status") not in ("done", "dropped") for i in w)
         except Exception:
             return False
+
+    def _write_blocked_marker(self, now, why):
+        """state/.blocked {since, waiting_on} — 'since' survives repeat blocked ticks so the console/
+        monitor can see HOW LONG the agent has been parked on the same dependency."""
+        bm = self.dir / "state" / ".blocked"
+        try:
+            since = int(now)
+            try:
+                prev = json.loads(bm.read_text())
+                since = int(prev.get("since") or since)
+            except Exception:
+                pass
+            bm.parent.mkdir(parents=True, exist_ok=True)
+            bm.write_text(json.dumps({"since": since, "waiting_on": why}))
+        except OSError:
+            pass
+
+    def _clear_blocked_marker(self):
+        try:
+            (self.dir / "state" / ".blocked").unlink()
+        except OSError:
+            pass
 
     def _read_tick_status(self):
         """Read state/tick-status.json the tick wrote to declare continue vs idle. Best-effort:
