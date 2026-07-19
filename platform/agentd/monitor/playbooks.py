@@ -383,6 +383,8 @@ _wander_rate = Playbook(
 # (12) self_certification — most 'done' work items carry NO verify command: the deterministic
 # completion gate exists but is being bypassed by omission (self-certified doneness).
 def _selfcert_match(diag, home, snap, ctx):
+    if not snap.get("up"):
+        return False                    # a stopped/archived pod's old work queue is history, not a finding
     import json as _json
     try:
         items = _json.loads((pathlib.Path(home) / "work.json").read_text())
