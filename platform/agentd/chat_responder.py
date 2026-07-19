@@ -206,10 +206,57 @@ def _chat_model(agent_dir, brain):
     if m:
         return m
     if brain == "claude":
-        return os.environ.get("MODEL", "").strip() or "claude-sonnet-4-6"
+        # NO fallback to MODEL (the WORK brain): that inherited opus onto the chat plane whenever
+        # CHAT_MODEL was unset (stoneforge chatted on claude-opus-4-8 while PAUSED — evaluation
+        # 2026-07-19 §3.3). Chat defaults to the snappy tier; the UI picker still overrides above.
+        return "claude-sonnet-4-6"
     if brain == "local":   # a local-brain agent chats on its LOCAL model (MLX), not a cloud default
         return os.environ.get("LOCAL_BRAIN_MODEL", "").strip() or "lmstudio-community/Qwen3-Coder-Next-MLX-4bit"
     return os.environ.get("BRAIN_MODEL", "").strip() or "deepseek/deepseek-chat"
+
+
+def _chat_spent_24h(agent_dir):
+    """(usd, turns) attributed to the chat plane over the last 24h, from state/usage.jsonl
+    (reason=="chat" records this module writes). Best-effort: unreadable file → (0, 0)."""
+    spent, turns = 0.0, 0
+    cut = time.time() - 86400
+    try:
+        with (pathlib.Path(agent_dir) / "state" / "usage.jsonl").open() as fh:
+            for ln in fh:
+                try:
+                    r = json.loads(ln)
+                except Exception:
+                    continue
+                if r.get("reason") != "chat":
+                    continue
+                try:
+                    ts = time.mktime(time.strptime(str(r.get("ts", "")), "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+                except Exception:
+                    continue
+                if ts >= cut:
+                    turns += 1
+                    spent += float(r.get("cost_usd") or 0)
+    except OSError:
+        pass
+    return spent, turns
+
+
+def _chat_budget_block(agent_dir):
+    """Return a refusal string when the chat plane is over its rolling-24h budget, else None.
+    The chat plane runs OUTSIDE runtime.sh, so none of the tick guards (subscription ceiling,
+    weekly spend cap, cost cutoff) ever covered it — it was metered but UNCAPPED (evaluation
+    §3.3). CHAT_DAILY_USD / CHAT_DAILY_TURNS bound it; 0 disables either check."""
+    cap_usd = float(os.environ.get("CHAT_DAILY_USD", "2.0") or 0)
+    cap_turns = int(os.environ.get("CHAT_DAILY_TURNS", "60") or 0)
+    spent, turns = _chat_spent_24h(agent_dir)
+    if cap_usd and spent >= cap_usd:
+        return (f"⚠️ Chat budget reached: ${spent:.2f} of the ${cap_usd:.2f}/24h chat cap "
+                "(CHAT_DAILY_USD). Replies resume as the window rolls; work directives still "
+                "land via the inbox (`enclave send`).")
+    if cap_turns and turns >= cap_turns:
+        return (f"⚠️ Chat turn cap reached: {turns} of {cap_turns} turns in 24h "
+                "(CHAT_DAILY_TURNS). Replies resume as the window rolls.")
+    return None
 
 
 def _disallowed_tools():
@@ -611,6 +658,20 @@ def chat_loop(agent_dir, log=print):
                 if not text and not images:
                     continue
                 conv_id = (m.get("conversation") or "").strip()
+                # PAUSED gate: the pause only stopped the TICK path (runtime.sh exit 75) — the chat
+                # plane kept spawning full claude sessions on a paused pod (evaluation §3.3). A paused
+                # pod now answers with a canned line and spends nothing. CHAT_WHILE_PAUSED=1 opts out.
+                if (agent_dir / "state" / "paused").exists() and not os.environ.get("CHAT_WHILE_PAUSED"):
+                    _write_reply(reply_file, conv_id,
+                                 "_(pod is PAUSED — chat is suspended so a paused pod spends nothing. "
+                                 "Resume the pod, or set CHAT_WHILE_PAUSED=1 to chat while paused.)_")
+                    continue
+                # Rolling-24h chat budget (the tick guards never covered this plane).
+                blocked = _chat_budget_block(agent_dir)
+                if blocked:
+                    _write_reply(reply_file, conv_id, blocked)
+                    log("chat turn refused: budget cap")
+                    continue
                 first = _is_first_turn(agent_dir, conv_id)   # check BEFORE answering (reply gets appended later)
                 model = _chat_model(agent_dir, brain)     # re-resolve so a live UI model switch is honored
                 try:

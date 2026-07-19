@@ -394,13 +394,37 @@ class Memory:
         self._workf().write_text(json.dumps(w, indent=2) + "\n")
         return {"ok": True, "id": int(wid), "status": status}
 
+    def _directive_state(self):
+        """(active, retracted) from state/directives.json — the compiled directive STATE
+        (see directives.py: the revocation primitive). Self-contained load (no import) so a
+        per-agent copy of memory.py works without directives.py beside it. ([], []) if the
+        file is absent/unparseable — callers fall back to the inbox."""
+        f = self.base / "state" / "directives.json"
+        if not f.exists():
+            return [], []
+        try:
+            items = json.loads(f.read_text()).get("directives", [])
+            if not isinstance(items, list): return [], []
+        except Exception:
+            return [], []
+        items = [x for x in items if isinstance(x, dict) and str(x.get("text", "")).strip()]
+        acts = sorted([x for x in items if x.get("status") == "active"],
+                      key=lambda x: (x.get("priority", 50), x.get("id", "")))
+        retr = [x for x in items if x.get("status") == "retracted"]
+        return acts, retr
+
     def _auto_query(self):
-        """Derive a recall focus from the agent's current state: pending inbox directives +
-        the latest rollup line. Used by digest() so recall needs no hand-authored query."""
+        """Derive a recall focus from the agent's current state: ACTIVE directives (compiled
+        state — a retracted/superseded order must not anchor recall) + the latest rollup line.
+        Falls back to open inbox items only when no directives.json exists."""
         parts = []
-        ib = self.base / "inbox.md"
-        if ib.exists():
-            parts += [ln.strip()[5:].strip() for ln in ib.read_text().splitlines() if ln.strip().startswith("- [ ]")]
+        acts, _ = self._directive_state()
+        if acts:
+            parts += [x["text"][:160] for x in acts]
+        else:
+            ib = self.base / "inbox.md"
+            if ib.exists():
+                parts += [ln.strip()[5:].strip() for ln in ib.read_text().splitlines() if ln.strip().startswith("- [ ]")]
         rl = self.base / "state" / "rollup.md"
         if rl.exists():
             body = [l for l in rl.read_text().splitlines() if l.strip() and not l.strip().startswith("#")]
@@ -456,25 +480,39 @@ class Memory:
         work = [i for i in self.work_list() if i["status"] not in ("done", "dropped")]
         q = query if query is not None else self._auto_query()
         hits = self.recall(q, k=k, semantic=False) if q else []
-        # Unacked BOARD directives OVERRIDE the work queue — surface them at the very top so the loop's
-        # momentum (a 'doing' work item) can't bury a board pause/redirect. (Governance: directives win.)
-        directives = []; _seen = set()
-        ib = self.base / "inbox.md"
-        if ib.exists():
-            for ln in ib.read_text().splitlines():
-                s = ln.strip()
-                if s.startswith("- [ ]") and re.search(r"\bboard\b|via comms|BOARD", s):
-                    d = s[5:].strip()[:280]
-                    # dedup by the directive BODY (drop the leading "<ts> via comms (src): " prefix) so a
-                    # recurring cadence directive fired on many days collapses to one line.
-                    body = d.split("): ", 1)[-1]
-                    key = re.sub(r"\s+", " ", body.lower())[:80]
-                    if key in _seen: continue
-                    _seen.add(key); directives.append(d)
+        # Directives OVERRIDE the work queue — surface them at the very top so the loop's momentum
+        # (a 'doing' work item) can't bury a pause/redirect. Preferred source = the COMPILED state
+        # (state/directives.json, active entries IN FULL, priority order — the revocation primitive).
+        # Fallback = ALL open inbox items. The old `\bboard\b|via comms|BOARD` keyword filter is gone:
+        # it silently dropped every directive that didn't happen to contain those tokens (all 3 of
+        # ideas-scout's [tier:top] orders, verified 2026-07-19).
+        directives = []; retracted = []
+        acts, retr = self._directive_state()
+        if acts:
+            directives = [f"**{x.get('id','?')}** — {x['text'].strip()}" for x in acts[:8]]
+            retracted = [f"{x.get('id','?')}: {x['text'].strip()[:200]}" for x in retr[:4]]
+        else:
+            _seen = set()
+            ib = self.base / "inbox.md"
+            if ib.exists():
+                for ln in ib.read_text().splitlines():
+                    s = ln.strip()
+                    if s.startswith("- [ ]"):
+                        d = s[5:].strip()[:280]
+                        # dedup by the directive BODY (drop the leading "<ts> via comms (src): " prefix) so a
+                        # recurring cadence directive fired on many days collapses to one line.
+                        body = d.split("): ", 1)[-1]
+                        key = re.sub(r"\s+", " ", body.lower())[:80]
+                        if key in _seen: continue
+                        _seen.add(key); directives.append(d)
         out = ["# Recall — auto-loaded for this tick (read FIRST, alongside inbox.md)\n"]
         if directives:
-            out.append("## ⚠ BOARD DIRECTIVES — ACT ON THESE FIRST (they OVERRIDE your work queue)\n" +
-                       "\n".join(f"- {d}" for d in directives[:5]) + "\n")
+            out.append("## ⚠ DIRECTIVES — the authoritative instruction state, in priority order "
+                       "(act on these FIRST; they OVERRIDE your work queue)\n" +
+                       "\n".join(f"- {d}" for d in directives[:8]) + "\n")
+        if retracted:
+            out.append("## ✕ RETRACTED — never act on or cite these again\n" +
+                       "\n".join(f"- {d}" for d in retracted) + "\n")
         # Open work: show 'doing' first (in full-ish), then todos as truncated one-liners, capped — the
         # full verbose queue is the bulk of the digest and is re-read every tick. The agent can `work
         # list` for the complete queue if it needs it; this is the at-a-glance focus set.

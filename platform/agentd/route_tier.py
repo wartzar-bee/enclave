@@ -19,7 +19,7 @@ classifier is a later upgrade. Forcing: `agentctl msg --tier top|cheap` injects 
                         --model <top> --routine <cheap> [--forced top|cheap]
 prints the chosen model to stdout; a one-line rationale to stderr (logged by runtime.sh).
 """
-import sys, argparse, pathlib
+import sys, argparse, json, pathlib
 
 # Markers are matched against the lowercased text of the tick's PENDING directives.
 JUDGMENT = ("decide", "choose", "adjudicat", "strateg", "evaluate", "assess", "review",
@@ -31,7 +31,13 @@ MECHANICAL = ("post", "upload", "schedule", "measure", "snapshot", "append", "fo
 
 
 def pending_directives(inbox):
-    """Unchecked '- [ ]' items in inbox.md — the directives this tick still has to act on.
+    """The directives this tick still has to act on.
+
+    PREFERRED SOURCE: the compiled directive state (state/directives.json — see directives.py).
+    Its ACTIVE texts carry no stale '[tier:top]' tags, so a long-done inbox item can no longer
+    pin every tick (heartbeats included) to the top model — the router's judgment/mechanical
+    heuristic decides instead. Falls back to scanning inbox.md '- [ ]' items when no compiled
+    state exists.
 
     An item is treated as DONE (and skipped) when it carries a child completion line — an
     INDENTED '... done:' sub-bullet beneath it. Agents reliably record completion that way
@@ -40,6 +46,17 @@ def pending_directives(inbox):
     model on EVERY tick — heartbeats included — forever (a real subscription-cap leak seen on
     stoneforge: 19 'pending' items, all completed, kept every tick on Opus). Hygiene-tolerant
     by design: the router shouldn't depend on perfect checkbox discipline."""
+    dj = inbox.parent / "state" / "directives.json"
+    if dj.exists():
+        try:
+            items = json.loads(dj.read_text()).get("directives", [])
+            acts = sorted([x for x in items if isinstance(x, dict) and x.get("status") == "active"
+                           and str(x.get("text", "")).strip()],
+                          key=lambda x: (x.get("priority", 50), x.get("id", "")))
+            if acts:
+                return [x["text"] for x in acts]
+        except Exception:
+            pass                                   # unparseable compiled state → inbox fallback
     try:
         lines = inbox.read_text().splitlines()
     except OSError:

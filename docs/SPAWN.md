@@ -40,6 +40,10 @@ interval_seconds: 10800
 mission: |
   What this agent exists to do, and how progress/"done" is judged.
 kpi: the single measurable success signal
+term_sheet:                  # REQUIRED for venture-class specs (template/class: venture) — a pod is
+  kpi: one measurable signal #   born governed, never governed by retrofitted prose. Materialized at
+  kill_line: 2026-12-31      #   spawn as state/term-sheet.json (read by the monitor's mechanical
+  budget_usd_weekly: 15      #   kill_line playbook) + state/directives.json (injected every tick).
 work_dir: /abs/host/path     # optional: project tree mounted rw at /work
 secrets:                     # optional: scoped credential placeholders (operator fills them)
   - { name: example, key: EXAMPLE_API_KEY }

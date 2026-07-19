@@ -101,6 +101,82 @@ if [ -f "$OVR" ]; then
   if [ -n "$_m" ]; then export MODEL="$_m" BRAIN_MODEL="$_m"; log "model override (web chat) → $_m"; fi
 fi
 
+# ── Shared tick plumbing, ALL brains (2026-07-19 evaluation fix) ────────────────────────────────
+# The three non-Claude brain paths used to `exit 0` unconditionally right after the tick, so the
+# whole post-tick block — log/usage rotation, memory compaction, work-repo push, vault snapshot —
+# was UNREACHABLE for BRAIN=api/local pods (both live pods never compacted memory). Every brain
+# path now runs the same pre/post hooks; a wandered/errored tick also propagates a real exit code
+# (agentloop only special-cases 75, so any other rc is telemetry, not a behavior change).
+pre_tick_shared() {
+  # Runtime-owned work-repo sync, pre-tick half (2026-07-04 review fix #10): the RUNTIME owns the
+  # deploy key + all git NETWORK ops; the agent only commits locally and never touches the key.
+  if [ -n "${WORK_GIT_DIR:-}" ] && [ -n "${WORK_GIT_KEY:-}" ] && [ -f "$WORK_GIT_KEY" ]; then
+    (
+      export GIT_SSH_COMMAND="ssh -i $WORK_GIT_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+      if [ ! -d "$WORK_GIT_DIR/.git" ]; then
+        if [ -n "${WORK_GIT_URL:-}" ]; then
+          git clone -q "$WORK_GIT_URL" "$WORK_GIT_DIR" >>"$LOG" 2>&1 \
+            && log "work repo: cloned $WORK_GIT_URL" || log "work repo: clone FAILED (tick continues)"
+        fi
+      else
+        git -C "$WORK_GIT_DIR" pull -q --ff-only >>"$LOG" 2>&1 || log "work repo: pull failed (dirty tree or diverged — tick continues)"
+      fi
+    ) || true
+  fi
+}
+
+post_tick_shared() {
+  # Housekeeping (continuous mode makes stores grow fast): rotate the runner log + usage.jsonl and
+  # run the daily memory compaction. FULLY ISOLATED (subshell + || true) — can NEVER abort the loop.
+  (
+    MEMH="$AGENT_DIR/bin/memory.py"; [ -f "$MEMH" ] || MEMH="$SCRIPT_DIR/memory.py"
+    LOGMAX="${RUNNER_LOG_MAX_LINES:-2500}"
+    if [ -f "$LOG" ] && [ "$(wc -l < "$LOG" 2>/dev/null || echo 0)" -gt "$LOGMAX" ]; then
+      tail -n "$LOGMAX" "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG" && log "rotated runner.log → last ${LOGMAX} lines"
+    fi
+    # usage.jsonl trailing-line cap (NOT monthly file-rotation: a monthly archive would drop the
+    # late-previous-month ticks that a 7d/wtd window straddling the 1st still needs).
+    UMAX="${USAGE_LOG_MAX_LINES:-5000}"
+    if [ -f "$USAGE_LOG" ] && [ "$(wc -l < "$USAGE_LOG" 2>/dev/null || echo 0)" -gt "$UMAX" ]; then
+      tail -n "$UMAX" "$USAGE_LOG" > "$USAGE_LOG.tmp" 2>/dev/null && mv "$USAGE_LOG.tmp" "$USAGE_LOG" && log "rotated usage.jsonl → last ${UMAX} lines"
+    fi
+    CSTAMP="$AGENT_DIR/state/.last-compact"
+    if [ -f "$MEMH" ] && { [ ! -f "$CSTAMP" ] || [ "$(( $(date +%s) - $(_mtime "$CSTAMP") ))" -gt "${COMPACT_EVERY_SECS:-86400}" ]; }; then
+      OUT="$(python3 "$MEMH" --base "$AGENT_DIR" compact 2>>"$LOG")" && [ -n "$OUT" ] && log "$OUT"
+      : > "$CSTAMP"
+    fi
+  ) >/dev/null 2>&1 || true
+  # Runtime-owned work-repo sync, post-tick half: push the agent's local commits (runtime holds the
+  # key). Skips clean; a failed push is logged and retried next tick. FULLY ISOLATED.
+  if [ -n "${WORK_GIT_DIR:-}" ] && [ -n "${WORK_GIT_KEY:-}" ] && [ -f "$WORK_GIT_KEY" ] && [ -d "$WORK_GIT_DIR/.git" ]; then
+    (
+      export GIT_SSH_COMMAND="ssh -i $WORK_GIT_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+      AHEAD="$(git -C "$WORK_GIT_DIR" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)"
+      if [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
+        git -C "$WORK_GIT_DIR" push -q >>"$LOG" 2>&1 \
+          && log "work repo: pushed ${AHEAD} agent commit(s)" \
+          || log "work repo: push FAILED (${AHEAD} commit(s) stay local; retry next tick)"
+      fi
+    ) || true
+  fi
+  # Auto-snapshot the vault so memory is saved BY DEFAULT (SCAN-GATED; runtime owns the commit).
+  if [ "${VAULT_SNAPSHOT:-1}" = "1" ] && [ -d "$AGENT_DIR/.git" ]; then
+    ( python3 "$SCRIPT_DIR/vault_snapshot.py" snapshot "$AGENT_DIR" --msg "tick $(date -u +%FT%TZ)" \
+        >> "$LOG" 2>&1 && log "vault snapshot ok" ) || log "vault snapshot skipped (blocked or no-op)"
+  fi
+}
+
+finish_local_tick() {   # $1 = local_agent.py exit code — the shared tail for the local/api/pool paths
+  case "$1" in
+    0) ;;
+    4) log "tick WANDERED to max_steps (rc=4; subtype=max_steps in state/usage.jsonl)" ;;
+    *) log "tick error (exit $1)" ;;
+  esac
+  log "tick end"
+  post_tick_shared
+  exit "$1"
+}
+
 # ── Out-of-pocket spend cap, ALL brains (2026-07-04 review fix #8) ──────────────────────────────
 # api_spending.jsonl is REAL money (image-gen, paid LLM routing, BRAIN=api ticks) regardless of which
 # brain drives the tick — the old cap only guarded BRAIN=api, so a BRAIN=claude agent held the same
@@ -154,16 +230,14 @@ fi
 # agent working offline. Same assembled package (CLAUDE.md/tick.txt/memory/qmd/guard hooks/secrets);
 # only the brain differs. Judgment escalates to an external reasoning API, not the interactive session.
 if [ "${BRAIN:-claude}" = "local" ]; then
+  pre_tick_shared
   # Pre-load recall (same as the Claude path) so a fresh tick doesn't re-derive the world.
   MEM="$AGENT_DIR/bin/memory.py"; [ -f "$MEM" ] || MEM="$SCRIPT_DIR/memory.py"
   [ -f "$MEM" ] && { mkdir -p "$AGENT_DIR/state"; python3 "$MEM" --base "$AGENT_DIR" digest > "$AGENT_DIR/state/recall.md" 2>>"$LOG" || true; }
   LA="$SCRIPT_DIR/local_agent.py"; [ -f "$LA" ] || LA="${TOOLS_ROOT:-/workspace}/platform/agentd/local_agent.py"
   log "tick start (brain=local, model=${LOCAL_BRAIN_MODEL:-policy-default}, guard=on)"
   ROLE="${ROLE:-}" GUARD_HOOK="${GUARD_HOOK:-}" python3 "$LA" "$AGENT_DIR" >> "$LOG" 2>&1
-  rc=$?
-  [ "$rc" -ne 0 ] && log "tick error (exit $rc)"
-  log "tick end"
-  exit 0
+  finish_local_tick $?
 fi
 
 # BRAIN=api: drive the tick with ANY OpenAI-compatible API endpoint (NVIDIA NIM, DeepSeek, Gemini, Mistral…).
@@ -175,6 +249,19 @@ fi
 # for xAI, etc.). Hard judgment escalates to ESCALATION_MODEL (defaults to the driver model, same endpoint).
 # Budget guard: API_BUDGET_USD (default $10/agent) caps cumulative spend tracked in state/api_spending.jsonl.
 if [ "${BRAIN:-claude}" = "api" ]; then
+  # LOUD-FAIL on missing brain config (L-310): the old default silently ran a PAID model
+  # (openrouter + deepseek/deepseek-chat) whenever BRAIN_MODEL was unset — both live pods burned
+  # real money for a day behind docs claiming "$0". Undetectable fail-open is banned (D-100):
+  # refuse the tick, escalate once per 6h, DEFER (75) so an operator fix resumes it cleanly.
+  if [ -z "${BRAIN_MODEL:-}" ]; then
+    log "FATAL: BRAIN=api but BRAIN_MODEL is unset — refusing to default to a paid model. Set BRAIN_MODEL/BRAIN_API_BASE/BRAIN_API_KEY_ENV."
+    BSTAMP="$AGENT_DIR/state/.brain-config-alerted"
+    if [ ! -f "$BSTAMP" ] || [ $(( NOW - $(_mtime "$BSTAMP") )) -gt 21600 ] 2>/dev/null; then
+      echo "$(date -u +%FT%TZ) ESCALATE :: [brain:config] ${AGENT_ID} — BRAIN=api with BRAIN_MODEL unset; ticks DEFER until the pod env sets BRAIN_MODEL (+ BRAIN_API_BASE/BRAIN_API_KEY_ENV)." >> "$AGENT_DIR/state/escalations.log"
+      : > "$BSTAMP"
+    fi
+    exit 75
+  fi
   # Spend cap: handled by the brain-agnostic WEEKLY gate above (fix #8) — the old cumulative-forever
   # API_BUDGET_USD check lived here and permanently bricked an agent once lifetime spend crossed it.
   # Resolve the API key by its CONFIGURED env-var name (BRAIN_API_KEY_ENV) — generic across providers
@@ -195,25 +282,23 @@ if [ "${BRAIN:-claude}" = "api" ]; then
   fi
   [ -z "$API_KEY" ] && log "WARN: $API_KEY_ENV not found (env or .secrets/*.env) — API calls will likely fail"
   # Pre-load recall (same as the Claude path)
+  pre_tick_shared
   MEM="$AGENT_DIR/bin/memory.py"; [ -f "$MEM" ] || MEM="$SCRIPT_DIR/memory.py"
   [ -f "$MEM" ] && { mkdir -p "$AGENT_DIR/state"; python3 "$MEM" --base "$AGENT_DIR" digest > "$AGENT_DIR/state/recall.md" 2>>"$LOG" || true; }
   LA="$SCRIPT_DIR/local_agent.py"; [ -f "$LA" ] || LA="${TOOLS_ROOT:-/workspace}/platform/agentd/local_agent.py"
-  log "tick start (brain=api, model=${BRAIN_MODEL:-deepseek/deepseek-chat}, key=$API_KEY_ENV, guard=on)"
+  log "tick start (brain=api, model=${BRAIN_MODEL}, key=$API_KEY_ENV, guard=on)"
   LOCAL_BRAIN_BASE="${BRAIN_API_BASE:-https://openrouter.ai/api/v1}" \
-  LOCAL_BRAIN_MODEL="${BRAIN_MODEL:-deepseek/deepseek-chat}" \
+  LOCAL_BRAIN_MODEL="${BRAIN_MODEL}" \
   LOCAL_BRAIN_KEY="${API_KEY:-}" \
   ESCALATION_BASE="${ESCALATION_BASE:-${BRAIN_API_BASE:-https://openrouter.ai/api/v1}}" \
-  ESCALATION_MODEL="${ESCALATION_MODEL:-${BRAIN_MODEL:-deepseek/deepseek-chat}}" \
+  ESCALATION_MODEL="${ESCALATION_MODEL:-${BRAIN_MODEL}}" \
   ESCALATION_KEY="${ESCALATION_KEY:-${API_KEY:-}}" \
   LOCAL_MAX_TOKENS="${LOCAL_MAX_TOKENS:-8192}" \
   LOCAL_MAX_STEPS="${LOCAL_MAX_STEPS:-32}" \
   LOCAL_REQ_TIMEOUT="${LOCAL_REQ_TIMEOUT:-120}" \
   SPEND_LOG="$AGENT_DIR/state/api_spending.jsonl" \
   ROLE="${ROLE:-}" GUARD_HOOK="${GUARD_HOOK:-}" python3 "$LA" "$AGENT_DIR" >> "$LOG" 2>&1
-  rc=$?
-  [ "$rc" -ne 0 ] && log "tick error (exit $rc)"
-  log "tick end"
-  exit 0
+  finish_local_tick $?
 fi
 
 # BRAIN=optimize (adaptive cost router, D-072): start on Claude (subscription — free at the margin),
@@ -256,10 +341,7 @@ if [ "${BRAIN:-claude}" = "optimize" ]; then
     LOCAL_REQ_TIMEOUT="${LOCAL_REQ_TIMEOUT:-120}" \
     SPEND_LOG="$AGENT_DIR/state/api_spending.jsonl" \
     ROLE="${ROLE:-}" GUARD_HOOK="${GUARD_HOOK:-}" python3 "$LA" "$AGENT_DIR" >> "$LOG" 2>&1
-    rc=$?
-    [ "$rc" -ne 0 ] && log "tick error (exit $rc)"
-    log "tick end"
-    exit 0
+    finish_local_tick $?
   fi
   # "claude <model>" → run the Claude path below with route_brain's chosen model.
   export MODEL="${2:-${MODEL:-claude-opus-4-8}}"
@@ -349,25 +431,9 @@ ADD_DIRS=(--add-dir "$AGENT_DIR")
 # Claude Code discovers the working folder's .claude/skills (e.g. a project's own skill set). See docs/WORK-DIR.md.
 [ -d /work ] && [ "$AGENT_DIR" != /work ] && ADD_DIRS+=(--add-dir /work)
 
-# ── Runtime-owned work-repo sync, pre-tick half (2026-07-04 review fix #10) ────────────────────
-# The RUNTIME owns the deploy key + all git NETWORK ops (clone/pull here, push post-tick), exactly
-# like it owns the vault snapshot — the agent only commits locally (GUARD_ALLOW_GIT=1) and NEVER
-# touches the key: guard.py blocks GIT_SSH_COMMAND (loader-hijack rule), so a prompt-injected agent
-# cannot push/force-push or exfil with the credential. Spec-driven + optional: set WORK_GIT_DIR,
-# WORK_GIT_KEY (and WORK_GIT_URL for first clone) in agent.env. Fully isolated; never aborts a tick.
-if [ -n "${WORK_GIT_DIR:-}" ] && [ -n "${WORK_GIT_KEY:-}" ] && [ -f "$WORK_GIT_KEY" ]; then
-  (
-    export GIT_SSH_COMMAND="ssh -i $WORK_GIT_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-    if [ ! -d "$WORK_GIT_DIR/.git" ]; then
-      if [ -n "${WORK_GIT_URL:-}" ]; then
-        git clone -q "$WORK_GIT_URL" "$WORK_GIT_DIR" >>"$LOG" 2>&1 \
-          && log "work repo: cloned $WORK_GIT_URL" || log "work repo: clone FAILED (tick continues)"
-      fi
-    else
-      git -C "$WORK_GIT_DIR" pull -q --ff-only >>"$LOG" 2>&1 || log "work repo: pull failed (dirty tree or diverged — tick continues)"
-    fi
-  ) || true
-fi
+# Runtime-owned work-repo sync, pre-tick half (2026-07-04 review fix #10; shared function — the
+# agent only commits locally, guard.py blocks GIT_SSH_COMMAND, the runtime owns the key + network).
+pre_tick_shared
 
 # Memory recall (P3): pre-load the agent's open work + most-relevant past memory into
 # state/recall.md so a context-wiped tick doesn't re-derive the world (agents forget — lean
@@ -394,27 +460,8 @@ if [ -n "${REQUIRES:-}" ] && [ -f "$PREFLIGHT" ]; then
   fi
 fi
 
-# Housekeeping (continuous mode makes stores grow fast): rotate the runner log + a daily memory
-# compaction. FULLY ISOLATED in a subshell with `|| true` so it can NEVER abort the tick (a bug here
-# must not stop the agent from working).
-(
-  LOGMAX="${RUNNER_LOG_MAX_LINES:-2500}"
-  if [ -f "$LOG" ] && [ "$(wc -l < "$LOG" 2>/dev/null || echo 0)" -gt "$LOGMAX" ]; then
-    tail -n "$LOGMAX" "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG" && log "rotated runner.log → last ${LOGMAX} lines"
-  fi
-  # usage.jsonl trailing-line cap (NOT monthly file-rotation: a monthly archive would drop the
-  # late-previous-month ticks that a 7d/wtd window straddling the 1st still needs). A generous cap
-  # keeps every window (max 7d) intact while bounding the file. ~5000 lines ≫ any real month of ticks.
-  UMAX="${USAGE_LOG_MAX_LINES:-5000}"
-  if [ -f "$USAGE_LOG" ] && [ "$(wc -l < "$USAGE_LOG" 2>/dev/null || echo 0)" -gt "$UMAX" ]; then
-    tail -n "$UMAX" "$USAGE_LOG" > "$USAGE_LOG.tmp" 2>/dev/null && mv "$USAGE_LOG.tmp" "$USAGE_LOG" && log "rotated usage.jsonl → last ${UMAX} lines"
-  fi
-  CSTAMP="$AGENT_DIR/state/.last-compact"
-  if [ -f "$MEM" ] && { [ ! -f "$CSTAMP" ] || [ "$(( NOW - $(_mtime "$CSTAMP") ))" -gt "${COMPACT_EVERY_SECS:-86400}" ]; }; then
-    OUT="$(python3 "$MEM" --base "$AGENT_DIR" compact 2>>"$LOG")" && [ -n "$OUT" ] && log "$OUT"
-    : > "$CSTAMP"
-  fi
-) >/dev/null 2>&1 || true
+# (Housekeeping — log/usage rotation + daily memory compaction — moved to post_tick_shared, which
+# runs at the end of EVERY brain path, so non-Claude pods stopped being exempt from it.)
 
 # Model-tier router (P2, D-071): downgrade routine/mechanical ticks to a cheaper model,
 # reserve the top MODEL for judgment. Safe-by-default — ROUTER!=on, no router, or any error
@@ -636,26 +683,5 @@ if [ -f "$WORK_SID_FILE" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
 fi
 log "tick end"
 
-# ── Runtime-owned work-repo sync, post-tick half (fix #10): push the agent's local commits ─────
-# Push-only (the agent authored + committed; the runtime holds the key). Skips clean; a failed push
-# is logged and retried next tick (commits are safe locally). FULLY ISOLATED — never aborts the loop.
-if [ -n "${WORK_GIT_DIR:-}" ] && [ -n "${WORK_GIT_KEY:-}" ] && [ -f "$WORK_GIT_KEY" ] && [ -d "$WORK_GIT_DIR/.git" ]; then
-  (
-    export GIT_SSH_COMMAND="ssh -i $WORK_GIT_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-    AHEAD="$(git -C "$WORK_GIT_DIR" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)"
-    if [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
-      git -C "$WORK_GIT_DIR" push -q >>"$LOG" 2>&1 \
-        && log "work repo: pushed ${AHEAD} agent commit(s)" \
-        || log "work repo: push FAILED (${AHEAD} commit(s) stay local; retry next tick)"
-    fi
-  ) || true
-fi
-
-# Auto-snapshot the vault so memory is saved BY DEFAULT (survives a machine wipe). Only if the
-# operator made home/ a git vault (`enclave init`); SCAN-GATED (a leaked credential blocks the commit,
-# never reaches history). The agent can't git (guard-blocked) — the runtime owns this commit, like the
-# master owns commits. FULLY ISOLATED (subshell + redirects + `|| true`) so it can NEVER abort the loop.
-if [ "${VAULT_SNAPSHOT:-1}" = "1" ] && [ -d "$AGENT_DIR/.git" ]; then
-  ( python3 "$(dirname "$0")/vault_snapshot.py" snapshot "$AGENT_DIR" --msg "tick $(date -u +%FT%TZ)" \
-      >> "$LOG" 2>&1 && log "vault snapshot ok" ) || log "vault snapshot skipped (blocked or no-op)"
-fi
+# Post-tick housekeeping + work-repo push + vault snapshot (shared with every brain path).
+post_tick_shared

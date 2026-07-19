@@ -86,6 +86,79 @@ def _load_name(spec_path):
     return spec_path.stem
 
 
+def _load_spec(spec_path):
+    """Full spec dict (YAML or JSON), or None when unparseable."""
+    try:
+        text = spec_path.read_text()
+        if spec_path.suffix in (".yaml", ".yml"):
+            import yaml
+            data = yaml.safe_load(text)
+        else:
+            data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _governance_check(spec):
+    """A graduated pod must be BORN governed (2026-07-19 evaluation §3.5): the spawn spec is the
+    only surface guaranteed to exist at birth, and until now NO spec format carried a term sheet —
+    every pod's governance was retrofitted prose, and one term sheet was written to a JSON file
+    without ever reaching the pod (L-304). Venture-class specs (template/class == 'venture')
+    REQUIRE term_sheet: {kpi, kill_line[, budget_usd_weekly]}. Internal/ops agents may carry one
+    voluntarily; when present it is materialized either way."""
+    if not isinstance(spec, dict):
+        return True, ""                       # unparseable specs fail later in `enclave new`
+    venture = "venture" in {str(spec.get("class") or "").strip(), str(spec.get("template") or "").strip()}
+    ts = spec.get("term_sheet")
+    if venture:
+        if not isinstance(ts, dict):
+            return False, ("venture-class spec has no term_sheet — a pod is a Series A, not an "
+                           "experiment (vc-os). Required: term_sheet: {kpi: <one measurable signal>, "
+                           "kill_line: YYYY-MM-DD, budget_usd_weekly: N}")
+        missing = [k for k in ("kpi", "kill_line") if not str(ts.get(k) or "").strip()]
+        if missing:
+            return False, f"term_sheet is missing required field(s): {', '.join(missing)}"
+    return True, ""
+
+
+def _write_governance(target, name, spec):
+    """Materialize governance at birth: state/term-sheet.json (read by the monitor's kill_line
+    playbook) + state/directives.json (the compiled directive state memory.py/route_tier read —
+    see directives.py). Best-effort: a failure here is logged, never blocks the spawn (the
+    governance CHECK above already gated a venture spec)."""
+    try:
+        ts = spec.get("term_sheet") if isinstance(spec, dict) else None
+        state = target / "home" / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if isinstance(ts, dict):
+            sheet = dict(ts)
+            sheet.setdefault("action_on_pass", "pause pod + escalate")
+            sheet.setdefault("set_by", f"spawn spec {now}")
+            (state / "term-sheet.json").write_text(json.dumps(sheet, indent=2) + "\n")
+        directives = []
+        mission = str((spec or {}).get("mission") or "").strip()
+        kpi = str((ts or {}).get("kpi") or (spec or {}).get("kpi") or "").strip()
+        if isinstance(ts, dict):
+            directives.append({
+                "id": f"{name}-term-sheet", "status": "active", "priority": 1,
+                "date": now[:10],
+                "text": (f"TERM SHEET. ONE KPI: {kpi or '(see term-sheet.json)'}. "
+                         f"KILL-LINE: {ts.get('kill_line')} — mechanical (the fleet monitor reads "
+                         "state/term-sheet.json and pauses you when the line passes; renewal is a "
+                         "board decision). Work that does not serve the KPI does not get ticks.")})
+        if mission:
+            directives.append({"id": f"{name}-mission", "status": "active",
+                               "priority": 10, "date": now[:10], "text": mission[:1200]})
+        if directives:
+            (state / "directives.json").write_text(json.dumps(
+                {"version": 1, "updated": now, "compiled_by": "spawn_watcher",
+                 "source": "spawn spec", "directives": directives}, indent=2) + "\n")
+    except Exception as e:
+        print(f"  ⚠ {name}: governance files not fully written ({e}) — write them by hand")
+
+
 def _process(spec_path, stacks_root, queue):
     name = _load_name(spec_path)
     proc, fail = queue / "processed", queue / "failed"
@@ -105,6 +178,10 @@ def _process(spec_path, stacks_root, queue):
         return _fail(f"target {target} is not directly under stacks root {stacks_root}")
     if target.exists() and any(target.iterdir()):
         return _fail(f"target {target} already exists and is non-empty")
+    spec_data = _load_spec(spec_path)
+    ok, why = _governance_check(spec_data)
+    if not ok:
+        return _fail(why)
 
     print(f"  → graduating {name} → {target}")
     new = subprocess.run([sys.executable, str(ENCLAVE), "new", name, "--dir", str(target),
@@ -112,6 +189,7 @@ def _process(spec_path, stacks_root, queue):
                          capture_output=True, text=True)
     if new.returncode != 0:
         return _fail("enclave new failed:\n" + (new.stderr or new.stdout))
+    _write_governance(target, name, spec_data or {})
     # Apply any secrets staged alongside the spec (real env files written by whoever queued the spawn,
     # e.g. the console: existing creds copied from the library + new name/value pairs). Overwrites the
     # placeholder files `enclave new` made. Staging is consumed + removed so values don't linger.

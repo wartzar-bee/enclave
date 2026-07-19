@@ -29,6 +29,9 @@ Env (all optional — sane defaults from tools/llm/policy.json):
 import os, sys, re, json, glob as globmod, subprocess, pathlib, urllib.request, urllib.error, time
 
 HERE = pathlib.Path(__file__).resolve().parent
+# Context trim budget for the ReAct loop, in CHARS of message content (~4 chars/token). The trim
+# keeps system+turn plus the newest tail that fits this budget (max 24 messages) — see the loop.
+_CTX_CHARS = int(os.environ.get("LOCAL_CTX_CHARS", "60000"))
 WORKSPACE = pathlib.Path(os.environ.get("TOOLS_ROOT", "/workspace"))
 
 
@@ -269,11 +272,18 @@ def exec_bash(agent_dir, inp):
         p = subprocess.run(["bash", "-lc", cmd], cwd=str(agent_dir), capture_output=True,
                            text=True, errors="replace", timeout=int(inp.get("timeout", 180)))
         out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
-        return _truncate(out.strip() or f"(exit {p.returncode}, no output)")
+        out = out.strip() or "(no output)"
+        # STRUCTURED failure: the exit code is the truth, never a string prefix. The old
+        # `obs.startswith("error") or obs.startswith("[")` heuristic was wrong both ways —
+        # stdout beginning "[" (JSON arrays, [INFO] logs) counted as failure, and
+        # "(exit 1, no output)" counted as success (evaluation 2026-07-19, I-3).
+        if p.returncode != 0:
+            out += f"\n(exit {p.returncode})"
+        return _truncate(out), p.returncode != 0
     except subprocess.TimeoutExpired:
-        return "error: command timed out"
+        return "error: command timed out", True
     except Exception as e:
-        return f"error: {type(e).__name__}: {e}"
+        return f"error: {type(e).__name__}: {e}", True
 
 
 def _resolve(agent_dir, path):
@@ -448,9 +458,11 @@ def exec_escalate(agent_dir, inp, esc, max_tokens, timeout):
             {"role": "user", "content": f"DECISION NEEDED:\n{question}\n\nCONTEXT:\n{context}"}]
     try:
         ans = chat(esc, msgs, max_tokens, 0.2, timeout)
-        return f"[escalation verdict from {esc['model']}]\n{ans}"
+        # (obs, err) tuple: a delivered verdict is a SUCCESS — the old "[" prefix heuristic
+        # counted every one of these as a failure (16/16 false failure rate, evaluation I-2).
+        return f"[escalation verdict from {esc['model']}]\n{ans}", False
     except Exception as e:
-        return _queue_judgment(agent_dir, question, context, f"escalation unreachable: {e}")
+        return _queue_judgment(agent_dir, question, context, f"escalation unreachable: {e}"), True
 
 
 def _queue_judgment(agent_dir, question, context, why):
@@ -700,6 +712,11 @@ def run(agent_dir):
             continue
         if tool == "finish":
             log(f"finish: {inp.get('summary','')[:200]}")
+            # Log the finish itself BEFORE returning — the old code returned before the per-tool
+            # emit, so events.jsonl held no trace of an explicit finish and "count Finish events"
+            # measured the logger, not the agent (evaluation I-1).
+            _emit_event(sd, {"ts": int(time.time()), "agent": aid, "event": "tool", "tool": "finish",
+                             "summary": (inp.get("summary", "") or "")[:200]})
             return _finish(0, "ok")
         allow, reason = guard_check(agent_dir, hook, tool, inp)
         if not allow:
@@ -731,18 +748,24 @@ def run(agent_dir):
                 "\n<the complete file content here>\n```\nEmit it now in ONE block."})
             continue
         if tool == "escalate" and os.environ.get("WORKER_MODE"):
-            obs = ("error: a delegated worker cannot escalate to the frontier model — that is the "
+            res = ("error: a delegated worker cannot escalate to the frontier model — that is the "
                    "manager's job. Complete the task with your own tools (bash/read/write/edit/grep/qmd) "
                    "or call `finish` reporting what blocked you.")
         elif tool == "escalate":
-            obs = exec_escalate(agent_dir, inp, esc, max_tokens, timeout)
+            res = exec_escalate(agent_dir, inp, esc, max_tokens, timeout)
         elif tool in EXECUTORS:
-            obs = EXECUTORS[tool](agent_dir, inp)
+            res = EXECUTORS[tool](agent_dir, inp)
         else:
-            obs = (f"error: no '{tool}' tool exists. Run code/commands via the bash tool "
+            res = (f"error: no '{tool}' tool exists. Run code/commands via the bash tool "
                    "(e.g. bash 'python3 x.py'). Valid tools: bash, read, write, edit, glob, grep, qmd, escalate, finish.")
+        # STRUCTURED failure detection: executors that know their outcome return (obs, err).
+        # String-only executors keep the "error"-prefix convention — but never bare "[" (I-2/I-3).
+        if isinstance(res, tuple):
+            obs, _err = res
+        else:
+            obs = res
+            _err = obs.startswith(("error", "qmd error", "rlm error"))
         log(f"step {step}: {tool} → {obs[:120].rstrip()}")
-        _err = obs.startswith("error") or obs.startswith("[")
         _slot = _tool_n.setdefault(tool, [0, 0])
         _slot[0] += 1
         if _err:
@@ -751,11 +774,25 @@ def run(agent_dir):
                          "tool": _EVENT_TOOL.get(tool, tool), "summary": _event_summary(tool, inp),
                          **({"error": True} if _err else {})})
         messages.append({"role": "user", "content": f"OBSERVATION:\n{obs}"})
-        # lean context: keep system + turn + last ~24 exchanges
-        if len(messages) > 26:
-            messages = messages[:2] + messages[-24:]
+        # Lean context: keep system + turn, then trim the tail by a CHAR BUDGET, not a message
+        # count — the old messages[:2] + messages[-24:] was token-blind (24 × an 8000-char
+        # observation ≈ 190KB unaccounted; evaluation §3.1).
+        if len(messages) > 26 or sum(len(m.get("content", "")) for m in messages[2:]) > _CTX_CHARS:
+            head, tail = messages[:2], []
+            budget = _CTX_CHARS
+            for m in reversed(messages[2:]):
+                budget -= len(m.get("content", ""))
+                if budget < 0 and tail:
+                    break
+                tail.append(m)
+                if len(tail) >= 24:
+                    break
+            messages = head + list(reversed(tail))
     log(f"hit max_steps={max_steps} — stopping")
-    return _finish(0, "max_steps")
+    # Distinct rc: a wandered tick must be distinguishable from a clean finish to the loop and
+    # to runtime.sh (the old rc=0 made 65% cap-wander on fireforge invisible; agentloop treats
+    # any rc other than 75 the same, so this is telemetry-safe).
+    return _finish(4, "max_steps")
 
 
 def main():

@@ -129,7 +129,9 @@ def main():
     _clear_env()
     check.eq("_chat_model claude default", C._chat_model(home, "claude"), "claude-sonnet-4-6")
     os.environ["MODEL"] = "claude-opus-4-8"
-    check.eq("_chat_model claude honors MODEL", C._chat_model(home, "claude"), "claude-opus-4-8")
+    # MODEL (the WORK brain) must NOT leak onto the chat plane — inheriting it put stoneforge's
+    # chat on opus while the pod was paused (2026-07-19 evaluation §3.3).
+    check.eq("_chat_model claude IGNORES work MODEL", C._chat_model(home, "claude"), "claude-sonnet-4-6")
     os.environ["CHAT_MODEL"] = "claude-haiku-4-5"
     check.eq("_chat_model CHAT_MODEL beats MODEL", C._chat_model(home, "claude"), "claude-haiku-4-5")
     _clear_env()
