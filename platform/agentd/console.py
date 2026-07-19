@@ -1041,6 +1041,21 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
     ${kpi("turns (avg)",turns.avg!=null?Math.round(turns.avg):"—","","per tick")}
     ${kpi("process success",ho.process_success_pct!=null?ho.process_success_pct+"%":"—","",`${ho.ticks_failed||0} failed${ho.ticks_capped?` · ${ho.ticks_capped} turn-capped`:""}`)}
   </div>`;
+  /* WORK PRODUCT (L2) — product vs plumbing, from the harness scorecard (pod can't fake it) */
+  const wp=d.workproduct||{};
+  if(wp.available){
+    const pr=wp.blind?null:wp.product_rate;
+    const bad=wp.blind||pr===0||(wp.zero_product_streak||0)>=10;
+    html+=`<div class="card" style="margin-bottom:12px;border-left:3px solid ${bad?"var(--err)":"var(--ok, #3a3)"}">
+      <div class="k">work product (last ${wp.window} ticks — harness-scored, never self-reported)</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
+        ${kpi("product rate",wp.blind?"BLIND":(pr!=null?Math.round(pr*100)+"%":"—"),"",wp.blind?"scorecard-config missing":`${wp.product_ticks||0} of ${wp.scored||0} scored ticks`)}
+        ${kpi("zero-product streak",String(wp.zero_product_streak??"—"),"","consecutive scored ticks")}
+        ${kpi("plumbing writes",String(wp.plumbing_writes??"—"),"","tooling + self-state")}
+        ${kpi("top churn",wp.top_churn?`${wp.top_churn[1]}×`:"—","",wp.top_churn?esc(String(wp.top_churn[0]).split("/").pop()):"no repeated rewrites")}
+        ${kpi("directive service",wp.directive_service!=null?Math.round(wp.directive_service*100)+"%":"—","","ticks serving an active directive")}
+      </div>${bad?`<div class="s" style="margin-top:6px;color:var(--err)">⚠ ${wp.blind?"product output is UNMEASURED — write state/scorecard-config.json":"no product artifacts — the pod is running, not producing"}</div>`:""}</div>`;
+  }
   /* runtime & resources (live docker stats — Phase B, host-side) */
   html+=`<div id="dgRes" class="card" style="margin-bottom:12px"><div class="k">runtime &amp; resources</div><div class="s" style="margin-top:3px;color:var(--mut)">loading…</div></div>`;
   /* charts — Context (the explosion diagnostic) is the hero */
@@ -1975,6 +1990,12 @@ class H(BaseHTTPRequestHandler):
             try:
                 import diagnostics
                 d = diagnostics.from_home(home)
+                # L2 work-product block (tick-scorecard.jsonl) — the panel that answers the honesty
+                # gap: a pod can be green/on-budget and produce nothing; this shows it.
+                try:
+                    d["workproduct"] = diagnostics.workproduct(home)
+                except Exception:
+                    d["workproduct"] = {"available": False}
                 # per-agent anomaly mutes (state/.diag-mute.json: {key: severity_at_mute}); a quick-fix
                 # label is attached for any anomaly with a known safe config fix.
                 muted = {}

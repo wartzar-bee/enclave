@@ -497,3 +497,51 @@ if __name__ == "__main__":  # quick manual check: python3 diagnostics.py <home-d
     import sys
     home = sys.argv[1] if len(sys.argv) > 1 else "."
     print(json.dumps(from_home(home), indent=2))
+
+
+# ── L2 work-product block (analytics plan; consumed by console /api/diagnostics) ───────────────
+def workproduct(home, window=20):
+    """Aggregate state/tick-scorecard.jsonl into the Diagnostics work-product panel. Returns
+    {available: False} when the pod has no scorecard yet. All fields externally computed —
+    this is the panel that finally answers the honesty gap ('green while producing nothing')."""
+    import json as _json
+    import pathlib as _pl
+    f = _pl.Path(home) / "state" / "tick-scorecard.jsonl"
+    try:
+        lines = f.read_text(errors="replace").splitlines()[-window:]
+    except OSError:
+        return {"available": False}
+    recs = []
+    for ln in lines:
+        try:
+            recs.append(_json.loads(ln))
+        except Exception:
+            continue
+    if not recs:
+        return {"available": False}
+    scored = [r for r in recs if r.get("config") == "ok"]
+    prod_ticks = sum(1 for r in scored if (r.get("writes", {}).get("product") or 0) > 0)
+    streak = 0
+    for r in reversed(scored):
+        if (r.get("writes", {}).get("product") or 0) > 0:
+            break
+        streak += 1
+    churn = {}
+    for r in recs:
+        for p, n in (r.get("churn") or {}).items():
+            churn[p] = churn.get(p, 0) + n
+    served = [r for r in scored if r.get("serves_observed") is not None]
+    return {
+        "available": True,
+        "window": len(recs),
+        "blind": any(r.get("config") == "missing" for r in recs[-3:]),
+        "product_rate": round(prod_ticks / len(scored), 2) if scored else None,
+        "product_ticks": prod_ticks,
+        "scored": len(scored),
+        "zero_product_streak": streak,
+        "top_churn": (max(churn.items(), key=lambda kv: kv[1]) if churn else None),
+        "directive_service": (round(sum(1 for r in served if r["serves_observed"]) / len(served), 2)
+                              if served else None),
+        "plumbing_writes": sum((r.get("writes", {}).get("tooling") or 0)
+                               + (r.get("writes", {}).get("self_state") or 0) for r in scored),
+    }
