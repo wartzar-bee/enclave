@@ -2242,6 +2242,12 @@ class H(BaseHTTPRequestHandler):
                     try:
                         arr = json.loads(aj.read_text(errors="ignore") or "[]")
                         for it in (arr if isinstance(arr, list) else []):
+                            # Only OPEN requests are pending approval — a resolved/closed/withdrawn one
+                            # must clear the ⚠ badge (else `request_board.py --close` never clears it and
+                            # stale ghosts pile up on the dashboard forever).
+                            if isinstance(it, dict) and str(it.get("status", "")).lower() in (
+                                    "closed", "resolved", "done", "withdrawn", "answered"):
+                                continue
                             txt = it.get("text") or it.get("msg") or json.dumps(it) if isinstance(it, dict) else str(it)
                             items.append({"agent": aid, "ts": (it.get("ts", "") if isinstance(it, dict) else ""),
                                           "kind": "approval", "text": str(txt)[:400]})
