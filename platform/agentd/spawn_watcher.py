@@ -119,6 +119,15 @@ def _governance_check(spec):
         missing = [k for k in ("kpi", "kill_line") if not str(ts.get(k) or "").strip()]
         if missing:
             return False, f"term_sheet is missing required field(s): {', '.join(missing)}"
+        # The KPI must be MEASURABLE FROM OUTSIDE on day one (kpi_probe.py reads these): a venture
+        # whose KPI only its own pod can report is born unfalsifiable — the 61-followers class.
+        srcs = ts.get("kpi_sources")
+        if not (isinstance(srcs, list) and srcs and all(
+                isinstance(s, dict) and str(s.get("label", "")).strip() and str(s.get("url", "")).strip()
+                and str(s.get("pattern", "")).strip() for s in srcs)):
+            return False, ("term_sheet has no usable kpi_sources — the external KPI probe needs "
+                           "[{label, url, pattern}] so the studio can read the KPI from the "
+                           "third-party surface. A pod may not score itself (standing rule).")
         # Analytics-plan P0: PRODUCT must be machine-checkable from birth — without kpi_artifacts
         # globs the scorecard runs blind (product=null) and "done at the product level" is prose
         # again. Same born-governed rule as the term sheet.
