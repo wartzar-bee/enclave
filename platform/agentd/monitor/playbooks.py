@@ -219,10 +219,49 @@ _stalled = Playbook(
     intent=lambda *a: {"action": "restart"}, safe_to_autofix=True)
 
 
+# (7) kill_line — governance: an agent whose term-sheet kill-line date has passed is still running.
+# Term sheet lives at <home>/state/term-sheet.json: {"kill_line": "YYYY-MM-DD", "kpi": ..., ...}.
+# Discretion happens when the line is SET, never at execution time — a passed line always fires.
+def _term_sheet(home):
+    if not home:
+        return None
+    try:
+        import json
+        return json.loads((pathlib.Path(home) / "state" / "term-sheet.json").read_text())
+    except Exception:
+        return None
+
+def _killline_match(diag, home, snap, ctx):
+    if not snap.get("up"):
+        return False
+    ts = _term_sheet(home)
+    line = (ts or {}).get("kill_line")
+    if not line:
+        return False
+    import time as _t
+    try:
+        return _t.mktime(_t.strptime(line, "%Y-%m-%d")) + 86400 < ctx.get("now", 0)
+    except Exception:
+        return False
+
+def _killline_diag(diag, home, snap, ctx):
+    ts = _term_sheet(home) or {}
+    return {"cause": f"term-sheet kill-line {ts.get('kill_line')} has passed and the agent is still running",
+            "confidence": "high",
+            "evidence": f"state/term-sheet.json kill_line={ts.get('kill_line')}; kpi={ts.get('kpi', '?')}",
+            "recommendation": "stop the agent; the board decides renewal (a new kill-line) explicitly, never by drift.",
+            "source": "deterministic"}
+
+_kill_line = Playbook(
+    "kill_line", "Term-sheet kill-line passed (agent still running)", "high",
+    _killline_match, _killline_diag,
+    intent=lambda *a: {"action": "down"}, safe_to_autofix=True)
+
+
 # The per-agent runbook (bridge_down is a FLEET-level check the daemon runs separately — it has no
 # single agent home to escalate into; full inbox surfacing is D2).
 ALL = [_memory_path_broken, _delegation_loop, _context_bloat,
-       _container_down, _up_but_unreachable, _stalled]
+       _container_down, _up_but_unreachable, _stalled, _kill_line]
 
 BY_KEY = {p.key: p for p in ALL}
 
