@@ -258,10 +258,186 @@ _kill_line = Playbook(
     intent=lambda *a: {"action": "down"}, safe_to_autofix=True)
 
 
+# --- L2 work-product playbooks (analytics plan P1, 2026-07-19) --------------------------------
+# All tick-denominated (a continuous pod hits these within the hour, never "after days") and all
+# read state/tick-scorecard.jsonl — written by the harness, never by the pod's own reasoning.
+
+def _jsonl_tail(home, rel, n):
+    import json as _json
+    try:
+        lines = (pathlib.Path(home) / rel).read_text(errors="ignore").splitlines()[-n:]
+    except Exception:
+        return []
+    out = []
+    for ln in lines:
+        try:
+            out.append(_json.loads(ln))
+        except Exception:
+            continue
+    return out
+
+
+def _scored(home, n=10):
+    """Last n scorecard records with a WORKING product config (config==ok)."""
+    return [r for r in _jsonl_tail(home, "state/tick-scorecard.jsonl", n) if r.get("config") == "ok"]
+
+
+# (8) zero_product — N consecutive scored ticks with zero PRODUCT writes while the pod runs green.
+# The logan-cross failure shape: 56 healthy L1 ticks, output = its own status file. Fires at 10
+# scored ticks (hours). For queue-gated agents whose no-op is by design (ideas-scout), suppress
+# per-agent via policy — don't blunt the default.
+def _zeroprod_match(diag, home, snap, ctx):
+    if not snap.get("up"):
+        return False
+    recs = _scored(home, 10)
+    return len(recs) >= 10 and all((r.get("writes", {}).get("product") or 0) == 0 for r in recs)
+
+def _zeroprod_diag(diag, home, snap, ctx):
+    recs = _scored(home, 10)
+    ss = sum(r.get("writes", {}).get("self_state") or 0 for r in recs)
+    tl = sum(r.get("writes", {}).get("tooling") or 0 for r in recs)
+    return {"cause": "10 consecutive scored ticks produced ZERO product artifacts (kpi_artifacts "
+                     f"globs) — output was plumbing: {ss} self-state + {tl} tooling writes",
+            "confidence": "high",
+            "evidence": "state/tick-scorecard.jsonl last 10 records, writes.product all 0",
+            "recommendation": "pod-capability signal, not a directive gap — review task shape vs "
+                              "the KPI (can this agent close its loop?); consider pause + board review.",
+            "source": "deterministic"}
+
+_zero_product = Playbook(
+    "zero_product", "Zero product output across 10 scored ticks", "high",
+    _zeroprod_match, _zeroprod_diag, intent=lambda *a: None, safe_to_autofix=False)
+
+
+# (9) churn_spike — the same non-product file rewritten ≥3× in one tick or ≥5× across 10 ticks
+# (the 33×-rollup day, caught at rewrite #3). scorecard.py sets churn_alarm per record.
+def _churn_match(diag, home, snap, ctx):
+    return snap.get("up") and any(r.get("churn_alarm") for r in _jsonl_tail(home, "state/tick-scorecard.jsonl", 10))
+
+def _churn_diag(diag, home, snap, ctx):
+    worst, wn = None, 0
+    for r in _jsonl_tail(home, "state/tick-scorecard.jsonl", 10):
+        for p, n in (r.get("churn") or {}).items():
+            if n > wn:
+                worst, wn = p, n
+    return {"cause": f"churn: '{worst}' rewritten {wn}× — the agent is spinning on its own files "
+                     "instead of producing",
+            "confidence": "high",
+            "evidence": "state/tick-scorecard.jsonl churn/churn_alarm (last 10 records)",
+            "recommendation": "inspect the churned file's purpose; usually a cancelled/blocked task "
+                              "the agent keeps re-attempting — close it via directives.json, or park the channel.",
+            "source": "deterministic"}
+
+_churn_spike = Playbook(
+    "churn_spike", "File-churn spike (same file rewritten repeatedly)", "medium",
+    _churn_match, _churn_diag, intent=lambda *a: None, safe_to_autofix=False)
+
+
+# (10) off_directive — 3 consecutive scored ticks served no active directive. Per the standing rule
+# this escalates as a POD-CAPABILITY signal (evidence for the board), never as "write another directive".
+def _offdir_match(diag, home, snap, ctx):
+    if not snap.get("up"):
+        return False
+    recs = _scored(home, 3)
+    if len(recs) < 3:
+        return False
+    def _off(r):
+        so = r.get("serves_observed")
+        return so is False or (not r.get("serves") and (r.get("writes", {}).get("product") or 0) == 0)
+    return all(_off(r) for r in recs)
+
+def _offdir_diag(diag, home, snap, ctx):
+    return {"cause": "3 consecutive scored ticks wrote nothing that serves any ACTIVE directive",
+            "confidence": "medium",
+            "evidence": "state/tick-scorecard.jsonl serves/serves_observed, last 3 scored records",
+            "recommendation": "pod-capability signal (standing rule: no new directive) — bring to "
+                              "the board with the scorecard evidence; candidate for early kill/checkpoint.",
+            "source": "deterministic"}
+
+_off_directive = Playbook(
+    "off_directive", "Ticks not serving any active directive (3 in a row)", "high",
+    _offdir_match, _offdir_diag, intent=lambda *a: None, safe_to_autofix=False)
+
+
+# (11) wander_rate — ≥3 of the last 5 work ticks exhausted the step cap (subtype=max_steps).
+# fireforge lifetime rate was 65% and nothing fired; this fires the same afternoon.
+def _wander_match(diag, home, snap, ctx):
+    recs = [r for r in _jsonl_tail(home, "state/usage.jsonl", 15) if r.get("reason") != "chat"][-5:]
+    return snap.get("up") and len(recs) >= 5 and \
+        sum(1 for r in recs if r.get("subtype") == "max_steps") >= 3
+
+def _wander_diag(diag, home, snap, ctx):
+    return {"cause": "the brain wandered to the step cap in ≥3 of the last 5 ticks — researching "
+                     "instead of producing (the anti-wander forcing function is not sufficient here)",
+            "confidence": "high",
+            "evidence": "state/usage.jsonl subtype=max_steps, last 5 non-chat records",
+            "recommendation": "task shape or brain tier is wrong for this work: shrink the tick "
+                              "brief, raise the judgment tier, or delegate the labour differently.",
+            "source": "deterministic"}
+
+_wander_rate = Playbook(
+    "wander_rate", "Wandering to the step cap (3 of last 5 ticks)", "medium",
+    _wander_match, _wander_diag, intent=lambda *a: None, safe_to_autofix=False)
+
+
+# (12) self_certification — most 'done' work items carry NO verify command: the deterministic
+# completion gate exists but is being bypassed by omission (self-certified doneness).
+def _selfcert_match(diag, home, snap, ctx):
+    import json as _json
+    try:
+        items = _json.loads((pathlib.Path(home) / "work.json").read_text())
+    except Exception:
+        return False
+    done = [i for i in items if isinstance(i, dict) and i.get("status") == "done"][-20:]
+    if len(done) < 5:
+        return False
+    unverified = sum(1 for i in done if not (i.get("verify") or "").strip())
+    return unverified / len(done) > 0.5
+
+def _selfcert_diag(diag, home, snap, ctx):
+    return {"cause": ">50% of recently completed work items have no verify command — 'done' is "
+                     "self-certified, the anti-fabrication gate is being bypassed by omission",
+            "confidence": "high",
+            "evidence": "work.json done items, empty verify field",
+            "recommendation": "require verify commands at work-add time (constitution/skill nudge); "
+                              "treat unverified dones as claims in board reports.",
+            "source": "deterministic"}
+
+_self_certification = Playbook(
+    "self_certification", "Work marked done without verify commands", "medium",
+    _selfcert_match, _selfcert_diag, intent=lambda *a: None, safe_to_autofix=False)
+
+
+# (13) scorecard_blind — a GOVERNED pod (term-sheet present) with no working scorecard config:
+# product output is not being measured at all. Loud-when-blind, enforced (D-100).
+def _blind_match(diag, home, snap, ctx):
+    if not snap.get("up") or not _term_sheet(home):
+        return False
+    recs = _jsonl_tail(home, "state/tick-scorecard.jsonl", 3)
+    if not recs:                       # no scorecard yet (old image / first tick) — count as blind
+        return (pathlib.Path(home) / "state" / "usage.jsonl").exists()
+    return any(r.get("config") == "missing" for r in recs)
+
+def _blind_diag(diag, home, snap, ctx):
+    return {"cause": "governed pod (term sheet present) has no working scorecard config — product "
+                     "output is UNMEASURED (blind), which reads as green while producing nothing",
+            "confidence": "high",
+            "evidence": "state/scorecard-config.json missing/empty or tick-scorecard.jsonl config=missing",
+            "recommendation": "write state/scorecard-config.json (kpi_artifacts globs) — the spawn "
+                              "gate requires it for new pods; this one predates it.",
+            "source": "deterministic"}
+
+_scorecard_blind = Playbook(
+    "scorecard_blind", "Governed pod with unmeasured product output", "medium",
+    _blind_match, _blind_diag, intent=lambda *a: None, safe_to_autofix=False)
+
+
 # The per-agent runbook (bridge_down is a FLEET-level check the daemon runs separately — it has no
 # single agent home to escalate into; full inbox surfacing is D2).
 ALL = [_memory_path_broken, _delegation_loop, _context_bloat,
-       _container_down, _up_but_unreachable, _stalled, _kill_line]
+       _container_down, _up_but_unreachable, _stalled, _kill_line,
+       _zero_product, _churn_spike, _off_directive, _wander_rate,
+       _self_certification, _scorecard_blind]
 
 BY_KEY = {p.key: p for p in ALL}
 
