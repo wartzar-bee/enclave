@@ -506,6 +506,22 @@ class Memory:
                         if key in _seen: continue
                         _seen.add(key); directives.append(d)
         out = ["# Recall — auto-loaded for this tick (read FIRST, alongside inbox.md)\n"]
+        # MEASURED PERFORMANCE (analytics plan P0): the pod's own externally-computed deficiencies,
+        # ≤4 lines, from state/tick-scorecard.jsonl (written by the harness post-tick — the pod
+        # reads its numbers, it never computes them). Self-contained import-free reader would
+        # duplicate scorecard.summary; a subprocess call keeps ONE implementation.
+        try:
+            import subprocess as _sp
+            _sc = pathlib.Path(__file__).resolve().parent / "scorecard.py"
+            if _sc.exists() and (self.base / "state" / "tick-scorecard.jsonl").exists():
+                _p = _sp.run(["python3", str(_sc), str(self.base), "summary"],
+                             capture_output=True, text=True, timeout=10)
+                _perf = [l for l in _p.stdout.splitlines() if l.strip()]
+                if _perf:
+                    out.append("## 📉 MEASURED PERFORMANCE (computed OUTSIDE you — fix the worst "
+                               "line before adding anything new)\n" + "\n".join(_perf) + "\n")
+        except Exception:
+            pass
         if directives:
             out.append("## ⚠ DIRECTIVES — the authoritative instruction state, in priority order "
                        "(act on these FIRST; they OVERRIDE your work queue)\n" +

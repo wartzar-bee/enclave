@@ -126,6 +126,13 @@ pre_tick_shared() {
 }
 
 post_tick_shared() {
+  # L2 work-product scorecard (analytics plan P0): one zero-LLM record per tick — product vs
+  # plumbing classification, churn, directive service. $NOW (script start) = the tick's t0.
+  # FULLY ISOLATED; a scorecard bug never aborts the loop.
+  SCORECARD="$SCRIPT_DIR/scorecard.py"; [ -f "$SCORECARD" ] || SCORECARD="${TOOLS_ROOT:-/workspace}/platform/agentd/scorecard.py"
+  if [ -f "$SCORECARD" ]; then
+    ( OUT="$(python3 "$SCORECARD" "$AGENT_DIR" --t0 "$NOW" 2>>"$LOG")" && [ -n "$OUT" ] && log "$OUT" ) || true
+  fi
   # Housekeeping (continuous mode makes stores grow fast): rotate the runner log + usage.jsonl and
   # run the daily memory compaction. FULLY ISOLATED (subshell + || true) — can NEVER abort the loop.
   (

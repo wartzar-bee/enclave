@@ -44,6 +44,9 @@ term_sheet:                  # REQUIRED for venture-class specs (template/class:
   kpi: one measurable signal #   born governed, never governed by retrofitted prose. Materialized at
   kill_line: 2026-12-31      #   spawn as state/term-sheet.json (read by the monitor's mechanical
   budget_usd_weekly: 15      #   kill_line playbook) + state/directives.json (injected every tick).
+kpi_artifacts:               # REQUIRED for venture-class specs — globs naming the reader/buyer-facing
+  - "content/**/*.md"        #   artifacts this venture ships. Drives the per-tick work-product
+  - "site/**"                #   scorecard (product vs plumbing); without them product=null (loud).
 work_dir: /abs/host/path     # optional: project tree mounted rw at /work
 secrets:                     # optional: scoped credential placeholders (operator fills them)
   - { name: example, key: EXAMPLE_API_KEY }

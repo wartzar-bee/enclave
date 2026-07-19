@@ -119,6 +119,14 @@ def _governance_check(spec):
         missing = [k for k in ("kpi", "kill_line") if not str(ts.get(k) or "").strip()]
         if missing:
             return False, f"term_sheet is missing required field(s): {', '.join(missing)}"
+        # Analytics-plan P0: PRODUCT must be machine-checkable from birth — without kpi_artifacts
+        # globs the scorecard runs blind (product=null) and "done at the product level" is prose
+        # again. Same born-governed rule as the term sheet.
+        ka = spec.get("kpi_artifacts")
+        if not (isinstance(ka, list) and any(str(g).strip() for g in ka)):
+            return False, ("venture-class spec has no kpi_artifacts — the work-product scorecard "
+                           "cannot classify PRODUCT without them. Add kpi_artifacts: [<glob>, ...] "
+                           "naming the reader/buyer-facing artifacts this venture ships.")
     return True, ""
 
 
@@ -155,6 +163,13 @@ def _write_governance(target, name, spec):
             (state / "directives.json").write_text(json.dumps(
                 {"version": 1, "updated": now, "compiled_by": "spawn_watcher",
                  "source": "spawn spec", "directives": directives}, indent=2) + "\n")
+        # Scorecard classification config (analytics plan P0) — product globs from the spec.
+        ka = [str(g) for g in ((spec or {}).get("kpi_artifacts") or []) if str(g).strip()]
+        if ka:
+            (state / "scorecard-config.json").write_text(json.dumps(
+                {"kpi_artifacts": ka,
+                 "tooling_paths": (spec or {}).get("tooling_paths") or ["bin/**", "work/**/*.py", "work/**/*.sh"],
+                 "set_by": f"spawn spec {now}"}, indent=2) + "\n")
     except Exception as e:
         print(f"  ⚠ {name}: governance files not fully written ({e}) — write them by hand")
 
