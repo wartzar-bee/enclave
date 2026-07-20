@@ -335,8 +335,28 @@ def _apply_spec_extras(spec, home, secrets, envf):
     kpi = (spec.get("kpi") or "").strip()
     if mission or kpi:
         cl = home / "CLAUDE.md"
-        block = "\n\n## Mission\n" + (mission or "(none)") + (f"\n\n## KPI\n{kpi}" if kpi else "") + "\n"
-        cl.write_text((cl.read_text() if cl.exists() else "") + block)
+        text = cl.read_text() if cl.exists() else ""
+        # SUBSTITUTE the template's {MISSION} placeholder before appending anything.
+        # Every template (autonomous/venture/orchestrator) carries a literal "{MISSION}" under its
+        # "## MISSION" heading, and nothing ever filled it — the spec's mission was only APPENDED at
+        # the end of the file. So a scaffolded agent read "## MISSION / {MISSION}" as its objective,
+        # with the real mission 40+ lines below under a second heading, and the generic loop in
+        # between ("pick the single highest-value next step toward {MISSION}") was the only
+        # actionable instruction it could see. channel-lab burned its first tick (~$4.74, a quarter
+        # of its weekly cap) running scaffold-template scripts that do not exist in its deployment.
+        # Substitute in place; only append a "## Mission" block if there was no placeholder to fill.
+        placeholder_filled = False
+        if mission and "{MISSION}" in text:
+            text = text.replace("{MISSION}", mission)
+            placeholder_filled = True
+        block = ""
+        if not placeholder_filled and mission:
+            block += "\n\n## Mission\n" + mission + "\n"
+        if kpi:
+            block += "\n\n## KPI\n" + kpi + "\n"
+        cl.write_text(text + block)
+        if mission and not placeholder_filled:
+            print("  note: no {MISSION} placeholder in the template — mission appended as a section")
     iv = spec.get("interval_seconds")
     if iv:
         _set_env_kv(home / "agent.env", {"INTERVAL_SECONDS": str(iv)})
