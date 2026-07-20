@@ -85,6 +85,31 @@ _USAGE_ACC = {"input": 0, "output": 0, "cost": 0.0, "had_usage": False}
 _EVENT_TOOL = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit",
                "glob": "Glob", "grep": "Grep", "qmd": "Qmd", "escalate": "Escalate"}
 
+# Redaction. Capturing tool OUTPUT means a command that prints a credential would write it into
+# events.jsonl, which downstream tooling renders into git-tracked reports. Scrub at the source so
+# the secret is never on disk in the first place: a redactor that only runs at render time leaves
+# the raw value sitting in the log file. CLAUDE.md: never log a credential.
+_REDACT = re.compile(
+    r"(sk-[A-Za-z0-9_-]{12,}"
+    r"|ghp_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|gho_[A-Za-z0-9]{16,}"
+    r"|nvapi-[A-Za-z0-9_-]{16,}"
+    r"|AIza[0-9A-Za-z_-]{20,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
+    r"|-----BEGIN[A-Z ]*PRIVATE KEY-----"
+    r"|\b[A-Za-z0-9._%+-]+:[^\s@/]{6,}@)", re.I)
+_REDACT_KV = re.compile(
+    r"\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY)[A-Z0-9_]*)"
+    r"(\s*[=:]\s*)(\"?[^\s\"']{6,}\"?)", re.I)
+
+
+def _redact(text):
+    if not text:
+        return text
+    text = _REDACT.sub("[REDACTED]", text)
+    return _REDACT_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", text)
+
+
 def _event_summary(tool, inp):
     inp = inp or {}
     if tool == "bash":
@@ -787,8 +812,9 @@ def run(agent_dir):
         # hand from fragments (done painfully on 2026-07-20, and done badly). The operator's ask is
         # to evaluate work and performance; that needs outcomes attached to actions.
         _emit_event(sd, {"ts": int(time.time()), "agent": aid, "event": "tool", "step": step,
-                         "tool": _EVENT_TOOL.get(tool, tool), "summary": _event_summary(tool, inp),
-                         "ok": not _err, "result": (obs or "")[:400].rstrip(),
+                         "tool": _EVENT_TOOL.get(tool, tool),
+                         "summary": _redact(_event_summary(tool, inp)),
+                         "ok": not _err, "result": _redact((obs or "")[:400].rstrip()),
                          **({"error": True} if _err else {})})
         messages.append({"role": "user", "content": f"OBSERVATION:\n{obs}"})
         # Lean context: keep system + turn, then trim the tail by a CHAR BUDGET, not a message

@@ -10,7 +10,32 @@ Event shape: {"ts": <epoch>, "agent": "<id>", "event": "tool|tick_start|tick_end
 
 Best-effort + NON-BLOCKING: any failure exits 0 (a monitoring hook must never interfere with a tick).
 """
-import sys, json, time, os, pathlib
+import sys, json, time, os, pathlib, re
+
+# Redaction. Capturing tool OUTPUT means a command that prints a credential would write it into
+# events.jsonl, which downstream tooling renders into git-tracked reports. Scrub at the source so
+# the secret is never on disk in the first place: a redactor that only runs at render time leaves
+# the raw value sitting in the log file. CLAUDE.md: never log a credential.
+_REDACT = re.compile(
+    r"(sk-[A-Za-z0-9_-]{12,}"
+    r"|ghp_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|gho_[A-Za-z0-9]{16,}"
+    r"|nvapi-[A-Za-z0-9_-]{16,}"
+    r"|AIza[0-9A-Za-z_-]{20,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
+    r"|-----BEGIN[A-Z ]*PRIVATE KEY-----"
+    r"|\b[A-Za-z0-9._%+-]+:[^\s@/]{6,}@)", re.I)
+_REDACT_KV = re.compile(
+    r"\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY)[A-Z0-9_]*)"
+    r"(\s*[=:]\s*)(\"?[^\s\"']{6,}\"?)", re.I)
+
+
+def _redact(text):
+    if not text:
+        return text
+    text = _REDACT.sub("[REDACTED]", text)
+    return _REDACT_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", text)
+
 
 MAX_LINES = 800   # keep events.jsonl bounded; trimmed at tick end
 
@@ -41,7 +66,7 @@ def main():
     rec = {"ts": int(time.time()), "agent": os.environ.get("AGENT_ID", ""), "event": name}
     if name in ("PreToolUse", "PostToolUse"):
         tool = ev.get("tool_name", "")
-        rec.update({"event": "tool", "tool": tool, "summary": summarize(tool, ev.get("tool_input", {}))})
+        rec.update({"event": "tool", "tool": tool, "summary": _redact(summarize(tool, ev.get("tool_input", {})))})
         # Record the RESULT, not just the attempt. This hook was written as the dashboard's live
         # activity feed, so it kept the command and dropped the response — leaving a durable record
         # of actions with no outcomes, which cannot support "evaluate their work and performance".
@@ -58,7 +83,7 @@ def main():
         if not isinstance(out, str):
             out = str(out)
         if out:
-            rec["result"] = out.strip()[:400]
+            rec["result"] = _redact(out.strip()[:400])
     elif name == "SessionStart":
         rec.update({"event": "tick_start", "source": ev.get("source", "")})
     elif name == "Stop":
