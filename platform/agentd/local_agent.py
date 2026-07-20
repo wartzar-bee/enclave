@@ -718,6 +718,7 @@ def run(agent_dir):
     started = time.time()
     _USAGE_ACC.update({"input": 0, "output": 0, "cost": 0.0, "had_usage": False})
     _tool_n = {}                                           # tool → [calls, fails]
+    _proto_n = {"native": 0, "text": 0}                    # N3: extraction channel per call (visibility)
     _steps_done = [0]
     _emit_event(sd, {"ts": int(time.time()), "agent": aid, "event": "tick_start", "source": "local"})
 
@@ -726,7 +727,9 @@ def run(agent_dir):
         rt = {"tool_calls": sum(v[0] for v in _tool_n.values()),
               "tool_failures": sum(v[1] for v in _tool_n.values()),
               "tools": {k: {"n": v[0], "fail": v[1]} for k, v in _tool_n.items()},
+              "protocol": dict(_proto_n),
               "available": True}
+        log(f"tool extraction: {_proto_n['native']} native / {_proto_n['text']} text")
         rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "agent": aid, "reason": reason,
                "model": brain["model"], "input": _USAGE_ACC["input"], "output": _USAGE_ACC["output"],
                "cache_read": 0, "cache_write": 0,
@@ -797,6 +800,7 @@ def run(agent_dir):
         # trimming, and the fallback parser see one consistent protocol.
         call = native_tool_call(native_calls)
         if call is not None:
+            _proto_n["native"] += 1
             rendered = json.dumps({"tool": call["tool"], "input": call.get("input", {})})[:4000]
             messages.append({"role": "assistant", "content": (reply or "") + "\n```tool\n" + rendered + "\n```"})
             if call.pop("_bad_args", None):
@@ -808,6 +812,8 @@ def run(agent_dir):
         else:
             messages.append({"role": "assistant", "content": reply})
             call = parse_tool_call(reply)
+            if call is not None:
+                _proto_n["text"] += 1
         if not call:
             # No tool block. Don't bail on prose — the model often narrates (or, as a coding model,
             # dumps a ```python block) before/instead of acting. NUDGE it; only give up after several.
