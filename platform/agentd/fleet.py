@@ -189,6 +189,16 @@ def _state(home):
         s["tick"] = "working" if working else "idle"
     except Exception:
         pass
+    # PAUSED is a distinct state, not a flavour of idle. runtime.sh skips every tick while
+    # state/paused exists, so a paused pod is up, looping, and doing nothing — which rendered
+    # identically to a healthy agent resting between ticks. stoneforge sat like that for 15 days
+    # (paused by a venture decision on 2026-07-04) while the console showed plain "idle", so
+    # "deliberately stopped" and "waiting to work" were indistinguishable at a glance.
+    try:
+        if home and (home / "state" / "paused").exists():
+            s["tick"] = "paused"
+    except Exception:
+        pass
     return s
 
 

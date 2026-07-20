@@ -278,13 +278,27 @@ class Loop:
             if reason:
                 self.tick_cycle(reason)
 
+    def _skip_reason(self):
+        """Why runtime.sh returned SKIP_RC. It exits 75 for several unrelated reasons — paused,
+        spend cap, session cap, a live lock from a previous tick — and the loop logged all of them
+        as "cap/lock". A pod paused by a deliberate venture decision therefore read for 15 days as
+        though it were throttled by a budget guard (stoneforge, 2026-07-04 → 07-20). The specific
+        reason is already known one layer down; surface it instead of flattening it.
+        """
+        try:
+            if (pathlib.Path(self.agent_dir) / "state" / "paused").exists():
+                return "paused"
+        except Exception:
+            pass
+        return "cap/lock"
+
     def _after(self, rc):
         """Advance baselines on a DONE turn; on a deferred turn (SKIP_RC) hold baselines and
         back off so the directive is retried, not lost."""
         now = time.time()
         if rc == SKIP_RC:
             self.defer_until = now + self.cap_retry
-            self.log(f"tick deferred (cap/lock) — retry in {self.cap_retry}s")
+            self.log(f"tick deferred ({self._skip_reason()}) — retry in {self.cap_retry}s")
             return
         self.inbox_baseline = _mtime(self.inbox)
         # CONTINUOUS MODE: agents work back-to-back, not tick-then-sleep-3h. The tick writes

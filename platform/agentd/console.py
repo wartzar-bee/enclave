@@ -2244,19 +2244,56 @@ class H(BaseHTTPRequestHandler):
                 # this HITL channel is for genuine "needs a human decision" items (agent ESCALATE: + approvals).
                 def _hitl(t):
                     return bool(t) and not t.lstrip().startswith("[monitor:")
+
+                # escalations.log is APPEND-ONLY and carries no status field, so every ESCALATE ever
+                # written stayed on the "needs your decision" badge forever — including ones the
+                # studio RESOLVED or RETRACTED three lines later. On 2026-07-20 the badge read 14
+                # items of which ~6 were already explicitly closed in the same file (ghcr publish
+                # "RESOLVED — a working token already existed", the RR_PASSWORD "RETRACTED — NOT an
+                # operator item", a graveyard REOPEN corrected as a FALSE POSITIVE). A queue that
+                # never drains trains the operator to ignore it, which defeats the whole channel.
+                # A later resolution line clears the open items it can be tied to: same [tag],
+                # same req-id, or the HH:MM of the entry it corrects. Unmatchable resolutions clear
+                # nothing — this only ever REMOVES noise it can justify removing.
+                _RESOLVES = re.compile(r"\b(RESOLVED|RETRACTED|FALSE POSITIVE|correction|CLOSED)\b", re.I)
+
+                def _keys(t, ts=""):
+                    # ts: an entry is also addressable by its OWN clock time, because corrections
+                    # are written the way a human refers to them — "the 23:06 graveyard-recheck
+                    # REOPEN was a FALSE POSITIVE" names the entry by when it happened, not by tag.
+                    k = (set(re.findall(r"\[[a-z0-9:_-]+\]", t or "", re.I))
+                         | set(re.findall(r"\breq-[0-9a-f]{6,}\b", t or "", re.I))
+                         | set(re.findall(r"\b\d\d:\d\d\b", t or "")))
+                    m_ts = re.search(r"T(\d\d:\d\d)", ts or "")
+                    if m_ts:
+                        k.add(m_ts.group(1))
+                    return k
                 ef = st / "escalations.log"
                 if ef.exists():
-                    cur = None
+                    blocks, cur = [], None
                     for ln in ef.read_text(errors="ignore").splitlines():
                         m = re.match(r"^(\d{4}-\d\d-\d\dT[\d:]+Z)\s+(\w+)\s*::\s*(.*)", ln)
                         if m:
-                            if cur and cur["kind"] == "ESCALATE" and _hitl(cur["text"]):
-                                items.append({"agent": aid, "ts": cur["ts"], "kind": "escalation", "text": cur["text"][:400]})
+                            if cur:
+                                blocks.append(cur)
                             cur = {"ts": m.group(1), "kind": m.group(2), "text": m.group(3)}
                         elif cur and ln.strip():
                             cur["text"] += " " + ln.strip()
-                    if cur and cur["kind"] == "ESCALATE" and _hitl(cur["text"]):
-                        items.append({"agent": aid, "ts": cur["ts"], "kind": "escalation", "text": cur["text"][:400]})
+                    if cur:
+                        blocks.append(cur)
+                    # Walk in order so a resolution only clears escalations that PRECEDE it.
+                    open_items = []
+                    for b in blocks:
+                        if b["kind"] == "ESCALATE" and _hitl(b["text"]):
+                            open_items.append(b)
+                            continue
+                        if _RESOLVES.search(b["text"]):
+                            k = _keys(b["text"])
+                            if k:
+                                open_items = [o for o in open_items if not (_keys(o["text"], o["ts"]) & k)]
+                    for o in open_items:
+                        items.append({"agent": aid, "ts": o["ts"], "kind": "escalation",
+                                      "text": o["text"][:400]})
                 # approvals.json: a non-empty array = pending approval requests
                 aj = st / "approvals.json"
                 if aj.exists():
