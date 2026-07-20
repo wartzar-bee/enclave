@@ -334,6 +334,14 @@ def exec_write(agent_dir, inp):
                 "To get per-symbol PNGs FROM an existing atlas/spritesheet: write a small Pillow script "
                 "(open the atlas, .crop() each region, .save() each cell) and run it via bash. "
                 "Never put base64/byte data in a write.")
+    # secret-leak gate (2026-07-20): never persist a credential VALUE into a durable file.
+    try:
+        from hooks import secret_scan
+        leak = secret_scan.scan(fp, inp.get("content", ""))
+        if leak:
+            return "error: refused — " + leak, True
+    except Exception:
+        pass
     try:
         f = _resolve(agent_dir, fp)
         f.parent.mkdir(parents=True, exist_ok=True)
