@@ -86,9 +86,42 @@ def pending_directives(inbox):
     return pending
 
 
-def choose_tier(reason, pending, model, routine, forced=None):
+def trace_hint(state_dir, routine, k=3):
+    """Trace-informed routing v1 (N4, 2026-07-20 — idea from OpenJarvis's trace-driven policies,
+    kept deterministic + explainable). Reads the pod's OWN recent outcomes and answers one question:
+    is the cheap tier currently FAILING on this pod? If the last `k` consecutive ticks that ran on
+    the routine tier ended badly — wandered to max_steps, or logged decisions whose cited evidence
+    no tool event witnessed (fabrication tripwire) — the next tick escalates to the top model.
+    Evidence source: state/tick-scorecard.jsonl (subtype + decisions_unwitnessed per tick).
+    Returns "escalate" or None. Never raises; no signal → None (heuristic decides)."""
+    try:
+        rows = []
+        with (pathlib.Path(state_dir) / "tick-scorecard.jsonl").open(errors="replace") as fh:
+            for ln in fh:
+                try:
+                    rows.append(json.loads(ln))
+                except Exception:
+                    continue
+        rows = rows[-20:]
+        streak = 0
+        for r in reversed(rows):
+            if r.get("reason") == "chat":
+                continue
+            bad = r.get("subtype") == "max_steps" or (r.get("decisions_unwitnessed") or 0) > 0
+            if not bad:
+                return None                     # most recent real tick was fine → no escalation
+            streak += 1
+            if streak >= k:
+                return "escalate"
+        return None
+    except Exception:
+        return None
+
+
+def choose_tier(reason, pending, model, routine, forced=None, state_dir=None):
     """PURE decision (unit-tested). Returns (model_name, rationale). Bias: downgrade only when
-    confidently cheap; everything ambiguous resolves to the top `model`."""
+    confidently cheap; everything ambiguous resolves to the top `model`. Precedence:
+    forced > inbox tag > trace escalation > directive heuristic > reason default."""
     if forced == "top":
         return model, "forced:top"
     if forced in ("cheap", "routine"):
@@ -98,6 +131,10 @@ def choose_tier(reason, pending, model, routine, forced=None):
         return model, "tag:top"
     if "[tier:cheap]" in blob:
         return routine, "tag:cheap"
+    # Trace check BEFORE the downgrade paths: a cheap tier that keeps wandering or emitting
+    # unwitnessed evidence must not keep getting the work just because it looks mechanical.
+    if state_dir and trace_hint(state_dir, routine):
+        return model, "trace:cheap-tier-failing→top"
     if pending:
         if any(k in blob for k in JUDGMENT):
             return model, "directive:judgment→top"
@@ -121,7 +158,8 @@ def main():
     ap.add_argument("--forced", default=None)
     a = ap.parse_args()
     pend = pending_directives(pathlib.Path(a.agent_dir) / "inbox.md")
-    m, why = choose_tier(a.reason, pend, a.model, a.routine, a.forced)
+    m, why = choose_tier(a.reason, pend, a.model, a.routine, a.forced,
+                         state_dir=pathlib.Path(a.agent_dir) / "state")
     sys.stderr.write(f"route_tier: {m} ({why}; {len(pend)} pending, reason={a.reason})\n")
     print(m)
 

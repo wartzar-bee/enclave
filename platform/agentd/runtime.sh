@@ -48,6 +48,15 @@ STALE_LOCK_SECS="${AGENT_STALE_LOCK_SECS:-2700}"     # 45m > any real tick
 log(){ echo "$(date -u +%FT%TZ) — [$AGENT_ID] $*" >> "$LOG"; }
 _mtime(){ stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
 
+# Effective-config report (N1, 2026-07-20) — writes state/effective-config.json: every mechanism
+# ACTIVE|INACTIVE + why + per-var provenance, and logs any ACTIVE→INACTIVE flip since the last tick.
+# The three worst framework failures were mechanisms silently inactive (dead preflight, fail-open
+# brain, nullified router); this makes the MERGED config visible every tick. Never fails the tick.
+EFFCFG="$SCRIPT_DIR/effective_config.py"; [ -f "$EFFCFG" ] || EFFCFG="${TOOLS_ROOT:-/workspace}/platform/agentd/effective_config.py"
+if [ -f "$EFFCFG" ]; then
+  ( OUT="$(python3 "$EFFCFG" "$AGENT_DIR" 2>>"$LOG")" && [ -n "$OUT" ] && log "$OUT" ) || true
+fi
+
 # Deadman / gap detector — a silent death shows up loudly on the next fire.
 NOW="$(date +%s)"
 if [ -f "$HEARTBEAT" ]; then
@@ -126,6 +135,13 @@ pre_tick_shared() {
 }
 
 post_tick_shared() {
+  # Completion contracts (N2, 2026-07-20): if this tick CLAIMED to serve a directive that carries a
+  # contract (state/contracts.json), run the check — a failing check logs CLAIMED-NOT-VERIFIED and
+  # escalates. Runs BEFORE scorecard so tick-status.json is still present. FULLY ISOLATED.
+  CONTRACTS="$SCRIPT_DIR/contracts.py"; [ -f "$CONTRACTS" ] || CONTRACTS="${TOOLS_ROOT:-/workspace}/platform/agentd/contracts.py"
+  if [ -f "$CONTRACTS" ]; then
+    ( OUT="$(python3 "$CONTRACTS" "$AGENT_DIR" 2>>"$LOG")" && [ -n "$OUT" ] && log "$OUT" ) || true
+  fi
   # L2 work-product scorecard (analytics plan P0): one zero-LLM record per tick — product vs
   # plumbing classification, churn, directive service. $NOW (script start) = the tick's t0.
   # FULLY ISOLATED; a scorecard bug never aborts the loop.

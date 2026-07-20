@@ -138,11 +138,20 @@ def _emit_event(sd, rec):
 # ── OpenAI-compatible chat call (stdlib only; works for MLX/Ollama/OpenRouter) ──────────────
 _SPEND_LOG = pathlib.Path(os.environ.get("SPEND_LOG", "")) if os.environ.get("SPEND_LOG") else None
 
-def chat(endpoint, messages, max_tokens, temperature, timeout):
-    body = json.dumps({
+def chat(endpoint, messages, max_tokens, temperature, timeout, tools=None):
+    """One chat/completions call. With `tools`, requests NATIVE tool-calling (N3, 2026-07-20) and
+    returns (text, tool_calls); without, returns plain text (call sites unpack accordingly).
+    Native extraction exists because the fenced-text protocol is where a whole failure class lives:
+    heredoc/fence breakage, escaping blowups, and the model free-writing 'OBSERVATION:' fabrications
+    (D-113). A structured tool_call is parsed by the API layer, not fished out of prose."""
+    payload = {
         "model": endpoint["model"], "messages": messages,
         "max_tokens": max_tokens, "temperature": temperature, "stream": False,
-    }).encode()
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(endpoint["base"].rstrip("/") + "/chat/completions", data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     if endpoint.get("key"):
@@ -174,7 +183,10 @@ def chat(endpoint, messages, max_tokens, temperature, timeout):
     # only fill `content` once they stop reasoning — if a long trace hits max_tokens first
     # (finish_reason=length), `content` is absent ENTIRELY. Resolve robustly (content → reasoning)
     # instead of KeyError-crashing the whole tick.
-    return (msg.get("content") or msg.get("reasoning") or "")
+    text = (msg.get("content") or msg.get("reasoning") or "")
+    if tools is not None:
+        return text, (msg.get("tool_calls") or [])
+    return text
 
 
 # ── tool protocol: parse the model's {tool,input} call ──────────────────────────────────────
@@ -247,6 +259,62 @@ def parse_tool_call(text):
     if candidates:
         candidates.sort(key=lambda c: c[0])
         return candidates[0][1]
+    return None
+
+
+# ── NATIVE tool-calling (N3, 2026-07-20): OpenAI function-calling schemas for the same tools ──
+# Gated by LOCAL_NATIVE_TOOLS=auto|off (default auto): request native tool_calls from providers
+# that support them (sonnet/qwen via OpenRouter/NVIDIA do); on a request error, fall back to the
+# fenced-text protocol for the rest of the tick. History stays TEXT-shaped either way (the native
+# call is re-rendered as a ```tool block in the assistant message) so both extraction paths coexist
+# and context-trimming logic is untouched.
+def _p(props, req):
+    return {"type": "object", "properties": props, "required": req}
+
+
+_S = {"type": "string"}
+TOOL_SCHEMAS = [
+    {"type": "function", "function": {"name": "bash", "description": "Run shell command(s). All code/CLIs (python3/node/curl/git) run through this.",
+     "parameters": _p({"command": _S}, ["command"])}},
+    {"type": "function", "function": {"name": "read", "description": "Read a file (optionally offset/limit lines).",
+     "parameters": _p({"file_path": _S, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, ["file_path"])}},
+    {"type": "function", "function": {"name": "write", "description": "Write/overwrite a file with the FULL raw content.",
+     "parameters": _p({"file_path": _S, "content": _S}, ["file_path", "content"])}},
+    {"type": "function", "function": {"name": "edit", "description": "Replace old_string with new_string in a file (old_string must match exactly).",
+     "parameters": _p({"file_path": _S, "old_string": _S, "new_string": _S}, ["file_path", "old_string", "new_string"])}},
+    {"type": "function", "function": {"name": "glob", "description": "Find files by glob pattern.",
+     "parameters": _p({"pattern": _S, "path": _S}, ["pattern"])}},
+    {"type": "function", "function": {"name": "grep", "description": "Search file contents by regex.",
+     "parameters": _p({"pattern": _S, "path": _S, "glob": _S}, ["pattern"])}},
+    {"type": "function", "function": {"name": "qmd", "description": "Semantic recall over the workspace + your memory.",
+     "parameters": _p({"query": _S}, ["query"])}},
+    {"type": "function", "function": {"name": "rlm", "description": "Reason over a HUGE file that cannot be read whole (map-reduce on the cheap brain).",
+     "parameters": _p({"query": _S, "file": _S}, ["query", "file"])}},
+    {"type": "function", "function": {"name": "escalate", "description": "Ask the stronger external model ONE hard judgment question. Not for routine work.",
+     "parameters": _p({"question": _S, "context": _S}, ["question"])}},
+    {"type": "function", "function": {"name": "finish", "description": "End the tick when work is done AND verified. decisions[] = every real decision made this tick; evidence must be something you actually observed via a tool THIS tick, or the word 'none'. Pass [] if the tick truly decided nothing.",
+     "parameters": _p({"summary": _S,
+                       "decisions": {"type": "array", "items": _p({"decision": _S, "why": _S, "evidence": _S,
+                                                                   "rejected": _S, "confidence": _S},
+                                                                  ["decision", "why", "evidence"])}},
+                      ["summary", "decisions"])}},
+]
+
+
+def native_tool_call(tool_calls):
+    """First native tool_call → our {tool, input} shape, or None. Tolerates bad-JSON arguments."""
+    for tc in tool_calls or []:
+        fn = (tc or {}).get("function") or {}
+        name = fn.get("name")
+        if not name:
+            continue
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args, strict=False)
+            except (json.JSONDecodeError, ValueError):
+                return {"tool": name, "input": {}, "_bad_args": True}
+        return {"tool": name, "input": args if isinstance(args, dict) else {}}
     return None
 
 
@@ -546,10 +614,12 @@ EXECUTORS = {"bash": exec_bash, "read": exec_read, "write": exec_write, "edit": 
 HARNESS = """\
 # LOCAL AGENT HARNESS — how you operate
 
-You act by emitting EXACTLY ONE tool call per reply (a ```bash, ```write, or ```tool block). After
-each call you receive an `OBSERVATION`. Keep going — read, run, write, verify — until the task in your
-turn is genuinely done, then call the `finish` tool. Brief reasoning before the block is fine; emit
-only ONE action block and nothing after it.
+You act by emitting EXACTLY ONE tool call per reply. If NATIVE function-calling tools are available
+to you, use them — one call per turn; the fenced-block forms below are the fallback text protocol.
+After each call you receive an `OBSERVATION`. Keep going — read, run, write, verify — until the task
+in your turn is genuinely done, then call the `finish` tool. Brief reasoning first is fine; emit
+only ONE action (native call or block) and nothing after it. NEVER write an "OBSERVATION" yourself —
+observations come only from the runtime; a narrated observation you did not receive is fabrication.
 
 Tools — the two you use most take a RAW fenced body (NO JSON, NO escaping):
 
@@ -674,6 +744,8 @@ def run(agent_dir):
     nudges = 0
     seen_calls = {}                                        # signature → count (anti-repetition)
     finish_nudged = False                                  # decisions-at-finish: one nudge, never a wedge
+    # Native tool-calling (N3): auto = request structured tool_calls, fall back to text on a 4xx.
+    native_mode = os.environ.get("LOCAL_NATIVE_TOOLS", "auto").lower() not in ("off", "0", "false")
     produce_by = max(4, int(max_steps * 0.6))             # after this, force produce+finish (anti-wander)
     forced = False
     for step in range(1, max_steps + 1):
@@ -693,10 +765,25 @@ def run(agent_dir):
         # Retry with backoff: the Mac runs ONE shared MLX server (:8081). When several local pods
         # tick concurrently the busy server can drop a connection ("Remote end closed ...") — that's
         # transient contention, not a real failure, so ride it out instead of abandoning the tick.
-        reply = None
+        reply, native_calls = None, []
         for attempt in range(4):
             try:
-                reply = chat(brain, messages, max_tokens, temp, timeout)
+                if native_mode:
+                    try:
+                        reply, native_calls = chat(brain, messages, max_tokens, temp, timeout,
+                                                   tools=TOOL_SCHEMAS)
+                    except urllib.error.HTTPError as e:
+                        # Provider rejects the tools payload (unsupported model/endpoint) → text
+                        # protocol for the rest of the tick. Only 4xx means "unsupported"; a 5xx is
+                        # transient and takes the normal retry path.
+                        if 400 <= e.code < 500:
+                            native_mode = False
+                            log(f"native tools rejected (HTTP {e.code}) — falling back to text protocol")
+                            reply = chat(brain, messages, max_tokens, temp, timeout)
+                        else:
+                            raise
+                else:
+                    reply = chat(brain, messages, max_tokens, temp, timeout)
                 break
             except Exception as e:
                 if attempt == 3:
@@ -705,8 +792,22 @@ def run(agent_dir):
                 wait = 3 * (attempt + 1)   # 3s, 6s, 9s
                 log(f"brain call retry {attempt + 1}/3 ({e}); waiting {wait}s for the shared MLX server")
                 time.sleep(wait)
-        messages.append({"role": "assistant", "content": reply})
-        call = parse_tool_call(reply)
+        # Native call (structured, API-parsed) wins over fishing the text. The assistant message is
+        # stored TEXT-shaped either way — the native call re-rendered as a ```tool block — so history,
+        # trimming, and the fallback parser see one consistent protocol.
+        call = native_tool_call(native_calls)
+        if call is not None:
+            rendered = json.dumps({"tool": call["tool"], "input": call.get("input", {})})[:4000]
+            messages.append({"role": "assistant", "content": (reply or "") + "\n```tool\n" + rendered + "\n```"})
+            if call.pop("_bad_args", None):
+                log(f"step {step}: native {call.get('tool')} had unparseable arguments — nudging")
+                messages.append({"role": "user", "content":
+                    f"OBSERVATION:\n[malformed] Your native {call.get('tool')} call had unparseable "
+                    "arguments. Call it again with valid JSON arguments."})
+                continue
+        else:
+            messages.append({"role": "assistant", "content": reply})
+            call = parse_tool_call(reply)
         if not call:
             # No tool block. Don't bail on prose — the model often narrates (or, as a coding model,
             # dumps a ```python block) before/instead of acting. NUDGE it; only give up after several.
