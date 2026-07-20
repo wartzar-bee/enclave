@@ -88,7 +88,9 @@ _EVENT_TOOL = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit",
 def _event_summary(tool, inp):
     inp = inp or {}
     if tool == "bash":
-        return (inp.get("command", "") or "").strip().replace("\n", " ")[:140]
+        # 140 chars truncated mid-command on almost every real invocation, so the log could show
+        # THAT a command ran but not WHAT it did. Evaluation needs the whole command.
+        return (inp.get("command", "") or "").strip().replace("\n", " ")[:400]
     if tool in ("write", "edit", "read"):
         return inp.get("file_path", "") or ""
     if tool in ("glob", "grep"):
@@ -778,8 +780,15 @@ def run(agent_dir):
         _slot[0] += 1
         if _err:
             _slot[1] += 1
-        _emit_event(sd, {"ts": int(time.time()), "agent": aid, "event": "tool",
+        # Record the RESULT, not just the attempt. events.jsonl was built as the dashboard's live
+        # "doing now" ticker, so it logged the command and discarded `obs` — which meant the only
+        # durable record of an agent's work was a list of truncated command strings with no
+        # outcomes. Evaluating what a pod actually accomplished then requires reconstructing it by
+        # hand from fragments (done painfully on 2026-07-20, and done badly). The operator's ask is
+        # to evaluate work and performance; that needs outcomes attached to actions.
+        _emit_event(sd, {"ts": int(time.time()), "agent": aid, "event": "tool", "step": step,
                          "tool": _EVENT_TOOL.get(tool, tool), "summary": _event_summary(tool, inp),
+                         "ok": not _err, "result": (obs or "")[:400].rstrip(),
                          **({"error": True} if _err else {})})
         messages.append({"role": "user", "content": f"OBSERVATION:\n{obs}"})
         # Lean context: keep system + turn, then trim the tail by a CHAR BUDGET, not a message

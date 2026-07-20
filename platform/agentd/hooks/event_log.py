@@ -17,7 +17,9 @@ MAX_LINES = 800   # keep events.jsonl bounded; trimmed at tick end
 def summarize(tool, inp):
     inp = inp or {}
     if tool == "Bash":
-        return (inp.get("command", "") or "").strip().replace("\n", " ")[:140]
+        # 140 truncated mid-command on almost every real call: the log showed THAT a command ran,
+        # never WHAT it did. Evaluation needs the whole command.
+        return (inp.get("command", "") or "").strip().replace("\n", " ")[:400]
     if tool in ("Write", "Edit", "NotebookEdit", "Read"):
         return inp.get("file_path", "") or ""
     if tool in ("Glob", "Grep"):
@@ -40,9 +42,23 @@ def main():
     if name in ("PreToolUse", "PostToolUse"):
         tool = ev.get("tool_name", "")
         rec.update({"event": "tool", "tool": tool, "summary": summarize(tool, ev.get("tool_input", {}))})
+        # Record the RESULT, not just the attempt. This hook was written as the dashboard's live
+        # activity feed, so it kept the command and dropped the response — leaving a durable record
+        # of actions with no outcomes, which cannot support "evaluate their work and performance".
         tr = ev.get("tool_response")
-        if isinstance(tr, dict) and tr.get("is_error"):
+        err = isinstance(tr, dict) and bool(tr.get("is_error"))
+        rec["ok"] = not err
+        if err:
             rec["error"] = True
+        out = ""
+        if isinstance(tr, dict):
+            out = tr.get("stdout") or tr.get("output") or tr.get("content") or tr.get("error") or ""
+        elif isinstance(tr, str):
+            out = tr
+        if not isinstance(out, str):
+            out = str(out)
+        if out:
+            rec["result"] = out.strip()[:400]
     elif name == "SessionStart":
         rec.update({"event": "tick_start", "source": ev.get("source", "")})
     elif name == "Stop":
