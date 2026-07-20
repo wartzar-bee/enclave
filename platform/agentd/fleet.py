@@ -85,6 +85,56 @@ def _env(dep_dir):
     return d
 
 
+def _override_env(dep_dir):
+    """Environment pinned in docker-compose.override.yml.
+
+    The base .env only passes a handful of vars through, so per-agent brain wiring (BRAIN_MODEL,
+    BRAIN_API_BASE, ...) is pinned in the override's `environment:` block. A console that reads
+    only .env cannot see the brain the pod actually runs — on 2026-07-20 it displayed ideas-scout
+    as `qwen/qwen3-next-80b-a3b-instruct` (a stale MODEL line in .env) while the pod was really
+    running anthropic/claude-sonnet-4.6, i.e. the dashboard reported the exact wrong-brain failure
+    the operator had just paid to fix. Telemetry that lies about the brain is worse than none.
+
+    Deliberately a line parser, not a YAML dep: this file stays dependency-free.
+    """
+    d = {}
+    f = pathlib.Path(dep_dir) / "docker-compose.override.yml" if dep_dir else None
+    if not (f and f.exists()):
+        return d
+    in_env = False
+    for raw in f.read_text(errors="ignore").splitlines():
+        ln = raw.strip()
+        if ln.startswith("#") or not ln:
+            continue
+        if ln.startswith("environment:"):
+            in_env = True
+            continue
+        if in_env:
+            if not ln.startswith("- "):
+                if ln.endswith(":"):      # next key at any level ends the block
+                    in_env = False
+                continue
+            item = ln[2:].strip().strip('"').strip("'")
+            if "=" in item:
+                k, v = item.split("=", 1)
+                # strip trailing inline comment, then quotes
+                v = v.split("#", 1)[0].strip().strip('"').strip("'")
+                d.setdefault(k.strip(), v)   # first occurrence wins, matching compose
+    return d
+
+
+def _model_of(env):
+    """The model the pod ACTUALLY runs, resolved by brain.
+
+    BRAIN=api reads BRAIN_MODEL — MODEL is inert for it, and is routinely left behind as stale
+    cruft from an earlier brain. Preferring MODEL unconditionally is what made the console
+    misreport ideas-scout. For every other brain, MODEL remains authoritative.
+    """
+    if (env.get("BRAIN") or "").strip() == "api":
+        return env.get("BRAIN_MODEL") or env.get("MODEL") or "?"
+    return env.get("MODEL") or env.get("BRAIN_MODEL") or "?"
+
+
 def _port(env):
     b = env.get("WEB_CHAT_BIND", "")
     if ":" in b:
@@ -153,6 +203,7 @@ def snapshot():
         home = _agent_home(name, row["dir"])
         if not home and "enclave" not in name and name not in man:
             continue   # skip non-enclave compose projects we can't resolve a brain for
+        env = {**env, **_override_env(row["dir"])}
         st = _state(home)
         m = man.get(name, {})
         running = "running" in (row["status"] or "").lower()
@@ -161,7 +212,7 @@ def snapshot():
             "up": running,
             "status": row["status"],
             "brain": env.get("BRAIN", "?"),
-            "model": env.get("MODEL") or env.get("BRAIN_MODEL", "?"),
+            "model": _model_of(env),
             "port": _port(env),
             "chat_token": env.get("WEB_CHAT_TOKEN", ""),
             "dir": row["dir"],
@@ -179,14 +230,14 @@ def snapshot():
     for aid, dep in _scan_deployments().items():
         if aid in agents:
             continue
-        env = _env(dep)
+        env = {**_env(dep), **_override_env(dep)}
         home = pathlib.Path(dep) / "home"
         home = home if home.is_dir() else None
         st = _state(home)
         m = man.get(aid, {})
         agents[aid] = {
             "id": aid, "up": False, "status": "stopped",
-            "brain": env.get("BRAIN", "?"), "model": env.get("MODEL") or env.get("BRAIN_MODEL", "?"),
+            "brain": env.get("BRAIN", "?"), "model": _model_of(env),
             "port": _port(env), "chat_token": env.get("WEB_CHAT_TOKEN", ""), "dir": dep,
             "configfile": str(pathlib.Path(dep) / "docker-compose.yml"),
             "home": str(home) if home else "",
