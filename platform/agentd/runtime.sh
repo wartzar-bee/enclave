@@ -232,6 +232,25 @@ PY
   fi
 fi
 
+# Deterministic capability PREFLIGHT (off-Opus, ALL brains) — FUNCTIONALLY verify the toolchain works
+# BEFORE spending a model turn (writes state/capabilities.json; escalates broken required caps). Cached
+# (24h / --force / tooling change). With PREFLIGHT_GATE=1 a broken REQUIRED capability DEFERS the tick
+# (exit 75 → agentloop re-queues, zero tokens burned) instead of the model discovering + mis-diagnosing
+# it mid-tick. ALWAYS runs (fixed 2026-07-20): tick.txt tells every agent to READ capabilities.json
+# FIRST, and this used to sit below the brain dispatch gated on REQUIRES — so BRAIN=api/local pods
+# never got the file at all (channel-lab polled for it 4x/tick), and unset REQUIRES silently skipped
+# it everywhere else. With no REQUIRES it probes an advisory baseline (web, qmd) and never gates.
+PREFLIGHT="$SCRIPT_DIR/preflight.py"; [ -f "$PREFLIGHT" ] || PREFLIGHT="${TOOLS_ROOT:-/workspace}/platform/agentd/preflight.py"
+if [ -f "$PREFLIGHT" ]; then
+  if REQUIRES="${REQUIRES:-}" python3 "$PREFLIGHT" --state "$AGENT_DIR/state" >>"$LOG" 2>&1; then :; else
+    log "preflight: a REQUIRED capability is broken (see state/capabilities.json + state/escalations.log)"
+    if [ "${PREFLIGHT_GATE:-0}" = "1" ]; then
+      log "PREFLIGHT_GATE=1 → deferring this tick (no token burn) until the toolchain is fixed/escalation cleared"
+      exit 75
+    fi
+  fi
+fi
+
 # BRAIN=local (D-061 Phase-2, offline): drive the tick with the LOCAL model brain instead of the
 # Claude Code harness — runs off the Anthropic cap entirely (skip the cap-guard below) and keeps the
 # agent working offline. Same assembled package (CLAUDE.md/tick.txt/memory/qmd/guard hooks/secrets);
@@ -451,21 +470,8 @@ if [ -f "$MEM" ]; then
   python3 "$MEM" --base "$AGENT_DIR" digest > "$AGENT_DIR/state/recall.md" 2>>"$LOG" || true
 fi
 
-# Deterministic capability PREFLIGHT (off-Opus) — FUNCTIONALLY verify the toolchain works BEFORE spending an
-# Opus turn (writes state/capabilities.json; escalates broken required caps). Runs once (cached); re-runs on
-# tooling change / --force. With PREFLIGHT_GATE=1 a broken REQUIRED capability DEFERS the tick (exit 75 →
-# agentloop re-queues, zero Opus burned) instead of the model discovering + mis-diagnosing it mid-tick. This is
-# the framework fix for the "8 wasted ticks" (an HTTPS server was fine but mis-checked → false 'sandbox-blocked').
-PREFLIGHT="$SCRIPT_DIR/preflight.py"
-if [ -n "${REQUIRES:-}" ] && [ -f "$PREFLIGHT" ]; then
-  if REQUIRES="$REQUIRES" python3 "$PREFLIGHT" --state "$AGENT_DIR/state" >>"$LOG" 2>&1; then :; else
-    log "preflight: a REQUIRED capability is broken (see state/capabilities.json + state/escalations.log)"
-    if [ "${PREFLIGHT_GATE:-0}" = "1" ]; then
-      log "PREFLIGHT_GATE=1 → deferring this tick (no Opus burn) until the toolchain is fixed/escalation cleared"
-      exit 75
-    fi
-  fi
-fi
+# (Preflight moved ABOVE the brain dispatch, 2026-07-20 — it ran only on the Claude path here, so
+# BRAIN=api/local pods never got a capabilities.json no matter what they declared.)
 
 # (Housekeeping — log/usage rotation + daily memory compaction — moved to post_tick_shared, which
 # runs at the end of EVERY brain path, so non-Claude pods stopped being exempt from it.)

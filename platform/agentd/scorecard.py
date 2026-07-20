@@ -29,7 +29,7 @@ CLI:
   scorecard.py <agent-dir> summary [-n 20]  # aggregate the last n records (digest/console helper)
   scorecard.py --selftest                   # fixtures replay the REAL 2026-07-19 logan-cross day
 """
-import argparse, calendar, glob as globmod, json, os, pathlib, sys, tempfile, time
+import argparse, calendar, glob as globmod, json, os, pathlib, re, sys, tempfile, time
 
 
 def _utc_epoch(ts):
@@ -238,6 +238,34 @@ def collect(base, t0, now=None):
             cost, subtype = r.get("cost_usd"), r.get("subtype")
             break
 
+    # 8) decision capture + CLAIM PROVENANCE (2026-07-20). Decisions logged this tick, and — the
+    # fabrication tripwire — whether each decision's cited `evidence` is WITNESSED by the tick's
+    # actual tool events. A pod once logged a decision citing web tests it NEVER ran (zero matching
+    # events) and the invented "instrument failure" was believed for a day. Generalises the studio's
+    # experiments_lint idea from one log file to any claim an agent emits: an unwitnessed evidence
+    # string doesn't prove fabrication, but it is exactly where a human should look first.
+    decisions_tick, unwitnessed = 0, 0
+    ev_blob = ""
+    try:
+        ev_blob = " ".join((str(e.get("summary", "")) + " " + str(e.get("result", "")))
+                           for e in _read_jsonl(base / "state" / "events.jsonl", tail=800)
+                           if isinstance(e.get("ts"), (int, float)) and e["ts"] >= t0).lower()
+    except Exception:
+        pass
+    for d in _read_jsonl(base / "state" / "decisions.jsonl", tail=50):
+        dts = _utc_epoch(d.get("ts"))
+        if dts is None or dts < t0 - 1:
+            continue
+        decisions_tick += 1
+        evid = str(d.get("evidence", "")).strip()
+        if not evid or evid.lower() in ("none", "n/a"):
+            continue                       # honestly-unevidenced is fine; tracked by the report
+        # tokens worth witnessing: URLs, file paths, commands — any long token from the evidence
+        toks = [t for t in re.split(r"[\s,;()\[\]{}'\"]+", evid)
+                if len(t) >= 8 and ("/" in t or "." in t)]
+        if toks and not any(t.lower() in ev_blob for t in toks):
+            unwitnessed += 1
+
     def _lines(p):
         try:
             return sum(1 for _ in open(p, errors="replace"))
@@ -257,6 +285,7 @@ def collect(base, t0, now=None):
         "churn_alarm": churn_alarm,
         "serves": serves, "serves_valid": serves_valid, "serves_observed": serves_observed,
         "work_done": done_this, "work_done_verified": done_verified,
+        "decisions": decisions_tick, "decisions_unwitnessed": unwitnessed,
         "tick_cost_usd": cost, "subtype": subtype,
         "cursors": {"escalations_lines": _lines(base / "state" / "escalations.log"),
                     "egress_lines": _lines(base / "state" / "egress-policy.log")},

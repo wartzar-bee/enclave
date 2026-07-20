@@ -571,7 +571,13 @@ The remaining tools use a JSON ```tool block (their args are short — no quote-
 - rlm       {"tool":"rlm","input":{"query":"...","file":"big.log"}}  reason over a HUGE file/blob
             (chunks + map-reduces it on the cheap brain — use when one file is too big to read in full)
 - escalate  {"tool":"escalate","input":{"question":"...","context":"..."}}  HARD judgment → external model
-- finish    {"tool":"finish","input":{"summary":"what you did + evidence"}}
+- finish    {"tool":"finish","input":{"summary":"what you did + evidence",
+             "decisions":[{"decision":"...","why":"...","evidence":"cmd/URL/observation that backs it — or the word none","rejected"?:"...","confidence"?:"high|medium|low"}]}}
+            The runtime writes `decisions` to state/decisions.jsonl (your reasoning is REVIEWED, not
+            just your output). Log every real decision made this tick; a routine tick with none is
+            fine — pass "decisions":[]. `evidence` must be something you actually OBSERVED via a tool
+            THIS tick (it is cross-checked against the event log); if you have none, write "none" —
+            an honest guess is fine, a narrated observation you never received is fabrication.
 
 Rules:
 - You are a LOCAL worker model: do BOUNDED, verifiable work yourself (build/edit/run/measure/scan/
@@ -667,6 +673,7 @@ def run(agent_dir):
 
     nudges = 0
     seen_calls = {}                                        # signature → count (anti-repetition)
+    finish_nudged = False                                  # decisions-at-finish: one nudge, never a wedge
     produce_by = max(4, int(max_steps * 0.6))             # after this, force produce+finish (anti-wander)
     forced = False
     for step in range(1, max_steps + 1):
@@ -746,16 +753,53 @@ def run(agent_dir):
                 'where <name> is one of bash/read/write/edit/glob/grep/qmd/escalate/finish. Try again.'})
             continue
         if tool == "finish":
-            log(f"finish: {inp.get('summary','')[:200]}")
+            # Decision capture is a RUNTIME MECHANISM, not brief prose (2026-07-20: "an instruction
+            # agents can ignore is not a mechanism" — channel-lab ignored the logging convention for
+            # a full day). The finish contract carries `decisions`; the RUNTIME writes the file, so
+            # capture cannot be skipped silently. One nudge if the key is missing after a working
+            # tick; a second finish always succeeds (never wedge an agent on paperwork).
+            decs = inp.get("decisions")
+            worked = sum(n for n, _ in _tool_n.values()) >= 5
+            if decs is None and worked and not finish_nudged:
+                finish_nudged = True
+                messages.append({"role": "user", "content":
+                    'OBSERVATION:\n[finish needs `decisions`] You did real work this tick but your '
+                    'finish carried no "decisions" list. Re-emit finish WITH it: every real decision '
+                    'as {"decision","why","evidence"} — evidence = a command/URL/observation you '
+                    'actually received THIS tick, or the word "none". If the tick truly decided '
+                    'nothing, pass "decisions":[].'})
+                continue
+            if isinstance(decs, dict):
+                decs = [decs]
+            if isinstance(decs, list):
+                try:
+                    with (sd / "decisions.jsonl").open("a") as fh:
+                        now_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+                        for d in decs:
+                            if isinstance(d, dict) and d.get("decision"):
+                                fh.write(json.dumps({"ts": now_iso, **d, "_by": "finish",
+                                                     "_steps": step}) + "\n")
+                except Exception:
+                    pass
+            log(f"finish: {inp.get('summary','')[:200]} ({len(decs) if isinstance(decs, list) else 0} decision(s))")
             # Log the finish itself BEFORE returning — the old code returned before the per-tool
             # emit, so events.jsonl held no trace of an explicit finish and "count Finish events"
             # measured the logger, not the agent (evaluation I-1).
             _emit_event(sd, {"ts": int(time.time()), "agent": aid, "event": "tool", "tool": "finish",
-                             "summary": (inp.get("summary", "") or "")[:200]})
+                             "summary": (inp.get("summary", "") or "")[:200],
+                             "decisions": len(decs) if isinstance(decs, list) else 0})
             return _finish(0, "ok")
         allow, reason = guard_check(agent_dir, hook, tool, inp)
         if not allow:
             log(f"step {step}: {tool} BLOCKED — {reason}")
+            # Blocked calls MUST leave an event trace (2026-07-20): a guard-blocked call used to
+            # vanish from events.jsonl entirely, so when a pod then NARRATED results for the call it
+            # never ran, the audit trail could neither confirm nor refute it. Every attempt is
+            # auditable now — the event log is the instrument the fabrication check reads.
+            _emit_event(sd, {"ts": int(time.time()), "agent": aid, "event": "tool", "step": step,
+                             "tool": _EVENT_TOOL.get(tool, tool), "blocked": True, "ok": False,
+                             "summary": _redact(_event_summary(tool, inp)),
+                             "result": _redact(f"[BLOCKED by guard] {reason}")[:400]})
             messages.append({"role": "user", "content": f"OBSERVATION:\n[BLOCKED by guard] {reason}"})
             continue
         # Anti-repetition: a read-only call repeated verbatim is wasted budget (a wander symptom).

@@ -14,8 +14,14 @@ the point is to prove the toolchain works BEFORE the model spends a token, not t
 remember to check.
 
 REQUIRES resolution (first found): --requires a,b,c  →  env REQUIRES  →  state/requires.json (JSON list).
-Known capabilities: route, render, qmd, codegraph, image, deploy_key, voice, gcloud. Unknown names are
-recorded as ok=null ("no probe") — never block on those.
+Known capabilities: route, render, qmd, codegraph, image, deploy_key, voice, gcloud, web, delivery.
+Unknown names are recorded as ok=null ("no probe") — never block on those.
+
+CONTRACT (fixed 2026-07-20): capabilities.json is ALWAYS written, every agent, every boot — the
+tick prompt tells agents to READ it FIRST, so its absence is a framework bug, not a config choice.
+With no REQUIRES declared, a BASELINE probe set (web, qmd) runs ADVISORY-only: results are recorded
+but never escalate and never gate. (channel-lab polled a file that was never written for 4 ticks
+because preflight was silently skipped when REQUIRES was unset.)
 """
 import os, sys, json, time, ssl, subprocess, pathlib, urllib.request, argparse
 
@@ -86,8 +92,44 @@ def probe_gcloud(env):
     return st == 200, f"gcloud bridge health={st}"
 
 
+def probe_web(env):
+    """FUNCTIONAL web egress: can this container GET a real page and see real content?
+    Exists because a pod once claimed its web access "returns mocked responses" and nobody could
+    check the claim against an instrument — now the instrument checks itself every boot. Two
+    independent hosts so one being down doesn't read as "egress broken"."""
+    for url, marker in (("https://example.com/", "Example Domain"),
+                        ("https://httpbin.org/get", '"Host"')):
+        st, body = _http(url, 8)
+        if st == 200 and marker in body:
+            return True, f"egress OK: GET {url} → 200 with expected content"
+        if st == 200:
+            return False, f"GET {url} → 200 but UNEXPECTED content (proxy/mock?): {body[:80]!r}"
+    return False, "no probe URL reachable (egress down or filtered)"
+
+
+def probe_delivery(env):
+    """Is this agent's output pipeline CONNECTED? The delivery daemon (deliver.py, host-side or
+    in-pod) touches a heartbeat file each run; a stale/missing heartbeat means outputs are being
+    filed into a pipe attached to nothing (ideas-scout ran for days like that — permanent false
+    STARVED). Configure DELIVERY_MARKER (+ optional DELIVERY_MAX_AGE_H, default 3)."""
+    marker = env.get("DELIVERY_MARKER", "")
+    if not marker:
+        return None, "no DELIVERY_MARKER configured (not verified)"
+    max_age = float(env.get("DELIVERY_MAX_AGE_H", "3")) * 3600
+    try:
+        age = time.time() - os.path.getmtime(marker)
+    except OSError:
+        return False, f"delivery heartbeat {marker} missing — output pipeline NOT connected"
+    return (age <= max_age), (f"delivery heartbeat {int(age/60)}m old"
+                              + ("" if age <= max_age else f" (> {int(max_age/60)}m — daemon stalled?)"))
+
+
 PROBES = {"route": probe_route, "render": probe_render, "qmd": probe_qmd, "codegraph": probe_codegraph,
-          "image": probe_image, "deploy_key": probe_deploy_key, "voice": probe_voice, "gcloud": probe_gcloud}
+          "image": probe_image, "deploy_key": probe_deploy_key, "voice": probe_voice, "gcloud": probe_gcloud,
+          "web": probe_web, "delivery": probe_delivery}
+
+# Probed for EVERY agent even with no REQUIRES — advisory-only (recorded, never escalates/gates).
+BASELINE = ["web", "qmd"]
 
 
 def main():
@@ -105,15 +147,18 @@ def main():
             reqs = json.loads((st / "requires.json").read_text())
         except Exception:
             reqs = []
-    if not reqs:
-        print("preflight: no REQUIRES declared — skipping (nothing to verify)")
-        return 0
 
-    # cached: skip if the last run covered the same reqs and all were ok (re-run on --force / tooling change)
+    # The full probe list = REQUIRED (may escalate/gate) + BASELINE (advisory-only, every agent).
+    probe_list = list(reqs) + [b for b in BASELINE if b not in reqs]
+
+    # cached: skip if the last run covered the same reqs, all required were ok, and it is <24h old
+    # (re-run on --force / tooling change). The freshness bound keeps a long-running pod's
+    # capabilities.json from asserting a toolchain state probed weeks ago.
     if capfile.exists() and not a.force:
         try:
             prev = json.loads(capfile.read_text())
-            if prev.get("_reqs") == sorted(reqs) and all(prev.get(r, {}).get("ok") for r in reqs):
+            fresh = (time.time() - float(prev.get("_ts", 0))) < 86400
+            if fresh and prev.get("_reqs") == sorted(reqs) and all(prev.get(r, {}).get("ok") for r in reqs):
                 print("preflight: capabilities.json fresh + all required OK — skip")
                 return 0
         except Exception:
@@ -122,19 +167,21 @@ def main():
     env = dict(os.environ); env.setdefault("AGENT_DIR", str(st.parent))
     results = {"_ts": int(time.time()), "_reqs": sorted(reqs)}
     broken = []
-    for r in reqs:
+    for r in probe_list:
+        required = r in reqs
         probe = PROBES.get(r)
         if not probe:
-            results[r] = {"ok": None, "detail": "no probe for this capability (not verified)"}
+            results[r] = {"ok": None, "required": required, "detail": "no probe for this capability (not verified)"}
             print(f"  [ -- ] {r}: no probe")
             continue
         try:
             ok, detail = probe(env)
         except Exception as e:
             ok, detail = False, f"probe error: {e}"
-        results[r] = {"ok": ok, "detail": detail}
-        print(f"  [{'OK ' if ok else 'FAIL'}] {r}: {detail}")
-        if not ok:
+        results[r] = {"ok": ok, "required": required, "detail": detail}
+        tag = "OK " if ok else ("-- " if ok is None else "FAIL")
+        print(f"  [{tag}] {r}{'' if required else ' (baseline)'}: {detail}")
+        if ok is False and required:
             broken.append(r)
     capfile.write_text(json.dumps(results, indent=2))
 

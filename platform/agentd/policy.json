@@ -2,29 +2,39 @@
   "_doc": "LLM pools for BRAIN=optimize. EVERY pool is an OpenAI-compatible chat endpoint — so ANY provider works: just give base_url + api_key_env + model. Add xAI / OpenAI / Groq / DeepSeek / OpenRouter / a local mlx/ollama server by adding a pool here. `enclave init` (optimize) seeds this from your answers; edit it anytime to add/remove pools.",
   "_routing_doc": "route_brain.py runs Claude (the subscription — free at the margin) while its 5h/7d cap has headroom, tiered Opus(judgment)/Sonnet(mechanical). As the cap fills it shifts work to the CHEAPEST reachable pool below (by `cost`: free local → low → high), preferring `local` for privacy/$0; judgment work prefers a higher-cost pool, mechanical prefers the cheapest. Pools are pinged first and skipped if unreachable or missing a key — so it always degrades gracefully back to Claude.",
   "cap": { "soft_pct": 70, "hard_pct": 90, "_doc": "Claude subscription utilization (5h or 7d, whichever higher). < soft: all on Claude. soft..hard: mechanical work leaves Claude. >= hard: everything leaves Claude (don't burn/wait on the cap)." },
+  "review": {
+    "_doc": "Routing for the review() primitive (review.py). The caller declares criticality + independence; THIS decides the judge. Free tiers are refused for review (measured 2026-07-20: free qwen scored 5.0/5 ADVANCE on all candidates — a rubber stamp; Opus/DeepSeek discriminated honestly at 2.2–3.0).",
+    "tiers": {
+      "critical":  { "pool": "top", "model": "anthropic/claude-opus-4-8" },
+      "important": { "pool": "top" },
+      "routine":   { "pool": "cheap" }
+    },
+    "independent": { "pool": "top", "model": "deepseek/deepseek-v4-pro", "family": "deepseek",
+                     "_doc": "cross-family second opinion — a judge from the generator's own family agrees with the generator" }
+  },
   "pools": {
     "local": {
       "base_url": "http://host.docker.internal:8081/v1",
       "api_key_env": "LOCAL_LLM_KEY", "api_key_default": "x",
-      "model": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit", "cost": "free", "local": true,
+      "model": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit", "cost": "free", "local": true, "family": "nvidia",
       "_doc": "A local OpenAI-compatible server (mlx_lm on :8081, or ollama on :11434/v1). $0, private, no cap. Default = NVIDIA Nemotron-3 Nano (30B-A3B MoE, agentic tool-calling) on the host MLX bridge. Swap `model` for any tag the server serves; blank base_url/model = no local pool."
     },
     "cheap": {
       "base_url": "https://openrouter.ai/api/v1",
       "api_key_env": "OPENROUTER_API_KEY",
-      "model": "google/gemini-2.5-flash", "cost": "low", "local": false,
+      "model": "google/gemini-2.5-flash", "cost": "low", "local": false, "family": "google",
       "_doc": "A cheap remote pool. Example: OpenRouter gemini-flash. Swap base_url+model for any provider."
     },
     "top": {
       "base_url": "https://openrouter.ai/api/v1",
       "api_key_env": "OPENROUTER_API_KEY",
-      "model": "anthropic/claude-sonnet-4.6", "cost": "high", "local": false,
+      "model": "anthropic/claude-sonnet-4.6", "cost": "high", "local": false, "family": "anthropic",
       "_doc": "A frontier remote pool for hard work when Claude's cap is exhausted."
     },
     "nvidia": {
       "base_url": "https://integrate.api.nvidia.com/v1",
       "api_key_env": "NVIDIA_API_KEY",
-      "model": "nvidia/nvidia-nemotron-nano-9b-v2", "cost": "low", "local": false,
+      "model": "nvidia/nvidia-nemotron-nano-9b-v2", "cost": "low", "local": false, "family": "nvidia",
       "_doc": "NVIDIA NIM hosted endpoints (build.nvidia.com — OpenAI-compatible, free tier). Put NVIDIA_API_KEY in secrets/nvidia.env. Swap model for any build.nvidia.com id, e.g. nvidia/llama-3.3-nemotron-super-49b-v1 (stronger). Skipped automatically until the key is present."
     },
     "_example_xai": {
