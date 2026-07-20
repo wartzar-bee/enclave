@@ -237,6 +237,15 @@ PY
 )"
   if python3 -c "import sys; sys.exit(0 if float('${WK_SPENT:-0}') < float('${WEEKLY_CAP}') else 1)" 2>/dev/null; then
     log "external spend (7d): \$${WK_SPENT} of \$${WEEKLY_CAP} weekly cap"
+    # Alarm LIFECYCLE (dashboard truth review T2, 2026-07-20): the runtime knows the moment the
+    # condition clears (window rolled / cap raised) — write the resolution so the console's red
+    # banner drains itself. A stale "ticks DEFER" alarm sat pinned on every tab for hours after
+    # the cap was raised because only the RAISE side was ever automated.
+    SPEND_STAMP="$AGENT_DIR/state/.spend-cap-alerted"
+    if [ -f "$SPEND_STAMP" ]; then
+      echo "$(date -u +%FT%TZ) NOTE :: RESOLVED [budget:external] ${AGENT_ID} — spend \$${WK_SPENT} is back under the \$${WEEKLY_CAP} weekly cap; ticks resume." >> "$AGENT_DIR/state/escalations.log"
+      rm -f "$SPEND_STAMP"
+    fi
   else
     log "EXTERNAL SPEND CAP: \$${WK_SPENT} ≥ \$${WEEKLY_CAP} in the last 7d — DEFER (raise API_BUDGET_WEEKLY_USD or wait for the window to roll)"
     SPEND_STAMP="$AGENT_DIR/state/.spend-cap-alerted"
@@ -295,14 +304,19 @@ if [ "${BRAIN:-claude}" = "api" ]; then
   # (openrouter + deepseek/deepseek-chat) whenever BRAIN_MODEL was unset — both live pods burned
   # real money for a day behind docs claiming "$0". Undetectable fail-open is banned (D-100):
   # refuse the tick, escalate once per 6h, DEFER (75) so an operator fix resumes it cleanly.
+  BSTAMP="$AGENT_DIR/state/.brain-config-alerted"
   if [ -z "${BRAIN_MODEL:-}" ]; then
     log "FATAL: BRAIN=api but BRAIN_MODEL is unset — refusing to default to a paid model. Set BRAIN_MODEL/BRAIN_API_BASE/BRAIN_API_KEY_ENV."
-    BSTAMP="$AGENT_DIR/state/.brain-config-alerted"
     if [ ! -f "$BSTAMP" ] || [ $(( NOW - $(_mtime "$BSTAMP") )) -gt 21600 ] 2>/dev/null; then
       echo "$(date -u +%FT%TZ) ESCALATE :: [brain:config] ${AGENT_ID} — BRAIN=api with BRAIN_MODEL unset; ticks DEFER until the pod env sets BRAIN_MODEL (+ BRAIN_API_BASE/BRAIN_API_KEY_ENV)." >> "$AGENT_DIR/state/escalations.log"
       : > "$BSTAMP"
     fi
     exit 75
+  fi
+  # Lifecycle: config fixed → resolve the alarm (T2).
+  if [ -f "$BSTAMP" ]; then
+    echo "$(date -u +%FT%TZ) NOTE :: RESOLVED [brain:config] ${AGENT_ID} — BRAIN_MODEL is set (${BRAIN_MODEL}); ticks resume." >> "$AGENT_DIR/state/escalations.log"
+    rm -f "$BSTAMP"
   fi
   # Spend cap: handled by the brain-agnostic WEEKLY gate above (fix #8) — the old cumulative-forever
   # API_BUDGET_USD check lived here and permanently bricked an agent once lifetime spend crossed it.

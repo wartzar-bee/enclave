@@ -55,12 +55,18 @@ def _i(r, k):
 # Counting it as a "failed tick" makes a deliberate cost cap read as breakage (false Degraded).
 _EXPECTED_STOPS = {"error_max_turns"}
 
+# Subtypes that mean the tick ENDED CLEANLY. The Claude path writes "success"; the BRAIN=api/local
+# path (local_agent.py _finish) writes "ok". Accepting only "success" made every healthy api-brain
+# tick count as failed — a live pod (9/10 ticks rc=0 subtype=ok) rendered as red "Failing /
+# PROCESS SUCCESS 0%" on the console (found + fixed 2026-07-20, dashboard truth review T1).
+_SUCCESS_SUBTYPES = {"success", "ok"}
+
 
 def _tick_failed(r):
     """True only for a REAL process failure — excludes intentional MAX_TURNS caps."""
     if (r.get("subtype") or "success") in _EXPECTED_STOPS:
         return False
-    return _i(r, "rc") != 0 or (r.get("subtype") or "success") != "success"
+    return _i(r, "rc") != 0 or (r.get("subtype") or "success") not in _SUCCESS_SUBTYPES
 
 
 def parse_ts(s):

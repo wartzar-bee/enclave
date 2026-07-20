@@ -185,13 +185,22 @@ def main():
             broken.append(r)
     capfile.write_text(json.dumps(results, indent=2))
 
+    stamp = st / ".preflight-alerted"
     if broken:
         with (st / "escalations.log").open("a") as f:
-            f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} PREFLIGHT: required capability BROKEN "
+            f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} ESCALATE :: [preflight] required capability BROKEN "
                     f"→ {broken}. See state/capabilities.json. FIX the tool/env (or the probe if it's a false "
                     f"negative — e.g. server needs to be up); do NOT abandon it as 'blocked' and build unverifiable work.\n")
+        stamp.write_text(",".join(broken))
         print(f"preflight: BROKEN required capabilities: {broken} → escalated")
         return 3
+    # Alarm lifecycle (T2, 2026-07-20): the probe knows the moment the capability is back — write
+    # the resolution so the console's alarm drains instead of pinning forever.
+    if stamp.exists():
+        with (st / "escalations.log").open("a") as f:
+            f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} NOTE :: RESOLVED [preflight] "
+                    f"previously-broken capability(ies) [{stamp.read_text().strip()}] now probe OK.\n")
+        stamp.unlink(missing_ok=True)
     print("preflight: all required capabilities OK")
     return 0
 

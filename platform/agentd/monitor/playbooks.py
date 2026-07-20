@@ -203,6 +203,17 @@ _up_but_unreachable = Playbook(
 def _stalled_match(diag, home, snap, ctx):
     if not snap.get("up") or env_get(home, "SUPERVISE") != "auto":
         return False
+    # A PAUSED pod not ticking is the operator's intent, not a stall — this false-alarmed for 383h
+    # on a deliberately-parked agent (dashboard truth review T3, 2026-07-20). The snapshot's tick
+    # state and the state/paused flag are both honored (belt + suspenders across fleet versions).
+    if snap.get("tick") == "paused":
+        return False
+    try:
+        import pathlib as _pl
+        if home and (_pl.Path(home) / "state" / "paused").exists():
+            return False
+    except Exception:
+        pass
     last = snap.get("last_seen") or 0
     return last > 0 and (ctx.get("now", 0) - last) > ctx.get("no_tick_seconds", 6 * 3600)
 

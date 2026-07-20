@@ -366,7 +366,7 @@ def _monitor_alerts():
                     "msg": "Monitor: " + "; ".join(highs[:4]) + (" …" if len(highs) > 4 else "") + " — see Monitor tab"})
     elif actionable:
         out.append({"level": "warn",
-                    "msg": f"Monitor: {actionable} agent(s) need attention — see Monitor tab"})
+                    "msg": f"Monitor: {actionable} alerting agent(s) with findings — see Monitor tab"})
     return out
 
 
@@ -389,6 +389,11 @@ def _build_graph(snap, paths, wtd_agents):
     nodes, have = [], set()
     for aid in sorted(ids):
         a = snap.get(aid, {})
+        # Graveyard filter (truth review T4): a pod that is DOWN and hasn't been seen in >7 days is
+        # a killed/parked deployment, not fleet topology — rendering it (goodnight-tales, graveyard'd
+        # weeks ago) makes the map read as bigger and sicker than the real fleet.
+        if not a.get("up") and (time.time() - (a.get("last_seen") or 0)) > 7 * 86400:
+            continue
         nodes.append({
             "id": aid,
             "manager": a.get("manager") or man.get(aid, {}).get("manager", "") or "",
@@ -787,6 +792,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
       <button class="btn" onclick="openChat()">↗ Chat tab</button></div>
     <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
       <span class="tab" data-t="activity" onclick="tab('activity')">Activity</span>
+      <span class="tab" data-t="decisions" onclick="tab('decisions')">Decisions</span>
       <span class="tab" data-t="diag" onclick="tab('diag')">Status</span>
       <span class="tab" data-t="config" onclick="tab('config')">Config</span>
       <span class="tab" data-t="skills" onclick="tab('skills')">Skills</span>
@@ -868,18 +874,29 @@ function toggleFleetMap(){_fleetMapOpen=!_fleetMapOpen;try{localStorage.setItem(
 const STATUS={
   working:{label:"Working",col:"--ok"},      // up + mid-tick
   idle:{label:"Idle",col:"--idle"},          // up + reachable, between ticks
+  paused:{label:"Paused",col:"--off"},       // up but deliberately stopped (state/paused) — NOT a failure, NOT plain idle
+  overdue:{label:"Overdue",col:"--err"},     // up, not paused, but no tick in >2× its interval — loop wedged/dead
   unreachable:{label:"Unreachable",col:"--err"}, // up but chat port not answering — needs attention
-  offline:{label:"Offline",col:"--off"},     // not running (stopped/paused/exited)
+  offline:{label:"Offline",col:"--off"},     // not running (stopped/exited)
 };
 function statusKey(a){
   if(!a||!a.up)return"offline";
+  if(a.tick==="paused")return"paused";       // truth review T3: paused-by-design must never render as Idle
   if(a.tick==="working")return"working";
   if(a.reachable===false)return"unreachable";
+  if(a.interval_s&&a.hb_age_s!=null&&a.hb_age_s>2*a.interval_s)return"overdue";
   return"idle";
+}
+/* schedule-aware idle: for a tick-based agent "Idle" is healthy — say when it fires next. */
+function nextTickTxt(a){
+  if(!a||!a.up||a.tick!=="idle"||!a.interval_s||a.hb_age_s==null)return"";
+  const rem=a.interval_s-a.hb_age_s;
+  return rem>0?` · next tick ~${rem>5400?Math.round(rem/3600)+"h":Math.max(1,Math.round(rem/60))+"m"}`:"";
 }
 function statusCol(k){return cssv((STATUS[k]||STATUS.offline).col);}
 function statusPill(a){const k=statusKey(a);return `<span class="dot ${k}"></span><span class="slabel ${k}">${STATUS[k].label}</span>`;}
 function shortModel(m){return (m||"").replace("claude-","")||"?";}
+function fmtDur(s){if(!s||isNaN(s))return"?";return s>=5400?Math.round(s/3600)+"h":s>=90?Math.round(s/60)+"m":s+"s";}
 /* ---------- Agents view ---------- */
 function byId(x,y){return x.id<y.id?-1:1;}
 function kidsOf(id){return Object.values(agents).filter(a=>a.manager===id);}   // direct sub-agents
@@ -892,7 +909,7 @@ function railRow(a,depth){
   const badge=mgr?`<span class="mgrbadge" title="manages ${n} sub-agent(s)">FLEET ·${n}</span>`:"";
   return `<div class="row${sel===a.id?' sel':''}${master?' master':''}" onclick="pick('${a.id}')" style="padding-left:${pad}px">
     ${tree}<span class="dot ${k}"></span><div style="min-width:0"><div class="rid">${crown}${esc(a.id)}${badge}</div>
-    <div class="rmeta"><span class="slabel ${k}">${STATUS[k].label}</span> · ${esc(a.brain)}/${esc(shortModel(a.model))} · :${a.port}${a.work_open?" · work "+a.work_open:""}</div></div></div>`;
+    <div class="rmeta"><span class="slabel ${k}">${STATUS[k].label}</span>${nextTickTxt(a)} · ${esc(a.brain)}/${esc(shortModel(a.model))} · :${a.port}${a.work_open?" · work "+a.work_open:""}${a.subtitle?`<br><span class="s">${esc(a.subtitle)}</span>`:""}</div></div></div>`;
 }
 function render(){
   const s=document.getElementById("search");const f=(s.value||"").toLowerCase();
@@ -957,6 +974,7 @@ function tab(t){curtab=t;if(window._logTimer){clearInterval(window._logTimer);wi
   if(t==="chat"){p.innerHTML=`<iframe src="http://127.0.0.1:${a.port}/?theme=${theme()}${chatTok(a)}" allow="microphone; clipboard-write"></iframe>`;}
   else if(t==="activity"){renderActivity();window._logTimer=setInterval(()=>{if(curtab==="activity"&&!_paused&&_due("act"))renderActivity(true);},3000);}
   else if(t==="status"){renderDiag(a);}   /* Status merged into Diagnostics (2026-06-27) */
+  else if(t==="decisions"){renderDecisions(a);}
   else if(t==="diag"){renderDiag(a);}
   else if(t==="config"){renderConfig(a);}
   else if(t==="skills"){renderSkills(a);}
@@ -996,6 +1014,37 @@ function trendBadge(pct,goodWhenDown){if(pct==null)return '<span class="s" style
   return `<span style="color:${col};font-weight:600">${up?"▲":"▼"}${up?"+":""}${pct}%</span>`;}
 function kpi(label,value,trendHtml,sub){return `<div class="card" style="min-width:128px"><div class="k">${label}</div>
   <div class="v">${value}</div><div class="s">${trendHtml||""}${sub?(trendHtml?" · ":"")+sub:""}</div></div>`;}
+/* ---- Decisions tab (D1/D2, 2026-07-20): WHY the agent acted + whether claims VERIFY ---- */
+async function renderDecisions(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading decisions…</div>';
+  let d;try{d=await(await fetch(qs(`/api/reasoning?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">reasoning unavailable</div>';return;}
+  if(d.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(d.error)+'</div>';return;}
+  const wbadge=w=>w==="unwitnessed"?'<span style="color:var(--err);font-weight:600" title="the cited evidence matches NO tool observation this agent actually received — look here first">⚠ unwitnessed</span>'
+    :w==="none-declared"?'<span style="color:var(--mut)" title="the agent honestly declared no evidence — a labelled guess, fine">no evidence (declared)</span>'
+    :w==="witnessed"?'<span style="color:var(--ok)" title="cited evidence appears in the agent\'s actual tool observations">✓ witnessed</span>':"";
+  const decs=(d.decisions||[]).map(x=>`<div class="card" style="margin-bottom:8px">
+      <div style="display:flex;gap:8px;align-items:baseline"><b style="flex:1">${esc(x.decision||"?")}</b>
+        <span class="s mono" style="color:var(--mut);white-space:nowrap">${esc((x.ts||"").slice(0,16))}</span></div>
+      <div class="s" style="margin-top:3px"><b>why:</b> ${esc(x.why||"—")}</div>
+      <div class="s"><b>evidence:</b> ${esc(String(x.evidence||"none")).slice(0,300)} · ${wbadge(x._witness)}</div>
+      ${x.rejected?`<div class="s"><b>rejected:</b> ${esc(String(x.rejected)).slice(0,200)}</div>`:""}
+      ${x.confidence?`<div class="s" style="color:var(--mut)">confidence: ${esc(x.confidence)}</div>`:""}</div>`).join("")
+    ||'<div class="s" style="color:var(--mut);padding:10px">No decisions logged yet. The runtime writes them at each finish — they appear as the agent ticks.</div>';
+  const cons=(d.contracts||[]).map(c=>`<div class="s" style="display:flex;gap:8px;padding:3px 0">
+      <span style="color:${c.pass?"var(--ok)":"var(--err)"};font-weight:600">${c.pass?"PASS":"FAIL"}</span>
+      <span class="mono">${esc(c.contract||"")}</span><span style="flex:1">${esc(c.desc||"")}</span>
+      <span style="color:var(--mut)">${esc((c.ts||"").slice(0,16))}</span></div>
+      ${c.pass?"":`<div class="s" style="color:var(--err);padding-left:14px">${esc(String(c.detail||"")).slice(0,160)} — CLAIMED-NOT-VERIFIED</div>`}`).join("")
+    ||'<div class="s" style="color:var(--mut)">no completion contracts evaluated yet</div>';
+  const revs=(d.reviews||[]).map(r=>`<div class="s" style="display:flex;gap:8px;padding:3px 0">
+      <span class="mono">${esc(r.pool||"")}/${esc((r.model||"").split("/").pop())}</span>
+      <span>mean ${r.mean!=null?r.mean:"—"}</span><b>${esc(r.recommendation||r.error||"")}</b>
+      <span style="flex:1"></span><span style="color:var(--mut)">${r.ts?_agoS(Date.now()/1000-r.ts):""}</span></div>`).join("")
+    ||'<div class="s" style="color:var(--mut)">no reviews recorded yet</div>';
+  p.innerHTML=`<div style="padding:14px;overflow:auto;height:100%">
+    ${secCard("verif","✅ verification — do the claims hold?"+ic("Completion contracts (a claimed directive-serve is re-checked by the runtime) and review() verdicts. FAIL = the agent said done and the check disagreed."),cons+(d.reviews&&d.reviews.length?'<div style="border-top:1px solid var(--bd);margin-top:6px;padding-top:6px">'+revs+'</div>':""))}
+    <div class="s" style="margin:10px 2px;color:var(--mut)">DECISIONS — newest first · runtime-written at finish · evidence cross-checked against the agent's real tool observations</div>
+    ${decs}</div>`;
+}
 async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML='<div style="padding:16px">loading diagnostics…</div>';
   let d;try{d=await(await fetch(qs(`/api/diagnostics?id=${encodeURIComponent(sel)}`))).json();}catch(e){p.innerHTML='<div style="padding:16px;color:var(--err)">diagnostics unavailable (agent has no home dir on this host)</div>';return;}
   if(d.error){p.innerHTML='<div style="padding:16px;color:var(--err)">'+esc(d.error)+'</div>';return;}
@@ -1005,7 +1054,7 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
   const ctx=m.context||{},cost=m.cost||{},dur=m.duration||{},cache=m.cache_pct||{},turns=m.turns||{};
   const winLbl=d.window==="week"?"vs last week":d.window==="split"?"vs earlier ticks":"building history";
   /* health banner */
-  const lr=(ov.last||{})[sel]||{};const c=(((ov.usage||{}).wtd||{}).agents||{})[sel]||{};
+  const lr=d.last_record||((ov.last||{})[sel]||{});const c=d.wtd||((((ov.usage||{}).wtd||{}).agents||{})[sel]||{});
   let html=`<div style="padding:14px 16px;overflow:auto">
     <div class="card" style="margin-bottom:12px"><div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
       <div><div class="v" style="font-size:15px">${statusPill(a)}</div><div class="s" style="margin-top:2px"><span class="mono">${esc(a.status)}</span> · ${esc(a.brain)}/${esc(shortModel(a.model))} · :${a.port}<br>${a.kind==="standalone"?"standalone enclave":(isManager(a.id)?"♛ manages "+kidsOf(a.id).length+" sub-agent(s)":"fleet · ↳ "+esc(a.manager||"—"))} · chat ${a.reachable?"reachable":"<span style='color:var(--err)'>unreachable</span>"} · open work ${a.work_open||0}</div></div>
@@ -1019,6 +1068,17 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
         <div><div class="v" style="font-size:16px;color:${HEALTHC[h.level]||"var(--tx)"}">${esc(h.label||"")}</div>
         <div class="s">${esc(h.reason||"")}</div></div>
         <span style="flex:1"></span><div class="s" style="text-align:right">${d.ticks_total} ticks logged<br>trends ${winLbl}</div></div></div>`;
+  /* D3/D4: mechanisms + capabilities — what this pod is ACTUALLY running (Config shows intent;
+     these chips show the runtime's own per-tick report; INACTIVE red = a silently-dead mechanism). */
+  const mech=(d.effective_config||{}).mechanisms||null,caps=d.capabilities||null;
+  if(mech||caps){
+    const mchips=mech?Object.entries(mech).map(([k,v])=>`<span class="mono s" title="${esc(v.why||"")}" style="padding:2px 8px;border-radius:10px;border:1px solid var(--bd);${v.active?"color:var(--ok)":"color:var(--err);font-weight:600"}">${v.active?"●":"○"} ${esc(k)}</span>`).join(" "):"";
+    const cchips=caps?Object.entries(caps).filter(([k])=>!k.startsWith("_")).map(([k,v])=>`<span class="mono s" title="${esc(v.detail||"")}" style="padding:2px 8px;border-radius:10px;border:1px solid var(--bd);color:${v.ok===false?"var(--err)":v.ok?"var(--ok)":"var(--mut)"}">${v.ok===false?"✗":v.ok?"✓":"·"} ${esc(k)}</span>`).join(" "):"";
+    html+=`<div class="card" style="margin-bottom:12px"><div class="k">MECHANISMS — what is actually ACTIVE ${ic("From the runtime's per-tick effective-config report. An INACTIVE mechanism everyone believes is running is the framework's worst silent-failure class — hover a chip for why.")}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${mchips||'<span class="s" style="color:var(--mut)">no effective-config report yet (pod predates the 2026-07-20 runtime)</span>'}</div>
+      ${cchips?`<div class="k" style="margin-top:8px">CAPABILITIES — functional preflight ${ic("Each capability is FUNCTIONALLY probed at tick start (real egress GET, real health checks) — ✗ means the probe failed, hover for detail.")}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${cchips}</div>`:""}</div>`;
+  }
   /* anomalies engine — the centerpiece */
   if((d.anomalies||[]).length){html+=`<div class="k" style="margin:4px 2px 6px">⚠ Anomalies — what to debug</div>`;
     html+=d.anomalies.map(an=>`<div class="card" style="margin-bottom:8px;border-left:4px solid ${SEVC[an.severity]||"var(--mut)"}">
@@ -1037,7 +1097,7 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
     ${kpi("context / tick",num(ctx.latest),trendBadge(ctx.trend_pct,false),"input+cache re-sent")}
     ${kpi("cost / tick (avg)",usd(cost.avg),trendBadge(cost.trend_pct,false),"")}
     ${kpi("duration (avg)",dur.avg!=null?(dur.avg>=60?(dur.avg/60).toFixed(1)+"m":Math.round(dur.avg)+"s"):"—",trendBadge(dur.trend_pct,false),"")}
-    ${kpi("cache hit",cache.latest!=null?Math.round(cache.latest*100)+"%":"—",trendBadge(cache.trend_pct,false),"of context")}
+    ${a.brain==="api"||a.brain==="local"?"":kpi("cache hit",cache.latest!=null?Math.round(cache.latest*100)+"%":"—",trendBadge(cache.trend_pct,false),"of context")}
     ${kpi("turns (avg)",turns.avg!=null?Math.round(turns.avg):"—","","per tick")}
     ${kpi("process success",ho.process_success_pct!=null?ho.process_success_pct+"%":"—","",`${ho.ticks_failed||0} failed${ho.ticks_capped?` · ${ho.ticks_capped} turn-capped`:""}`)}
   </div>`;
@@ -1452,7 +1512,7 @@ async function loadMonitor(){const b=document.getElementById("monitorbox");if(!b
   let h=`<div class="sectit">Fleet health monitor <span class="s" style="font-weight:400">— the Agent SRE: detects problems, says the likely cause &amp; fix, alerts the inbox${ic("An off-Opus daemon that polls every agent each cycle, matches anomalies against a runbook of root-cause playbooks, and (per each agent's MONITOR_MODE) alerts the dashboard inbox. It detects + enqueues only — a separate watcher is the only actor that touches docker.")}</span></div>`;
   h+=`<div class="card" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px">
     <span style="display:flex;align-items:center;gap:7px"><span style="width:9px;height:9px;border-radius:50%;background:var(${col});display:inline-block"></span><b style="text-transform:uppercase;font-size:12px;letter-spacing:.04em">${label}</b></span>
-    <span class="s">${attn} need attention</span><span class="s">·</span>
+    <span class="s">${attn} agent(s) with monitor findings${ic("Count of agents the MONITOR currently has findings for (its own scope). The alert banner counts only agents in an ALERTING mode; the bell counts unread notifications — three different scopes, each labelled.")}</span><span class="s">·</span>
     <span class="s">${scanned} agents scanned</span><span class="s">·</span>
     <span class="s">last cycle ${monAgo(d.age_s)}</span><span class="s">·</span>
     <span class="s">mode: <b>${hb.dryrun?"dry-run":"live"}</b></span>
@@ -1652,9 +1712,13 @@ async function renderActivity(quiet){const p=document.getElementById("pane");if(
   p.innerHTML=`<div style="padding:14px;overflow:auto;height:100%">
     <div class="card" style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
       ${head}<span style="flex:1"></span>
-      <span class="s" style="color:var(--mut)">loop: every ${lp.CONTINUOUS_COOLDOWN||"?"}s active · ${lp.INTERVAL_SECONDS||"?"}s safeguard · ${esc(lp.BRAIN||"")} · ${esc(lp.SUPERVISE||"")}</span></div></div>
+      <span class="s" style="color:var(--mut)">${[
+        (lp.INTERVAL_SECONDS||a.interval_s)?`tick every ${fmtDur(+(lp.INTERVAL_SECONDS||a.interval_s))}`:"",
+        lp.CONTINUOUS_COOLDOWN?`continue ${fmtDur(+lp.CONTINUOUS_COOLDOWN)}`:"",
+        lp.BRAIN||a.brain||"", lp.SUPERVISE?`supervise ${esc(lp.SUPERVISE)}`:""
+      ].filter(Boolean).join(" · ")}</span></div></div>
     ${budg}
-    ${secCard("commits","✅ recent commits"+ic("The agent's own git commits — the clearest record of what it actually SHIPPED, newest first."),`<div style="max-height:170px;overflow:auto">${commits}</div>`)}
+    ${d.commits&&d.commits.length?secCard("commits","✅ recent commits"+ic("The agent's own git commits — the clearest record of what it actually SHIPPED, newest first."),`<div style="max-height:170px;overflow:auto">${commits}</div>`):""}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       ${secCard("doing","▶ doing right now"+ic("Live tool-call stream from the agent's events.jsonl — the literal actions it is taking this tick (newest first), each with how long ago. Refreshes every 3s."),`<div style="max-height:250px;overflow:auto">${evs}</div>`)}
       ${secCard("focus","focus"+ic("The head of the agent's own state/rollup.md — its summary of what it is working on."),`<div class="s" style="white-space:pre-wrap;max-height:250px;overflow:auto;color:var(--tx)">${esc(d.focus||"—")}</div>`)}
@@ -1741,8 +1805,11 @@ function renderCostTable(ag,agext){
   const ids=new Set([...Object.keys(agents||{}),...Object.keys(ag||{}),...Object.keys(agext||{})]);
   const rows=[...ids].map(id=>{
     const live=agents[id]||{},a=ag[id]||{},e=agext[id]||{},lr=(ov.last||{})[id]||{};
+    /* api/local brains have NO Claude-subscription spend — their usage.jsonl cost is the SAME real
+       $ already counted in Ext; showing both double-reads the spend (truth review T4). */
+    const noSub=live.brain==="api"||live.brain==="local";
     return {id,brain:(live.brain||"?")+"/"+shortModel(live.model),status:statusKey(live),
-      claude:a.cost_usd||0,external:e.usd||0,tokens:a.tokens||0,
+      claude:noSub?0:(a.cost_usd||0),external:e.usd||0,tokens:a.tokens||0,
       last:lr.cost_usd!=null?usd(lr.cost_usd)+" "+(lr.reason||""):(lr.reason||"—"),lastrc:lr.rc};
   });
   rows.sort((x,y)=>{const k=sortKey;const xv=k==="total"?x.claude+x.external:x[k],yv=k==="total"?y.claude+y.external:y[k];return (xv>yv?1:xv<yv?-1:0)*sortDir;});
@@ -1990,12 +2057,32 @@ class H(BaseHTTPRequestHandler):
             try:
                 import diagnostics
                 d = diagnostics.from_home(home)
+                # Header numbers (wtd cost/ticks + last record) SERVER-side. The client used to read
+                # them from its separately-polled cost cache; on a fresh page that cache is often
+                # empty when Status first renders, so the header showed "0 ticks / last: —" directly
+                # above "39 ticks logged" (dashboard truth review T4, 2026-07-20).
+                try:
+                    cut, _ = _usage.window_cutoff("wtd")
+                    tot, _bym = _usage.rollup_file(str(pathlib.Path(home) / "state" / "usage.jsonl"), cut)
+                    d["wtd"] = {"ticks": tot.get("ticks", 0), "cost_usd": round(tot.get("cost_usd", 0), 4)}
+                    d["last_record"] = _usage.last_record(str(pathlib.Path(home) / "state" / "usage.jsonl")) or {}
+                except Exception:
+                    pass
                 # L2 work-product block (tick-scorecard.jsonl) — the panel that answers the honesty
                 # gap: a pod can be green/on-budget and produce nothing; this shows it.
                 try:
                     d["workproduct"] = diagnostics.workproduct(home)
                 except Exception:
                     d["workproduct"] = {"available": False}
+                # D3/D4 (2026-07-20): what the pod is ACTUALLY running (mechanisms ACTIVE|INACTIVE,
+                # from the runtime's per-tick effective-config report) + what it can DO (functional
+                # preflight capabilities). The Config tab shows intent; this shows reality.
+                for key, fname in (("effective_config", "effective-config.json"),
+                                   ("capabilities", "capabilities.json")):
+                    try:
+                        d[key] = json.loads((pathlib.Path(home) / "state" / fname).read_text())
+                    except Exception:
+                        d[key] = None
                 # per-agent anomaly mutes (state/.diag-mute.json: {key: severity_at_mute}); a quick-fix
                 # label is attached for any anomaly with a known safe config fix.
                 muted = {}
@@ -2338,6 +2425,56 @@ class H(BaseHTTPRequestHandler):
                 return f.read_text(errors="ignore")[:60000] if f.exists() else ""
             return self._send(200, "application/json", json.dumps({
                 "claude_md": _rd("CLAUDE.md"), "tick_txt": _rd("tick.txt")}))
+        if p == "/api/reasoning":   # D1/D2 (2026-07-20): decisions + verification — WHY the agent acted
+            # and whether its claimed completions VERIFY. Sources: state/decisions.jsonl (runtime-
+            # written at finish), state/contract-results.jsonl (completion contracts),
+            # state/reviews.jsonl (review() primitive audit), tick-scorecard decisions_unwitnessed.
+            aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            if not fleet._SAFE.match(aid or ""):
+                return self._send(400, "application/json", '{"error":"bad id"}')
+            with _lock:
+                a = (_cache.get("agents") or {}).get(aid)
+            home = a.get("home") if a else None
+            if not home:
+                return self._send(200, "application/json", '{"error":"no home dir on this host"}')
+            st = pathlib.Path(home) / "state"
+
+            def _jl(name, tail):
+                out = []
+                try:
+                    for ln in (st / name).read_text(errors="replace").splitlines()[-tail:]:
+                        try:
+                            out.append(json.loads(ln))
+                        except Exception:
+                            continue
+                except OSError:
+                    pass
+                return out
+
+            decisions = _jl("decisions.jsonl", 100)[::-1]
+            # per-decision witness check against the events the agent ACTUALLY produced — the
+            # fabrication tripwire, per-item (scorecard aggregates it per tick; the operator needs
+            # to see WHICH decision cites evidence no tool observation backs).
+            ev_blob = ""
+            try:
+                ev_blob = " ".join((str(e.get("summary", "")) + " " + str(e.get("result", "")))
+                                   for e in _jl("events.jsonl", 800)).lower()
+            except Exception:
+                pass
+            for d in decisions:
+                evid = str(d.get("evidence", "")).strip()
+                if not evid or evid.lower() in ("none", "n/a"):
+                    d["_witness"] = "none-declared"
+                    continue
+                toks = [t for t in re.split(r"[\s,;()\[\]{}'\"]+", evid)
+                        if len(t) >= 8 and ("/" in t or "." in t)]
+                d["_witness"] = ("unwitnessed" if toks and not any(t.lower() in ev_blob for t in toks)
+                                 else "witnessed" if toks else "untestable")
+            return self._send(200, "application/json", json.dumps({
+                "decisions": decisions[:60],
+                "contracts": _jl("contract-results.jsonl", 40)[::-1],
+                "reviews": _jl("reviews.jsonl", 40)[::-1],
+            }))
         if p == "/api/skills":   # P5: the agent's learned-memory vault (skills/ + memory index)
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):

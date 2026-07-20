@@ -70,6 +70,24 @@ def _agent_home(name, dep_dir):
     return h if (h and h.is_dir()) else None
 
 
+def _int_or_none(v):
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _agent_env_interval(home):
+    """INTERVAL_SECONDS lives in home/agent.env (runtime defaults), not the deployment .env."""
+    try:
+        for ln in (pathlib.Path(home) / "agent.env").read_text(errors="ignore").splitlines():
+            if ln.startswith("INTERVAL_SECONDS="):
+                return _int_or_none(ln.split("=", 1)[1])
+    except Exception:
+        pass
+    return None
+
+
 def _env(dep_dir):
     """Parse a deployment .env for the bits the console needs (defensive: host:port, quotes, comments)."""
     d = {}
@@ -199,6 +217,14 @@ def _state(home):
             s["tick"] = "paused"
     except Exception:
         pass
+    # Schedule-awareness (dashboard truth review T3, 2026-07-20): for a tick-based agent "Idle" is
+    # the healthy steady state — the operator-relevant fact is WHEN it fires next, and whether it is
+    # OVERDUE (loop wedged/dead while the container is up). Heartbeat = runtime.sh tick start.
+    try:
+        hb = home / "state" / ".heartbeat"
+        s["hb_age_s"] = int(time.time() - hb.stat().st_mtime) if hb.exists() else None
+    except Exception:
+        s["hb_age_s"] = None
     return s
 
 
@@ -234,6 +260,9 @@ def snapshot():
             "work_open": st["work_open"],
             "tick": (st["tick"] or "idle") if running else "down",
             "last_seen": st["last_seen"],
+            "hb_age_s": st.get("hb_age_s"),
+            "interval_s": _int_or_none(env.get("INTERVAL_SECONDS")) or _agent_env_interval(home),
+            "subtitle": env.get("ENCLAVE_SUBTITLE", ""),
         }
     # Folder-scan: surface DOWN / never-`up`'d deployments compose-ls can't see (incl. standalone
     # agents outside the main fleet root), marked down — so the console shows the whole fleet.

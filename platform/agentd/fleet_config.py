@@ -66,8 +66,12 @@ PRESETS = {
 
 def _audit(action, agent, detail=""):
     try:
-        AUDIT.parent.mkdir(parents=True, exist_ok=True)
-        with AUDIT.open("a") as f:
+        # Resolve at CALL time, not import time — a test harness that redirects
+        # ENCLAVE_FLEET_AUDIT after this module was first imported must still hit its own file,
+        # never the operator's real audit log (truth review T4).
+        audit = pathlib.Path(os.environ.get("ENCLAVE_FLEET_AUDIT", AUDIT))
+        audit.parent.mkdir(parents=True, exist_ok=True)
+        with audit.open("a") as f:
             f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                                 "who": "fleet_config", "action": action,
                                 "agent": agent, "detail": str(detail)[:200]}) + "\n")

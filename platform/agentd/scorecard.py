@@ -174,11 +174,19 @@ def collect(base, t0, now=None):
     # was one rollup rewrite per tick × 33 ticks: intra-tick multiplicity alone would miss it.
     # The 10-record window aggregation catches the cross-tick form; n>=3 in one tick catches the
     # intra-tick form. Product rewrites are excluded (revising a chapter is work, not churn).
+    # Runtime bookkeeping the LOOP writes every tick by design — counting it as agent churn put
+    # "tick-status.json 16×" at the top of a pod's churn panel (truth review T4). Not churn.
+    # (state/rollup.md deliberately NOT excluded — per-tick rollup rewriting was the real churn
+    # pattern this panel was built to catch; the agent writes it, not the loop.)
+    BOOKKEEPING = {"state/tick-status.json", "state/.heartbeat", "state/recall.md",
+                   "state/effective-config.json"}
     churn_all = {}
     for p, n in ev_writes.items():
         if kpi and _match_any(base, p, kpi):
             continue
         rel = os.path.relpath(p, base) if p.startswith(str(base)) else p
+        if rel in BOOKKEEPING:
+            continue
         churn_all[rel] = churn_all.get(rel, 0) + n
     churn_tick = dict(sorted(churn_all.items(), key=lambda kv: -kv[1])[:10])
     prior = _read_jsonl(base / "state" / "tick-scorecard.jsonl", tail=9)

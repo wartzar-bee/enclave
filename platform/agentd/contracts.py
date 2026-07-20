@@ -88,14 +88,28 @@ def main():
     if not matched:
         return 0
 
+    # Previous verdict per contract — a pass that follows a fail RESOLVES the alarm (lifecycle T2).
+    prev = {}
+    try:
+        for ln in (st / "contract-results.jsonl").read_text(errors="replace").splitlines():
+            try:
+                r = json.loads(ln)
+                prev[r.get("contract")] = r.get("pass")
+            except Exception:
+                continue
+    except OSError:
+        pass
+
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    results, failed = [], []
+    results, failed, recovered = [], [], []
     for serve, key, c in matched:
         ok, detail = run_check(c)
         results.append({"ts": now, "serve": str(serve)[:120], "contract": key,
                         "pass": ok, "detail": detail, "desc": c.get("desc", "")})
         if not ok:
             failed.append((key, c.get("desc", ""), detail))
+        elif prev.get(key) is False:
+            recovered.append((key, c.get("desc", "")))
 
     try:
         with (st / "contract-results.jsonl").open("a") as fh:
@@ -104,19 +118,22 @@ def main():
     except OSError:
         pass
 
-    if failed:
-        for key, desc, detail in failed:
-            print(f"CONTRACT FAILED [{key}] {desc}: {detail} — claim is CLAIMED-NOT-VERIFIED")
-        try:
-            with (st / "escalations.log").open("a") as fh:
-                for key, desc, detail in failed:
-                    fh.write(f"{now} ESCALATE :: [contract] {ad.name} claimed to serve '{key}' "
-                             f"({desc}) but the completion check FAILED: {detail}. The directive "
-                             f"stays OPEN — done means the check passes, not that the agent says so.\n")
-        except OSError:
-            pass
-    else:
-        print(f"contracts: {len(results)} completion check(s) passed")
+    try:
+        with (st / "escalations.log").open("a") as fh:
+            for key, desc, detail in failed:
+                fh.write(f"{now} ESCALATE :: [contract] {ad.name} claimed to serve '{key}' "
+                         f"({desc}) but the completion check FAILED: {detail}. The directive "
+                         f"stays OPEN — done means the check passes, not that the agent says so.\n")
+            for key, desc in recovered:
+                fh.write(f"{now} NOTE :: RESOLVED [contract] '{key}' ({desc}) — completion check "
+                         f"now PASSES.\n")
+    except OSError:
+        pass
+    for key, desc, detail in failed:
+        print(f"CONTRACT FAILED [{key}] {desc}: {detail} — claim is CLAIMED-NOT-VERIFIED")
+    if not failed:
+        print(f"contracts: {len(results)} completion check(s) passed"
+              + (f" ({len(recovered)} recovered)" if recovered else ""))
     return 0
 
 

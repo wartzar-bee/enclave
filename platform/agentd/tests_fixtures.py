@@ -209,6 +209,11 @@ def boot_console(root, token="", control_queue=None, bridges="", extra_env=None,
                  "ENCLAVE_DOCTOR_BRIDGES": bridges or "", "ENCLAVE_CONTROL_QUEUE": cq,
                  "ENCLAVE_MONITOR_HEARTBEAT": str(pathlib.Path(root) / "monitor-heartbeat.json"),
                  "ENCLAVE_MONITOR_STATE": str(pathlib.Path(root) / "monitor-state.json"),
+                 # Tests exercising /api/config were appending fixture mutations ("alpha
+                 # MAX_TURNS:∅→40→30") to the OPERATOR'S real fleet-audit.log on every run —
+                 # dozens of identical rows drowned real control-plane actions in the Audit view
+                 # (dashboard truth review T4, 2026-07-20). Always redirect to the fixture root.
+                 "ENCLAVE_FLEET_AUDIT": str(pathlib.Path(root) / "fleet-audit.log"),
                  **(extra_env or {})}
     _env_prev = {k: os.environ.get(k) for k in _env_keys}
     os.environ.update(_env_keys)
