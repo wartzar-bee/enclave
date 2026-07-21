@@ -102,7 +102,10 @@ def is_reference(val):
     # The strip above removes the braces, leaving a bare identifier that looks like a literal — the
     # same shape that made a no-arg call slip through. Code that WRITES a credential file is the
     # normal case for an account-provisioning pod; flagging it froze its brain backup.
-    if re.match(r"^\{+[A-Za-z_]\w*\}*$|^\{\{.*\}\}$", raw):
+    # Matched with search(), not match(): the capture runs to the next whitespace, so the real value
+    # is `{apisecret}\n")` — trailing source, not a clean placeholder. Anchoring on the START of the
+    # capture is what matters; a literal credential never begins with `{name}`.
+    if re.match(r"^\{[A-Za-z_]\w*\}", raw) or re.match(r"^\{\{[A-Za-z_]", raw):
         return True
     # $VAR, $(cmd), ${A:-$B}, re.compile(...), os.environ[...]
     if v[0] == "$" or v.lstrip("-:").startswith("$") or "(" in v or "[" in v:
