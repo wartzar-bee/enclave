@@ -16,6 +16,7 @@ this session surfaced (broken bin/memory.py path; delegation-verify loop) plus t
 HONESTY: a cause is asserted (confidence "high") only when a deterministic signature fires; otherwise
 the playbook carries the diagnostics anomaly's own evidence + a lower confidence.
 """
+import json
 import re
 import socket
 import pathlib
@@ -297,8 +298,21 @@ def _scored(home, n=10):
 # The logan-cross failure shape: 56 healthy L1 ticks, output = its own status file. Fires at 10
 # scored ticks (hours). For queue-gated agents whose no-op is by design (ideas-scout), suppress
 # per-agent via policy — don't blunt the default.
+def _product_is_external(home):
+    """A pod whose product ships to an EXTERNAL platform writes no local artifact when it publishes.
+    logan-cross posts chapters to Royal Road: 10 "zero product" ticks, while the chapters were live
+    (HTTP 200) — and this rule recommends "consider pause + board review", i.e. it was one step from
+    pausing a productive pod. Declared in the pod's own state/scorecard-config.json, so the default
+    stays sharp for pods that genuinely produce nothing."""
+    try:
+        cfg = json.loads((pathlib.Path(home) / "state" / "scorecard-config.json").read_text())
+    except Exception:
+        return False
+    return bool(cfg.get("product_measured_externally"))
+
+
 def _zeroprod_match(diag, home, snap, ctx):
-    if not snap.get("up"):
+    if not snap.get("up") or _product_is_external(home):
         return False
     recs = _scored(home, 10)
     return len(recs) >= 10 and all((r.get("writes", {}).get("product") or 0) == 0 for r in recs)
