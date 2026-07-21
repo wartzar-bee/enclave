@@ -28,6 +28,15 @@ Env (all optional — sane defaults from tools/llm/policy.json):
 """
 import os, sys, re, json, glob as globmod, subprocess, pathlib, urllib.request, urllib.error, time
 
+# One credential definition for the whole framework (platform/agentd/secrets.py). The local patterns
+# below remain ONLY as a fallback for a deployment where that module is not on disk.
+sys.path.insert(0, os.environ.get("ENCLAVE_AGENTD", "/workspace/platform/agentd"))
+try:
+    import secrets as _sec
+except Exception:
+    _sec = None
+
+
 HERE = pathlib.Path(__file__).resolve().parent
 # Context trim budget for the ReAct loop, in CHARS of message content (~4 chars/token). The trim
 # keeps system+turn plus the newest tail that fits this budget (max 24 messages) — see the loop.
@@ -104,6 +113,12 @@ _REDACT_KV = re.compile(
 
 
 def _redact(text):
+    if _sec is not None:
+        return _sec.redact(text)
+    return _redact_local(text)
+
+
+def _redact_local(text):
     if not text:
         return text
     text = _REDACT.sub("[REDACTED]", text)

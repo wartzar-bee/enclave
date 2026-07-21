@@ -25,77 +25,18 @@ CLI:
 """
 import sys, os, re, io, time, tarfile, shutil, argparse, subprocess, pathlib
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import secrets as _sec   # the framework's ONE credential definition (no second copy)
+
 _GIT_ENV = {"GIT_AUTHOR_NAME": "enclave", "GIT_AUTHOR_EMAIL": "enclave@local",
             "GIT_COMMITTER_NAME": "enclave", "GIT_COMMITTER_EMAIL": "enclave@local"}
 
-# High-confidence credential FORMATS. A string in one of these shapes is a credential in ANY context,
-# so these are never exempted. Legitimate prose ("rotate the password") doesn't trip them.
-SECRET_PATTERNS = (
-    r"ghp_[A-Za-z0-9]{30,}", r"github_pat_[A-Za-z0-9_]{30,}",
-    r"sk-ant-[A-Za-z0-9_-]{20,}", r"sk-or-v1-[A-Za-z0-9]{20,}", r"sk-[A-Za-z0-9]{32,}",
-    r"AKIA[0-9A-Z]{16}", r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
-    r"xox[baprs]-[A-Za-z0-9-]{10,}", r"AIza[0-9A-Za-z_-]{35}", r"glpat-[A-Za-z0-9_-]{20,}",
-)
-_SECRET_RE = [re.compile(p) for p in SECRET_PATTERNS]
+# Credential patterns, the reference-vs-literal classifier and redaction all live in secrets.py so
+# the vault gate, the PreToolUse write-blocker, the shell pre-commit hook and every redactor answer
+# the same question the same way. They used to be five copies that had already drifted.
+SECRET_PATTERNS = tuple(p for p, _ in _sec.FORMATS)
+scan_text = _sec.scan_text
 
-# Generic `label = value` assignments. Format-free, so these run through the reference filter below:
-# an agent skill legitimately writes `imap_code{secret:google-logancross.env,...}` — a REFERENCE to a
-# secrets FILE, not a credential. Blocking those silently froze logan-cross's vault backups for days.
-# The leading `[A-Za-z0-9_]*` matters: a plain `\b` cannot fire after an underscore, so the original
-# pattern never matched `RR_PASSWORD=…` — the exact leak the gate was built for.
-LABEL_VALUE_PATTERNS = (
-    r"(?i)[A-Za-z0-9_]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|client[_-]?secret|bearer)"
-    r"\s*[:=]\s*['\"]?(?P<val>[A-Za-z0-9_\-./+=]{12,})",
-    # env-assignment form: an uppercase credential name takes any non-space value (passwords carry
-    # punctuation, which the conservative class above stops at).
-    r"[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|CREDENTIALS?)"
-    r"\s*[:=]\s*['\"]?(?P<val>\S{8,})",
-    # Authorization header / curl -H form.
-    r"(?i)authorization\s*[:=]\s*['\"]?(?:bearer|basic|token)\s+(?P<val>\S{12,})",
-    # Google app-password (4x4 groups). Only ever matched behind a password LABEL — the bare 4x4 shape
-    # is ordinary English ("when they were done") and would freeze every prose-heavy vault.
-    r"(?i)(?:app[- ]?password|password)\s*[:=]\s*['\"]?(?P<val>[a-z0-9]{4}(?:\s+[a-z0-9]{4}){3})",
-)
-_LABEL_RES = [re.compile(p) for p in LABEL_VALUE_PATTERNS]
-
-# ── reference-vs-literal: a credential is a LITERAL. These say "points at a credential" ──────────
-_SECRETS_FILE = re.compile(r"(?i)^[\w\-./]*\.(?:env|json|ya?ml|pem|key|txt|ini|toml|cfg|conf)$")
-_ENV_REF = re.compile(r"^\$\{?[A-Za-z_]\w*\}?$")
-_DOTTED_IDENT = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")          # args.password, re.compile
-_PLACEHOLDER = re.compile(r"(?i)^(?:redacted|placeholder|example|changeme|your[-_]?\w*|dummy|fake"
-                          r"|none|null|todo|tbd|x{3,}|\*{3,}|\.{3,}|_{3,}|-{3,})")
-
-
-def _looks_random(v):
-    """A 16+ char run mixing upper, lower AND digits — JWT/base64/API-token entropy that no code
-    identifier or file path has. Wins over every exemption below: `Bearer eyJhbGciOiJIUzI1NiJ9.abc`
-    is dotted like an attribute access, but it is a token."""
-    for run in re.findall(r"[A-Za-z0-9]{16,}", v):
-        if any(c.isupper() for c in run) and any(c.islower() for c in run) and any(c.isdigit() for c in run):
-            return True
-    return False
-
-
-def _is_reference(val):
-    """True when the captured value REFERENCES a credential rather than being one. Wrappers are
-    stripped first, so `[REDACTED->.secrets/x.env]` and `"$TOKEN"` classify correctly.
-
-    This filter is why the gate is usable: it is fail-closed, so a false positive silently freezes a
-    pod's whole brain backup. Every rule here is anchored or structural — a bare literal like
-    `3r2s-e726-ct5d-y4ee` matches none of them and still blocks."""
-    v = (val or "").strip("'\"[](){}<>`,;")
-    if not v or len(v) < 8:
-        return True
-    if _looks_random(v):
-        return False
-    # $VAR, $(cmd), re.compile(...), os.environ[...], and shell defaults `${A:-$B}` whose captured
-    # value arrives as `-$B` once the braces are stripped.
-    if v[0] == "$" or v.lstrip("-:").startswith("$") or "(" in v or "[" in v:
-        return True
-    if ".secrets" in v or v.startswith("secrets/"):    # a path into the vault of record
-        return True
-    return bool(_SECRETS_FILE.match(v) or _ENV_REF.match(v)
-                or _DOTTED_IDENT.match(v) or _PLACEHOLDER.match(v))
 
 VAULT_GITIGNORE = (
     "# Enclave deployment vault — durable memory is TRACKED; secrets + runtime state are NOT.\n"
@@ -110,16 +51,16 @@ VAULT_GITIGNORE = (
 )
 
 # Pre-commit hook so even a MANUAL `git commit` is scan-gated (self-contained — same families).
-_PRECOMMIT = r'''#!/usr/bin/env bash
+_PRECOMMIT = (r'''#!/usr/bin/env bash
 set -euo pipefail
-pat='ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-or-v1-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|glpat-[A-Za-z0-9_-]{20,}'
+pat='__BASH_PATTERN__'
 bad=0
 while IFS= read -r f; do
   [ -f "$f" ] || continue
   if grep -EnI "$pat" "$f" >/dev/null 2>&1; then echo "BLOCKED: credential pattern in $f" >&2; bad=1; fi
 done < <(git diff --cached --name-only)
 [ "$bad" -eq 0 ] || { echo "Vault commit blocked — move the secret to secrets/ (gitignored)." >&2; exit 1; }
-'''
+'''.replace("__BASH_PATTERN__", _sec.bash_pattern()))
 
 # The durable brain: what encrypt/backup includes (NEVER secrets/state/logs).
 BRAIN_DIRS = ("knowledge", "memory", "skills")
@@ -129,22 +70,6 @@ BRAIN_FILES = ("work.json", "CLAUDE.md", "agent.env", "inbox.md")
 def _git(home, *a, **kw):
     return subprocess.run(["git", *a], cwd=home, capture_output=True, text=True,
                           env={**os.environ, **_GIT_ENV}, **kw)
-
-
-def scan_text(text):
-    """Return a matched credential snippet, or None. A credential FORMAT is absolute; a generic
-    `label = value` hit is skipped only when the value is a reference (secrets file, $VAR,
-    placeholder) rather than a credential."""
-    for pat in _SECRET_RE:
-        m = pat.search(text)
-        if m:
-            return m.group(0)[:24] + "…"
-    for pat in _LABEL_RES:
-        for m in pat.finditer(text):
-            if _is_reference(m.group("val")):
-                continue
-            return m.group(0)[:24] + "…"
-    return None
 
 
 def scan_staged(home):

@@ -13,7 +13,18 @@ board-report*, skills/**, and blocks (exit 2) when it looks like a real credenti
 
 Deterministic, no deps. exit 0 = allow, exit 2 + stderr = block (fires under --dangerously-skip-perms).
 """
-import json, re, sys
+import json, os, re, sys
+
+# The framework's ONE credential definition. The hook lives in the agent home but the module ships
+# with the runtime; if it is ever unreachable we say so LOUDLY on stderr rather than failing open in
+# silence — a write-blocker that quietly stops blocking is the worst possible failure here.
+sys.path.insert(0, os.environ.get("ENCLAVE_AGENTD", "/workspace/platform/agentd"))
+try:
+    import secrets as _sec
+except Exception as _e:                                    # pragma: no cover
+    _sec = None
+    sys.stderr.write(f"[secret_scan] DEGRADED: cannot import the shared secrets module ({_e}); "
+                     f"writes are NOT being scanned\n")
 
 # durable, git-committed or recall-fed files a leaked secret would poison
 _TARGET = re.compile(r"(memory/|/work/|work\.json|rollup|board-report|skills/|handoff|learnings|activity)", re.I)
@@ -36,15 +47,15 @@ def _payload():
 
 
 def scan(path, content):
-    if not path or not _TARGET.search(path):
+    """Block only writes to DURABLE paths (memory/work/skills/rollup): a credential there is
+    recall-fed and git-committed. Detection itself is the shared definition, so this hook, the vault
+    gate and the redactors can never disagree about what a credential is."""
+    if not path or not _TARGET.search(path) or _sec is None:
         return None
-    for line in content.splitlines():
-        if _SAFE.search(line):
-            continue
-        for rx in _SECRET:
-            if rx.search(line):
-                return f"{path}: line looks like a leaked credential VALUE — secrets live ONLY in " \
-                       f".secrets/ (reference by filename). Redact to a placeholder or .secrets ref."
+    hit = _sec.scan_text(content)
+    if hit:
+        return (f"{path}: line looks like a leaked credential VALUE — secrets live ONLY in "
+                f".secrets/ (reference by filename). Redact to a placeholder or .secrets ref.")
     return None
 
 

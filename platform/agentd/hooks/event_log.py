@@ -12,6 +12,15 @@ Best-effort + NON-BLOCKING: any failure exits 0 (a monitoring hook must never in
 """
 import sys, json, time, os, pathlib, re
 
+# One credential definition for the whole framework (platform/agentd/secrets.py). The local patterns
+# below remain ONLY as a fallback for a deployment where that module is not on disk.
+sys.path.insert(0, os.environ.get("ENCLAVE_AGENTD", "/workspace/platform/agentd"))
+try:
+    import secrets as _sec
+except Exception:
+    _sec = None
+
+
 # Redaction. Capturing tool OUTPUT means a command that prints a credential would write it into
 # events.jsonl, which downstream tooling renders into git-tracked reports. Scrub at the source so
 # the secret is never on disk in the first place: a redactor that only runs at render time leaves
@@ -31,6 +40,12 @@ _REDACT_KV = re.compile(
 
 
 def _redact(text):
+    if _sec is not None:
+        return _sec.redact(text)
+    return _redact_local(text)
+
+
+def _redact_local(text):
     if not text:
         return text
     text = _REDACT.sub("[REDACTED]", text)

@@ -219,6 +219,7 @@ def _write(path, text, mode=None):
 # Vault persistence + encryption delegate to the ONE canonical implementation (single source of
 # truth for the secret-scan patterns), shared with runtime.sh's post-tick auto-snapshot.
 VAULT_SCRIPT = REPO / "platform" / "agentd" / "vault_snapshot.py"
+HISTORY_SCAN = REPO / "platform" / "agentd" / "history_scan.py"
 
 def _vault(home, sub, *extra):
     return subprocess.run([sys.executable, str(VAULT_SCRIPT), sub, str(home), *extra])
@@ -237,6 +238,20 @@ def cmd_snapshot(args):
     msg = " ".join(a for a in args if not a.startswith("--"))
     r = _vault(home, "snapshot", *(["--msg", msg] if msg else []))
     sys.exit(1 if r.returncode == 3 else 0)   # 3 = blocked by the secret gate (already reported)
+
+def cmd_audit_secrets(args):
+    """Has a credential EVER been committed here, and is it exposed? Walks every blob in every ref of
+    this deployment and every nested repo, and reports each repo's PUBLIC/private status — the actual
+    exposure boundary. Current-tree scanning cannot answer this: git history is forever, so a secret
+    deleted from the working tree still ships in every clone.
+    Usage: enclave audit-secrets [--root <dir>] [--json]"""
+    root = DEPLOY
+    if "--root" in args:
+        root = pathlib.Path(args[args.index("--root") + 1]).resolve()
+    env = {**os.environ, "ENCLAVE_SCAN_ROOT": str(root)}
+    r = subprocess.run([sys.executable, str(HISTORY_SCAN),
+                        *[a for a in args if a == "--json"]], env=env)
+    sys.exit(r.returncode)
 
 def cmd_vault_encrypt(args):
     """Encrypt the brain to an off-machine-safe archive (CIPHERTEXT at rest — covers a scanner miss).
@@ -1431,7 +1446,7 @@ def cmd_brain(args):
 COMMANDS = {
     "new": cmd_new, "init": cmd_init, "run": cmd_run, "app": cmd_app, "stop": cmd_stop, "logs": cmd_logs,
     "send": cmd_send, "status": cmd_status, "chat": cmd_chat, "publish": cmd_publish, "brain": cmd_brain,
-    "snapshot": cmd_snapshot, "vault-encrypt": cmd_vault_encrypt, "vault-decrypt": cmd_vault_decrypt,
+    "snapshot": cmd_snapshot, "audit-secrets": cmd_audit_secrets, "vault-encrypt": cmd_vault_encrypt, "vault-decrypt": cmd_vault_decrypt,
     "fleet": cmd_fleet, "console": cmd_console, "update": cmd_update,
 }
 
