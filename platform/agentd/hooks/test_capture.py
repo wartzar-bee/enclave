@@ -56,6 +56,20 @@ ck("implicit: flagged", r[0]["implicit"] is True)
 ck("implicit: evidence from actions", r[0]["evidence"].startswith("2 tool action(s):"))
 ck("implicit: confidence unstated", r[0]["confidence"] == "unstated")
 
+# ── the four fields on ONE line (agents write it this way as often as not) ────────────────────
+r = C.extract_decisions(
+    'DECISION: skip Reddit this tick / WHY: no warmed account / EVIDENCE: 403 on submit / CONFIDENCE: high',
+    ["Bash: curl reddit"], "", TS, AGENT)
+ck("inline: one record", len(r) == 1)
+ck("inline: decision only", r[0]["decision"] == "skip Reddit this tick")
+ck("inline: why", r[0]["why"] == "no warmed account")
+ck("inline: evidence", r[0]["evidence"] == "403 on submit")
+ck("inline: confidence", r[0]["confidence"] == "high")
+ck("inline: not implicit", r[0]["implicit"] is False)
+# a slash inside prose must NOT split (only a slash before a known field name does)
+r = C.extract_decisions("DECISION: use the a/b split for the CTA", [], "", TS, AGENT)
+ck("inline: prose slash kept", r[0]["decision"] == "use the a/b split for the CTA")
+
 # ── a placeholder rollup is NOT a decision; fall through to the agent's own words ─────────────
 r = C.extract_decisions("Checked npm and found the version already published.", ["Bash: curl npm"],
                         "(no ticks yet)", TS, AGENT)
@@ -103,4 +117,4 @@ finally:
 if fails:
     print(f"FAIL ({len(fails)}): " + ", ".join(fails))
     sys.exit(1)
-print("capture decision-log OK (24/24)")
+print("capture decision-log OK (31/31)")

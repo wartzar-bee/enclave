@@ -110,7 +110,12 @@ def extract_decisions(final, actions, rollup, ts, agent):
     unevidenced rate in decisions_report.py is then a real signal instead of an artefact of the log.
     """
     recs, cur = [], None
-    for line in (final or "").splitlines():
+    # Agents write the four fields on one line as often as on four ("DECISION: x / WHY: y / ...").
+    # Without this split the whole line lands in `decision` and why/evidence read as empty — a log
+    # that looks populated while carrying no reasoning, which is worse than an obvious gap.
+    text = re.sub(r"\s+/\s+(?=(?:WHY|BECAUSE|RATIONALE|REASON|EVIDENCE|BASIS|CONFIDENCE)\s*[:\-])",
+                  "\n", final or "", flags=re.I)
+    for line in text.splitlines():
         m = _DEC.match(line)
         if m:
             if cur:
