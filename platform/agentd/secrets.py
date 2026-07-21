@@ -92,6 +92,11 @@ def is_reference(val):
         return True
     if ".secrets" in v or v.startswith("secrets/"):
         return True
+    # A REGEX/GLOB fragment, not a literal: `TOKEN=$(grep -o 'X_TOKEN=.*\|TOKEN=.*' .secrets/x.env)`
+    # is a command that READS a credential. `.*` and `\|` are regex constructs, not password
+    # characters, and blocking the read froze a pod's brain backup (2026-07-21).
+    if ".*" in v or "\\|" in v or v.startswith("*"):
+        return True
     return bool(_SECRETS_FILE.match(v) or _ENV_REF.match(v)
                 or _DOTTED_IDENT.match(v) or _PLACEHOLDER.match(v))
 

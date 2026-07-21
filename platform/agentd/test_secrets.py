@@ -79,6 +79,9 @@ try:
     ck("single-quoted secret detected", S.scan_text("password='" + fx("hunter2", "secretvalue") + "'") is not None)
     ck("double-quoted secret detected", S.scan_text('api_key="' + fx("abcdefgh", "12345678") + '"') is not None)
     ck("secrets READ not flagged", S.scan_text("grep -oP 'TOKEN=\\K.*' /workspace/.secrets/x.env") is None)
+    # a regex read froze channel-lab's vault backup: the captured "value" was `.*\|TOKEN=.*`
+    ck("regex read not flagged",
+       S.scan_text("TOKEN=$(grep -o 'X_TOKEN=.*" + chr(92) + "|TOKEN=.*' /workspace/.secrets/x.env)") is None)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
