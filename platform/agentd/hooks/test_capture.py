@@ -91,6 +91,29 @@ r = C.extract_decisions(final, ["Bash: x"], "", TS, AGENT)
 line = json.dumps(r[0])
 ck("serialisable", "\n" not in line and json.loads(line)["decision"])
 
+# ── a decision block followed by a tool call + sign-off must still be captured ────────────────
+tmp2 = pathlib.Path(tempfile.mkdtemp(prefix="captest2-"))
+try:
+    tr2 = tmp2 / "t.jsonl"
+    tr2.write_text("\n".join(json.dumps(x) for x in [
+        {"message": {"role": "assistant", "content": [
+            {"type": "text", "text": "DECISION: stand up lobste.rs\nWHY: unmapped\nCONFIDENCE: low"}]}},
+        {"message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Write", "input": {"file_path": "/agent/state/tick-status.json"}}]}},
+        {"message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Now set tick-status to continue."}]}},
+    ]))
+    last = C.extract(str(tr2))[1]
+    every = C.extract(str(tr2), all_text=True)[1]
+    ck("last-block-only loses the decision", "DECISION" not in last)
+    ck("all_text keeps the decision", "DECISION: stand up lobste.rs" in every)
+    r = C.extract_decisions(every, ["Write: x"], "", TS, AGENT)
+    ck("captured despite trailing sign-off", r[0]["decision"] == "stand up lobste.rs")
+    ck("captured: not implicit", r[0]["implicit"] is False)
+    ck("captured: confidence", r[0]["confidence"] == "low")
+finally:
+    shutil.rmtree(tmp2, ignore_errors=True)
+
 # ── end-to-end: main() appends to state/decisions.jsonl from a real transcript ───────────────
 tmp = pathlib.Path(tempfile.mkdtemp(prefix="captest-"))
 try:
@@ -117,4 +140,4 @@ finally:
 if fails:
     print(f"FAIL ({len(fails)}): " + ", ".join(fails))
     sys.exit(1)
-print("capture decision-log OK (31/31)")
+print("capture decision-log OK (36/36)")

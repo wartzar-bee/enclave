@@ -46,9 +46,15 @@ def summarize_tool(name, inp):
     return name
 
 
-def extract(transcript_path):
-    """Pull (meaningful tool actions, final assistant text) from a Claude Code session JSONL."""
-    actions, final = [], ""
+def extract(transcript_path, all_text=False):
+    """Pull (meaningful tool actions, final assistant text) from a Claude Code session JSONL.
+
+    all_text=True returns EVERY assistant text block joined instead of just the last one. Decision
+    capture needs that: an agent commonly writes its decision block and THEN makes a final tool call
+    with a one-line sign-off, and keeping only the last block silently discarded the decision (every
+    record came back "implicit" while the agents were in fact being asked to write one).
+    """
+    actions, final, chunks = [], "", []
     try:
         for line in pathlib.Path(transcript_path).read_text().splitlines():
             try:
@@ -70,9 +76,10 @@ def extract(transcript_path):
                         actions.append(summarize_tool(nm, b.get("input")))
                 elif b.get("type") == "text" and b.get("text", "").strip():
                     final = b["text"].strip()
+                    chunks.append(final)
     except OSError:
         pass
-    return actions, final
+    return actions, ("\n".join(chunks) if all_text else final)
 
 
 # An agent that writes "DECISION: x / WHY: y" gets that captured verbatim; one that writes nothing
@@ -169,6 +176,7 @@ def main():
         sys.exit(0)
     d = _agent_dir(data)
     actions, final = extract(data.get("transcript_path", ""))
+    every_text = extract(data.get("transcript_path", ""), all_text=True)[1]
     rollup = ""
     try:
         body = [l for l in (d / "state" / "rollup.md").read_text().splitlines()
@@ -192,7 +200,8 @@ def main():
     # state/ is vault-gitignored, so a credential quoted in an agent's reasoning stays local; the
     # RENDER step (decisions_report.py) is where redaction belongs, and is where it now happens.
     try:
-        recs = extract_decisions(final, actions, rollup, ts, os.environ.get("AGENT_ID", d.name))
+        recs = extract_decisions(every_text or final, actions, rollup, ts,
+                                 os.environ.get("AGENT_ID", d.name))
         if recs:
             sd = d / "state"
             sd.mkdir(parents=True, exist_ok=True)
