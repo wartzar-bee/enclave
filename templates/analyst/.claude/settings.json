@@ -57,6 +57,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /agent/.claude/hooks/capture.py"
+          }
+        ]
+      }
     ]
   }
 }

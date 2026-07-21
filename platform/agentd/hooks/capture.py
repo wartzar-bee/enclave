@@ -14,10 +14,17 @@ Division of labour: this hook captures the FACTUAL record automatically; the bri
 agent to distil genuine LESSONS (judgement) into memory/. memory.py recall SKIPS memory/activity/
 so these logs stay qmd-searchable + auditable without crowding the lesson digest.
 
+It ALSO writes state/decisions.jsonl (2026-07-21). Decision capture used to be part of the `finish`
+contract in local_agent.py, which only runs on BRAIN=api/local — so when the whole fleet moved to
+BRAIN=claude on the subscription, every pod silently stopped recording WHY it did anything, and
+effective_config still reported the claude path as "convention only (no structural capture yet)".
+Convention is not capture: logan-cross had no decisions.jsonl at all. This hook has the transcript
+at tick end, so the record no longer depends on the agent remembering to write it.
+
 Fails OPEN (any error → exit 0, never wedge the tick). Fast + deterministic (no model call).
   (configured automatically as a Stop hook in /agent/.claude/settings.json — not run by hand)
 """
-import sys, os, json, datetime, pathlib
+import sys, os, json, re, datetime, pathlib
 
 # Tools worth recording (the real actions); read-only noise (Read/Grep/Glob/LS) is skipped.
 MEANINGFUL = ("Bash", "Write", "Edit", "NotebookEdit")
@@ -68,6 +75,76 @@ def extract(transcript_path):
     return actions, final
 
 
+# An agent that writes "DECISION: x / WHY: y" gets that captured verbatim; one that writes nothing
+# structured still gets a record built from its own conclusion. Both beat an empty log.
+_DEC = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?(DECISION|DECIDED|CHOSE|CHOICE)(?:\*\*)?\s*[:\-]\s*(.+)$", re.I)
+_WHY = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?(WHY|BECAUSE|RATIONALE|REASON)(?:\*\*)?\s*[:\-]\s*(.+)$", re.I)
+_EVID = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?(EVIDENCE|BASIS)(?:\*\*)?\s*[:\-]\s*(.+)$", re.I)
+_CONF = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?CONFIDENCE(?:\*\*)?\s*[:\-]\s*(high|medium|low)\b", re.I)
+
+
+def _headline(rollup, final):
+    """The best one-line statement of what this tick concluded.
+
+    A rollup can be a placeholder ("(no ticks yet)", "—") that says nothing; recording it as a
+    decision is worse than useless, because it inflates the log and hides the pods that genuinely
+    are not reasoning. Fall through to the agent's own closing text instead.
+    """
+    for cand in ((rollup or "").strip(), (final or "").strip()):
+        for line in cand.splitlines():
+            line = line.strip().lstrip("#-* ").strip()
+            if len(line) < 8:
+                continue
+            if line.startswith("(") and line.endswith(")"):      # "(no ticks yet)"
+                continue
+            return line[:300]
+    return ""
+
+
+def extract_decisions(final, actions, rollup, ts, agent):
+    """PURE — build decision records for one tick (unit-tested).
+
+    Explicit `DECISION:`/`WHY:` lines are captured as written. If the agent wrote none, we still emit
+    ONE record from its own tick conclusion, marked `implicit` and with evidence derived from what it
+    actually ran — an honest 'it did this, and stated no reason' beats a silent gap, and the
+    unevidenced rate in decisions_report.py is then a real signal instead of an artefact of the log.
+    """
+    recs, cur = [], None
+    for line in (final or "").splitlines():
+        m = _DEC.match(line)
+        if m:
+            if cur:
+                recs.append(cur)
+            cur = {"decision": m.group(2).strip()[:500], "why": "", "evidence": "", "confidence": ""}
+            continue
+        if cur is None:
+            continue
+        for rx, key in ((_WHY, "why"), (_EVID, "evidence")):
+            m = rx.match(line)
+            if m:
+                cur[key] = m.group(2).strip()[:800]
+        m = _CONF.match(line)
+        if m:
+            cur["confidence"] = m.group(1).lower()
+    if cur:
+        recs.append(cur)
+
+    ev_auto = ""
+    if actions:
+        ev_auto = f"{len(actions)} tool action(s): " + "; ".join(actions[:5])
+    if not recs:
+        headline = _headline(rollup, final)
+        if not headline:
+            return []
+        recs = [{"decision": headline[:500], "why": "", "evidence": "", "confidence": "", "implicit": True}]
+    for r in recs:
+        r.setdefault("implicit", False)
+        r["evidence"] = r["evidence"] or ev_auto
+        r["confidence"] = r["confidence"] or "unstated"
+        r["ts"], r["agent"], r["_by"], r["_actions"] = ts, agent, "capture-hook", len(actions)
+    return recs
+
+
 def summarize_tick(actions, final, rollup_line, ts):
     """PURE — render one dated tick entry (unit-tested)."""
     lines = [f"### tick {ts}"]
@@ -107,6 +184,18 @@ def main():
             f.write(summarize_tick(actions, final, rollup, ts))
     except OSError:
         pass
+    # state/ is vault-gitignored, so a credential quoted in an agent's reasoning stays local; the
+    # RENDER step (decisions_report.py) is where redaction belongs, and is where it now happens.
+    try:
+        recs = extract_decisions(final, actions, rollup, ts, os.environ.get("AGENT_ID", d.name))
+        if recs:
+            sd = d / "state"
+            sd.mkdir(parents=True, exist_ok=True)
+            with (sd / "decisions.jsonl").open("a") as f:
+                for r in recs:
+                    f.write(json.dumps(r) + "\n")
+    except Exception:
+        pass                                                 # never wedge a tick over a log line
     sys.exit(0)
 
 

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-secret_scan.py — PostToolUse hook: block a write that leaks a credential VALUE into a durable file.
+secret_scan.py — PreToolUse hook: block a write that leaks a credential VALUE into a durable file.
+
+Wired on PreToolUse (Write|Edit|MultiEdit), where exit 2 actually PREVENTS the write; as a
+PostToolUse hook it could only complain after the credential was already on disk.
 
 Gap 5: guard.py blocks READS of foreign secrets and egress, but nothing stopped a pod writing a
 password/token INTO its own memory/work/rollup (logan-cross leaked RR + Google app-passwords into
