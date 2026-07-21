@@ -63,7 +63,7 @@ _SECRETS_FILE = re.compile(r"(?i)^[\w\-./]*\.(?:env|json|ya?ml|pem|key|txt|ini|t
 _ENV_REF = re.compile(r"^\$\{?[A-Za-z_]\w*\}?$")
 _DOTTED_IDENT = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
 # A CALL produces a credential, it is not one: `password = _gen_password()`,
-# `token = os.getenv("X")`, `key = load_key(path)`. This blocked channel-lab's vault for 3.7h —
+# `token = os.getenv("X")`, `key = load_key(path)`. This blocked one deployment's vault for hours —
 # a fail-closed gate that fires on a false positive stops the backup just as dead as a real leak,
 # so precision here is a availability property, not just tidiness. looks_random() still overrides.
 _CALL = re.compile(r"^[A-Za-z_][\w.]*\s*\(.*\)$")
@@ -95,7 +95,7 @@ def is_reference(val):
         return False
     # Checked against RAW, before the strip above: stripping "()" off `_gen_password()` leaves a bare
     # identifier, so the `"(" in v` test below never fired for a no-argument call. That single gap
-    # froze channel-lab's brain backup for 3.7h.
+    # froze a deployment's brain backup for hours.
     if _CALL.match(raw):
         return True
     # $VAR, $(cmd), ${A:-$B}, re.compile(...), os.environ[...]
