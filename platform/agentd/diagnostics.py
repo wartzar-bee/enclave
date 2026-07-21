@@ -35,6 +35,15 @@ DAY = 86400
 # A tick's prompt-side context (what gets re-sent every turn) — the number that explodes.
 def _context(r):     return _i(r, "input") + _i(r, "cache_read") + _i(r, "cache_write")
 def _tokens(r):      return _context(r) + _i(r, "output")
+def _ctx_per_turn(r):
+    """Context re-sent per TURN — the honest bloat measure. Total-per-tick is turns x context, so a
+    tick that simply did more work reads as an explosion (2026-07-21: all four pods sat at a flat
+    19k-59k/turn while their totals swung 200k-3M with turn count). Falls back to the total when a
+    record predates turn telemetry, so old data still compares like-for-like."""
+    t = int(_i(r, "turns") or 0)
+    return _context(r) / t if t > 0 else _context(r)
+
+
 def _cache_pct(r):
     c = _context(r)
     return (_i(r, "cache_read") / c) if c else 0.0
@@ -165,15 +174,18 @@ def _anomalies(records, now, window):
 
     # 1) Context explosion — the headline diagnostic. Latest prompt-side context vs the rolling avg.
     ctx_now = _context(latest)
-    ctx_base = _avg([_context(r) for r in recent_n]) or 0
-    if ctx_base > 0 and ctx_now >= 2.0 * ctx_base and ctx_now > 200_000:
-        ratio = ctx_now / ctx_base
+    # Compare PER-TURN, not per-tick (see _ctx_per_turn): a 30-turn tick is not an explosion.
+    pt_now = _ctx_per_turn(latest)
+    ctx_base = _avg([_ctx_per_turn(r) for r in recent_n]) or 0
+    if ctx_base > 0 and pt_now >= 2.0 * ctx_base and pt_now > 60_000:
+        ratio = pt_now / ctx_base
         # monotonic climb over the tail ⇒ high confidence it's a real growth trend, not one spike
-        tail = [_context(r) for r in records[-5:]]
+        tail = [_ctx_per_turn(r) for r in records[-5:]]
         mono = all(b >= a for a, b in zip(tail, tail[1:]))
         add("high" if ratio >= 3 else "med", "context_explosion",
             f"Context {ratio:.1f}× larger than recent average",
-            f"context (input+cache) {_human(ctx_now)} vs ~{_human(ctx_base)} avg",
+            f"context {_human(pt_now)}/turn vs ~{_human(ctx_base)}/turn avg "
+            f"({_human(ctx_now)} total this tick)",
             "high" if mono else "med",
             cause=("the prompt is replaying an ever-larger history each tick" if mono else None),
             fix="compact memory / trim auto-loaded files; check for an unbounded log or inbox")
@@ -189,16 +201,23 @@ def _anomalies(records, now, window):
     ctx_base_w = _avg([_context(r) for r in base]) if base else None
     grew = _trend(ctx_recent, ctx_base_w)  # % week-over-week (None if no baseline)
     big = ctx_now > 1_000_000
+    # Per-TURN context is the honest measure of bloat. Total-per-tick is turns x context, so with a
+    # normal ~35k prompt ANY tick past ~15 turns crosses 500k — which is why three pods were escalating
+    # "context is bloating" every few ticks while their per-turn context sat flat at 19k-59k (measured
+    # 2026-07-21 across all four). An alarm that fires on "did a lot of work" trains everyone to ignore
+    # it, and today's whole lesson was a real signal missed behind untrustworthy alarms.
+    rt_l = latest.get("runtime") if isinstance(latest.get("runtime"), dict) else {}
+    turns_l = int(latest.get("turns") or 0) or int(rt_l.get("tool_calls") or 0) + 1
+    per_turn = ctx_now / max(1, turns_l)
     if not any(a["key"] == "context_explosion" for a in out) and ctx_now > 500_000 \
-            and (big or (grew or 0) >= 150):
+            and per_turn >= 80_000 and (big or (grew or 0) >= 150):
         sev = "high" if (ctx_now > 2_000_000 and (grew or 0) >= 150) else "med"
-        ev = f"~{_human(ctx_now)} tokens this tick" + (
+        ev = f"~{_human(ctx_now)} tokens this tick (~{_human(per_turn)}/turn over {turns_l} turns)" + (
             f", {'up' if grew >= 0 else 'down'} {abs(grew):.0f}% vs {'last week' if win == 'week' else 'earlier'}"
             if grew is not None else "")
         # Diagnose the DRIVER from telemetry, not a guess. Most of the context is usually cache_read; if
         # the latest tick also ran many tool calls, the prompt is accumulating ACROSS a long tool-heavy
         # tick (re-read each turn) — NOT static files, so "trim memory/inbox" is the wrong fix.
-        rt_l = latest.get("runtime") if isinstance(latest.get("runtime"), dict) else {}
         tcalls = int(rt_l.get("tool_calls") or 0)
         cr_share = (_i(latest, "cache_read") / ctx_now) if ctx_now else 0
         if tcalls >= 25 and cr_share >= 0.7:

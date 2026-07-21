@@ -141,3 +141,31 @@ if check.failed:
     print(f"{check.failed} FAILED")
     raise SystemExit(1)
 print("ALL PASS")
+
+# ── context bloat is measured PER TURN, not per tick (2026-07-21) ────────────────────────────
+# Three pods escalated "context is bloating" every few ticks while their per-turn context sat flat
+# at 19k-59k: total-per-tick is turns x context, so any tick past ~15 turns crossed the threshold.
+# An alarm that fires on "did a lot of work" gets ignored, and the whole point of today was a real
+# signal lost behind untrustworthy alarms. Both directions are pinned here.
+def _ctxrec(now, i, ctx, turns):
+    return {"ts": now - (20 - i) * 3600, "turns": turns, "cache_read": ctx, "input": 0,
+            "cache_write": 0, "output": 500, "rc": 0, "subtype": "success", "cost_usd": 1.0,
+            "duration_s": 60, "model": "claude-opus-4-8"}
+
+
+def test_context_bloat_is_per_turn():
+    import time as _t
+    now = _t.time()
+    healthy = [_ctxrec(now, i, 35_000 * t, t) for i, t in
+               enumerate([8, 12, 9, 15, 11, 10, 14, 9, 12, 52])]
+    keys = {a["key"] for a in D.compute(healthy, now)["anomalies"]}
+    assert "context_explosion" not in keys, "a long tick at flat per-turn context must NOT alarm"
+    bloated = [_ctxrec(now, i, pt * 12, 12) for i, pt in
+               enumerate([20_000] * 8 + [90_000, 160_000])]
+    anoms = [a for a in D.compute(bloated, now)["anomalies"] if a["key"] == "context_explosion"]
+    assert anoms, "a per-turn prompt climbing 20k->160k MUST still alarm"
+    assert "/turn" in anoms[0]["evidence"], "evidence should state the per-turn number"
+    print("ok: context bloat measured per turn (long ticks silent, real bloat still caught)")
+
+
+test_context_bloat_is_per_turn()
