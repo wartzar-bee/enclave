@@ -2,12 +2,12 @@
 
 Status: **scoped + flagged hook landed; the WASM runtime is gated.** This is roadmap item #7
 (inspired by ruflo's WASM tool isolation). We already shipped the cheap, high-value slice of that
-idea — the loader-hijack env denylist in `hooks/guard.py`. This doc scopes the larger piece and
+idea — the loader-hijack env denylist in `platform/agentd/hooks/guard.py`. This doc scopes the larger piece and
 records what landed now vs what stays gated.
 
 ## Why (threat model)
 Enclave already isolates with **two layers**: a per-agent container (`cap_drop: ALL`,
-`no-new-privileges`, read-only scoped secret mount) and the **PreToolUse guard** (`hooks/guard.py`,
+`no-new-privileges`, read-only scoped secret mount) and the **PreToolUse guard** (`platform/agentd/hooks/guard.py`,
 fires even under `--dangerously-skip-permissions`). Both are coarse: the guard makes an allow/deny
 decision on a *whole* tool call, and the container is the blast radius for *everything* the agent
 runs. The residual risk is a tool call the guard *allows* but whose payload still does something
@@ -30,10 +30,11 @@ privilege.
 covered by the existing container + guard + path checks; sandboxing them is lower priority.
 
 ## What landed now (this increment)
-- **`hooks/sandbox_policy.py`** — a pure, unit-tested classifier: `classify(tool_name, tool_input)`
-  → a sandbox tier (`exec` / `fs-write` / `passthrough`) and `route(...)` → a routing decision.
-  This is the policy the future WASM executor consumes; it is real and tested today.
-- **A flagged, non-blocking hook in `guard.py`**: when `ENCLAVE_WASM_SANDBOX=1`, the guard records
+- **`platform/agentd/hooks/sandbox_policy.py`** — a pure, deterministic classifier:
+  `classify(tool_name, tool_input)` → a sandbox tier (`exec` / `fs-write` / `passthrough`) and
+  `route(...)` → a routing decision dict (`tier`, `code_exec`, `would_sandbox`, `runtime`, `note`).
+  This is the policy the future WASM executor consumes; it is real and runs today.
+- **A flagged, non-blocking hook in `platform/agentd/hooks/guard.py`**: when `ENCLAVE_WASM_SANDBOX=1`, the guard records
   the routing decision for HIGH-class calls to `state/sandbox-routing.log` (observability — "what
   *would* be sandboxed") **without** changing allow/deny. Off by default → zero behavior change.
 

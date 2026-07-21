@@ -98,6 +98,12 @@ def is_reference(val):
     # froze a deployment's brain backup for hours.
     if _CALL.match(raw):
         return True
+    # An INTERPOLATION placeholder, not a value: f"ECHOJS_APISECRET={apisecret}\n", ${VAR}, {{tmpl}}.
+    # The strip above removes the braces, leaving a bare identifier that looks like a literal — the
+    # same shape that made a no-arg call slip through. Code that WRITES a credential file is the
+    # normal case for an account-provisioning pod; flagging it froze its brain backup.
+    if re.match(r"^\{+[A-Za-z_]\w*\}*$|^\{\{.*\}\}$", raw):
+        return True
     # $VAR, $(cmd), ${A:-$B}, re.compile(...), os.environ[...]
     if v[0] == "$" or v.lstrip("-:").startswith("$") or "(" in v or "[" in v:
         return True
@@ -107,6 +113,13 @@ def is_reference(val):
     # is a command that READS a credential. `.*` and `\|` are regex constructs, not password
     # characters, and blocking the read froze a pod's brain backup (2026-07-21).
     if ".*" in v or "\\|" in v or v.startswith("*"):
+        return True
+    # A sed/awk SCRIPT that extracts a credential, e.g.
+    #   T=$(sed -n 's/^X_TOKEN=//p;s/^BRIDGE_TOKEN=//p' /workspace/.secrets/x.env)
+    # The captured value is `//p;s/^BRIDGE_TOKEN=//p'` — a substitution program, not a secret. No
+    # credential contains `s/`, `//p` or an unbalanced quote, and reading a secret is the ONE thing
+    # a pod must be able to do without freezing its own brain backup (this blocked one twice).
+    if "//p" in v or v.startswith(("s/", "n;", "p;")) or ";s/" in v:
         return True
     return bool(_SECRETS_FILE.match(v) or _ENV_REF.match(v)
                 or _DOTTED_IDENT.match(v) or _PLACEHOLDER.match(v))

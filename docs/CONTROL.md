@@ -43,10 +43,14 @@ manager agent                 host                                 target sub-ag
 *immediately* without tearing down its web surface; use **restart** when a config/image change needs the
 whole stack recreated.
 
+Beyond these lifecycle verbs the watcher also accepts four **config actions** — `set-config`,
+`set-brain`, `set-mode`, `preset` (the dashboard control-plane). They pass through to `enclave fleet`,
+which re-validates brain/mode/key-allowlist before writing the config and restarting the pod.
+
 ## Spec format
 ```yaml
 agent: data-worker         # target agent id (or omit and name the file <id>.yaml)
-action: kick               # up | down | restart | kick | logs | send
+action: kick               # up | down | restart | kick | logs | send | set-config | set-brain | set-mode | preset
 text: "resume the swap"    # required ONLY for action: send
 requested_by: master       # optional provenance, recorded in the audit log
 ```
@@ -57,7 +61,7 @@ Drop **one action per file**. Minimal example — wake data-worker by filename a
 - The manager can't run docker/`enclave` (guard-blocked inside its container). Its ONLY control channel is
   writing a file to the queue it has mounted — identical to the spawn queue.
 - The watcher validates every spec: agent id must match `^[a-z0-9][a-z0-9_-]*$` and action must be in the
-  allowlist `{up, down, restart, kick, logs, send}`. The underlying `enclave fleet` verb then re-validates
+  allowlist `{up, down, restart, kick, logs, send, set-config, set-brain, set-mode, preset}`. The underlying `enclave fleet` verb then re-validates
   that the agent exists and its compose file resolves **under an allowlisted stacks root**
   (`ENCLAVE_STACKS_ROOTS`) before touching docker — no path escape, no arbitrary compose files.
 - Every action is appended to `~/.config/enclave/fleet-audit.log` (the same log spawn_watcher and fleet.py
