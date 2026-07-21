@@ -25,6 +25,11 @@ FLEET_CONF="$SCRIPT_DIR/fleet.conf"; [ -f "$FLEET_CONF" ] || FLEET_CONF="${TOOLS
 # Work from the ACTUAL agent dir (in-container this is /agent; a host smoke-test resolves
 # to the host path). REPO_ROOT in agent.env documents the in-container mount point.
 cd "$AGENT_DIR" || exit 1
+# Persistent work root (framework fix 2026-07-21): the agent's HOME ($AGENT_DIR, bind-mounted) is the
+# ONLY guaranteed-persistent writable location. Container paths like /tmp or /workspace/work are
+# EPHEMERAL and wiped on restart — an agent that builds product there loses it (wartzar-bee lost a
+# whole CI-guardrail build this way). Guarantee a persistent work dir and tell the agent to use it.
+mkdir -p "$AGENT_DIR/work" 2>/dev/null; export WORK_PERSIST="$AGENT_DIR/work"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
 LOG="$AGENT_DIR/logs/runner.log"
@@ -184,8 +189,15 @@ post_tick_shared() {
   fi
   # Auto-snapshot the vault so memory is saved BY DEFAULT (SCAN-GATED; runtime owns the commit).
   if [ "${VAULT_SNAPSHOT:-1}" = "1" ] && [ -d "$AGENT_DIR/.git" ]; then
-    ( python3 "$SCRIPT_DIR/vault_snapshot.py" snapshot "$AGENT_DIR" --msg "tick $(date -u +%FT%TZ)" \
-        >> "$LOG" 2>&1 && log "vault snapshot ok" ) || log "vault snapshot skipped (blocked or no-op)"
+    python3 "$SCRIPT_DIR/vault_snapshot.py" snapshot "$AGENT_DIR" --msg "tick $(date -u +%FT%TZ)" \
+      >> "$LOG" 2>&1; VS_RC=$?
+    # A BLOCK must never read like a no-op: logan-cross's vault stopped committing for DAYS behind
+    # the old "blocked or no-op" line. exit 3 = the secret gate refused; the brain is NOT backed up.
+    case "$VS_RC" in
+      0) log "vault snapshot ok" ;;
+      3) log "vault snapshot BLOCKED — credential in tracked memory; brain NOT backed up (see log above)" ;;
+      *) log "vault snapshot FAILED (rc=$VS_RC) — brain NOT backed up" ;;
+    esac
   fi
 }
 

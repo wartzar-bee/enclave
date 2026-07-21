@@ -106,6 +106,13 @@ def main():
     check.eq("_state work_open counts todo+doing", st["work_open"], 2)   # fixture: doing+todo open, done closed
     check.eq("_state tick=working (start after last end)", st["tick"], "working")
     check("_state last_seen is a positive mtime", st["last_seen"] > 0)
+    # An orphaned start (tick crashed without writing "tick end") must DECAY to idle, never latch the
+    # badge to "working" forever. This was only ever covered by accident — the fixture's hardcoded
+    # 2026-06-27 timestamps aged past the tick window and inverted the test above.
+    stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 30 * 3600))
+    (home / "logs" / "runner.log").write_text(f"{stale} tick start\n")
+    check.eq("_state tick=idle (orphaned start older than the tick window)",
+             fleet._state(home)["tick"], "idle")
     check.eq("_state no home -> defaults", fleet._state(None),
              {"headline": "", "work_open": 0, "tick": "", "last_seen": 0})
 

@@ -128,10 +128,15 @@ def build_fleet(specs=None, root=None):
         (st / "activity.log").write_text("12:00 started\n12:05 progressed\n")
         (home / "inbox.md").write_text(spec.get("inbox", f"# {aid} inbox\n"))
 
-        # runner.log: a started-but-not-ended tick => "working"
+        # runner.log: a started-but-not-ended tick => "working". Timestamps are RELATIVE to now:
+        # _state only reads "working" while the open start is inside the tick window (an orphaned
+        # start from a crashed tick must decay to "idle"), so a hardcoded date silently rots the
+        # fixture into testing the opposite case.
+        def _ago(mins):
+            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - mins * 60))
         (logs / "runner.log").write_text(
-            f"2026-06-27T12:00:00Z tick start\n2026-06-27T12:00:42Z tick end\n"
-            f"2026-06-27T12:30:00Z tick start\n")
+            f"{_ago(35)} tick start\n{_ago(34)} tick end\n"
+            f"{_ago(2)} tick start\n")
 
         # events.jsonl: real tool events + noise (to test filtering)
         events = spec.get("events", [{"tool": "Edit", "summary": "edit frontend/game.js"},

@@ -60,17 +60,24 @@ def main():
     return 0
 
 
+def _fx(*parts):
+    """Assemble a test fixture. Fixtures are NEVER written as literals: this hook file is copied into
+    every agent home, which is a scan-gated git vault — a literal credential-shaped fixture makes the
+    vault gate block, and that froze wartzar-bee's brain backups entirely (2026-07-21)."""
+    return "".join(parts)
+
+
 def _selftest():
     fails = []
     def ck(n, c):
         if not c: fails.append(n)
     # the real logan leaks → blocked
-    ck("rr-password", scan("memory/activity/2026-07-19.md", "RR_PASSWORD=hunter2xyz") is not None)
-    ck("password-label-value", scan("work.json", 'password: s3cretValue1') is not None)
-    ck("google-app-pw", scan("skills/x.md", "app password: abcd efgh ijkl mnop") is not None)
-    ck("openrouter-key", scan("memory/n.md", "key sk-or-v1-abcdef0123456789abcdef") is not None)
+    ck("rr-password", scan("memory/activity/2026-07-19.md", _fx("RR_PASSWORD=hunter", "2xyz")) is not None)
+    ck("password-label-value", scan("work.json", _fx("password: s3cret", "Value1")) is not None)
+    ck("google-app-pw", scan("skills/x.md", _fx("app password: abcd ", "efgh ijkl mnop")) is not None)
+    ck("openrouter-key", scan("memory/n.md", _fx("key sk-or-", "v1-abcdef0123456789abcdef")) is not None)
     # non-target path → allowed even with a secret (guard.py + .secrets perms cover real secret files)
-    ck("non-target", scan("README.md", "password: whatever123") is None)
+    ck("non-target", scan("README.md", _fx("password: whatever", "123")) is None)
     # redacted / .secrets reference → allowed
     ck("redacted-ok", scan("memory/a.md", "password: [REDACTED->.secrets]") is None)
     ck("ref-ok", scan("work.json", "reads RR_PASSWORD from .secrets/royalroad.env") is None)

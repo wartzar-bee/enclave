@@ -167,10 +167,24 @@ def _read_cap(paths):
     return best
 
 
-def _alerts(snap, wtd, cap):
+def _alerts(snap, wtd, cap, ext=None):
     """Server-side health/cost alerts for the banner. Thresholds mirror the runtime guards (warn 70/85,
     floor 90) so the dashboard and the throttle agree."""
     al = []
+    # OUT-OF-POCKET COST ALARMS (added 2026-07-21, D-124: a ~$300/day OpenRouter burn went unseen for
+    # hours because the dashboard showed spend as a number but never ALARMED on it, and no alert
+    # flagged the root config error — pods paying OpenRouter per-token for Claude that's on the free
+    # subscription). These now scream in the banner.
+    for aid, a in (snap or {}).items():
+        if a.get("brain") == "api" and "claude" in str(a.get("model", "")).lower():
+            al.append({"level": "crit", "msg": f"💸 {aid} is BRAIN=api paying per-token for '{a.get('model')}' — "
+                                               f"that model is on the FREE subscription. Switch to BRAIN=claude."})
+    ext_fleet = round(((ext or {}).get("wtd", {}).get("fleet", {}) or {}).get("usd", 0), 2)
+    ext_today = round(((ext or {}).get("today", {}).get("fleet", {}) or {}).get("usd", 0), 2)
+    if ext_today >= 40:
+        al.append({"level": "crit", "msg": f"💸 Out-of-pocket spend today ${ext_today} (wtd ${ext_fleet}) — over $40/day. Investigate."})
+    elif ext_today >= 15:
+        al.append({"level": "warn", "msg": f"💸 Out-of-pocket spend today ${ext_today} — check it's intended (subscription work is $0)."})
     fh = (cap.get("five_hour") or {}).get("pct")
     sd = (cap.get("seven_day") or {}).get("pct")
     if sd is not None and sd >= 90: al.append({"level": "crit", "msg": f"Weekly cap at {sd}% — at/over the defer floor"})
@@ -455,7 +469,7 @@ def _cost_loop():
             last = {aid: _usage.last_record(p) for aid, p in paths.items()}
             cap = _read_cap(paths)
             graph = _build_graph(snap, paths, wins.get("wtd", {}).get("agents", {}))
-            alerts = _alerts(snap, wins.get("wtd", {}), cap)
+            alerts = _alerts(snap, wins.get("wtd", {}), cap, ext=ext)
             with _cost_lock:
                 _cost.update(usage=wins, external=ext, cap=cap, series=ser, alerts=alerts, last=last, graph=graph, ts=time.time())
         except Exception as e:
@@ -2374,7 +2388,10 @@ class H(BaseHTTPRequestHandler):
                         if b["kind"] == "ESCALATE" and _hitl(b["text"]):
                             open_items.append(b)
                             continue
-                        if _RESOLVES.search(b["text"]):
+                        # A resolution can carry its keyword in the `::` TYPE slot
+                        # (`<ts> RESOLVED :: <target>`) or in the body — check both, since
+                        # `RESOLVED ::` is the natural way to write one and used to silently no-op.
+                        if _RESOLVES.search(b["kind"]) or _RESOLVES.search(b["text"]):
                             k = _keys(b["text"])
                             if k:
                                 open_items = [o for o in open_items if not (_keys(o["text"], o["ts"]) & k)]

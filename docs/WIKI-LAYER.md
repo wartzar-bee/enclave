@@ -64,6 +64,14 @@ lesson or that landed in `inbox.md`, and **git history is forever** — so durab
   `enclave snapshot ["msg"]` does it on demand. Each: stage → **scan for credential patterns** →
   commit only if clean; a hit **blocks the commit** (fail-closed) and names the file to redact. The
   agent can't `git` at all (guard-blocked) — the runtime owns the commit (as the master owns commits).
+- **The scan distinguishes a credential from a reference to one.** Agent memory is full of legitimate
+  pointers — `secret:google.env`, `$RR_PASSWORD`, `.secrets/nvidia.env`, `password = args.password`,
+  `[REDACTED->…]` — and blocking those freezes the backup instead of protecting it. Literals still
+  block, and a JWT/token-entropy run overrides every exemption. **Never write a credential-shaped
+  literal into any file inside `home/`, including test fixtures** — assemble them from parts.
+- **A block is LOUD.** `runtime.sh` logs BLOCKED/FAILED distinctly from `ok` (a silent "blocked or
+  no-op" line once hid three pods that had never backed up at all), and a watcher alarms when a
+  vault goes stale — verify with `git -C <home> log -1`, not with "the snapshot ran".
 - A **pre-commit hook** in the vault repo blocks even a *manual* `git commit` containing a credential.
 - **Encryption at rest (stronger option)**: `enclave vault-encrypt` writes an AES-256+PBKDF2 archive
   of the brain (key in `secrets/vault.key`, never committed) so an **off-machine copy is ciphertext**,

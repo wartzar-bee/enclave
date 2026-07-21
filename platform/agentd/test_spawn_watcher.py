@@ -161,7 +161,9 @@ def main():
     stacks = root / "stacks_secrets"; stacks.mkdir()
     staged = q / "secrets-staging" / "secagent"
     staged.mkdir(parents=True)
-    (staged / "openai.env").write_text("OPENAI_API_KEY=sk-test\n")
+    # assembled, not literal: this file is scanned, and a credential-shaped literal blocks vaults
+    _fake = "OPENAI_API_KEY=" + "sk-" + "test" + "\n"
+    (staged / "openai.env").write_text(_fake)
     (staged / "extra.env").write_text("FOO=bar\n")
     rec = Recorder(returncode=0); SW.subprocess.run = rec
     sp = _drop(q, "secagent.json", {"name": "secagent"})
@@ -170,7 +172,7 @@ def main():
     check("process secrets: staged env files copied to target/secrets",
           (target / "secrets" / "openai.env").exists() and (target / "secrets" / "extra.env").exists())
     check("process secrets: copied content preserved",
-          (target / "secrets" / "openai.env").read_text() == "OPENAI_API_KEY=sk-test\n")
+          (target / "secrets" / "openai.env").read_text() == _fake)
     check("process secrets: staging dir consumed (removed)", not staged.exists())
     check("process secrets: copied files are chmod 600 (best-effort)",
           ((target / "secrets" / "openai.env").stat().st_mode & 0o777) in (0o600, 0o644))
@@ -183,7 +185,7 @@ def main():
     stacks = root / "stacks_paycred"; stacks.mkdir()
     staged = q / "secrets-staging" / "paybot"
     staged.mkdir(parents=True)
-    (staged / "nvidia.env").write_text("NVIDIA_API_KEY=nvapi-ok\n")     # normal → mounted
+    (staged / "nvidia.env").write_text(("NVIDIA_API_KEY=" + "nvapi-" + "ok" + "\n"))     # normal → mounted
     (staged / "stripe.env").write_text("STRIPE_SECRET_KEY=sk_live_x\n")  # payment → refused
     rec = Recorder(returncode=0); SW.subprocess.run = rec
     sp = _drop(q, "paybot.json", {"name": "paybot"})
@@ -199,6 +201,48 @@ def main():
           and "payment" in (target / "home" / "state" / "escalations.log").read_text().lower())
     check("paycred: pod still created + started (runs WITHOUT the refused cred)",
           len(list((q / "processed").glob("*paybot.json"))) == 1)
+
+    # ------------------------------------------ ownership guardrail: a foreign-owned identity is REFUSED
+    # A credential another agent OWNS (per the manifest ledger) must not land in this pod — the sprawl
+    # that let a fiction identity into the experimenter pod. Refuse + quarantine + escalate.
+    man = root / "manifest.json"
+    man.write_text(json.dumps({"identities": {"shared": ["nvidia.env"],
+                                               "owners": {"bluesky.env": "logan-cross"}}}))
+    _saved_manifest = SW.MANIFEST
+    SW.MANIFEST = man
+    try:
+        q = _mk_queue(root / "q_own")
+        stacks = root / "stacks_own"; stacks.mkdir()
+        staged = q / "secrets-staging" / "channel-lab"
+        staged.mkdir(parents=True)
+        (staged / "nvidia.env").write_text("NVIDIA_API_KEY=x\n")    # shared infra → mounted
+        (staged / "bluesky.env").write_text("BLUESKY_HANDLE=logancross\n")  # owned by logan → refused
+        rec = Recorder(returncode=0); SW.subprocess.run = rec
+        SW._process(_drop(q, "channel-lab.json", {"name": "channel-lab"}), stacks, q)
+        target = (stacks / "channel-lab").resolve()
+        check("ownership: shared infra IS mounted", (target / "secrets" / "nvidia.env").exists())
+        check("ownership: foreign-owned cred NOT mounted",
+              not (target / "secrets" / "bluesky.env").exists())
+        check("ownership: foreign-owned cred quarantined",
+              (q / "secrets-refused" / "channel-lab" / "bluesky.env").exists())
+        check("ownership: escalation names the owner",
+              "owned by logan-cross" in (target / "home" / "state" / "escalations.log").read_text().lower())
+
+        # ---- handover: the same cred WITH a .handover declaration IS mounted + ownership transferred
+        q = _mk_queue(root / "q_hand")
+        stacks = root / "stacks_hand"; stacks.mkdir()
+        staged = q / "secrets-staging" / "logan-cross"
+        staged.mkdir(parents=True)
+        (staged / "bluesky.env").write_text("BLUESKY_HANDLE=logancross\n")
+        (staged / ".handover").write_text("bluesky.env\n")
+        rec = Recorder(returncode=0); SW.subprocess.run = rec
+        SW._process(_drop(q, "logan-cross.json", {"name": "logan-cross"}), stacks, q)
+        target = (stacks / "logan-cross").resolve()
+        check("handover: declared handover IS mounted", (target / "secrets" / "bluesky.env").exists())
+        check("handover: ownership transferred in the ledger",
+              json.loads(man.read_text())["identities"]["owners"]["bluesky.env"] == "logan-cross")
+    finally:
+        SW.MANIFEST = _saved_manifest
 
     raise SystemExit(check.report())
 

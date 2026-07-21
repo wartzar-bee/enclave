@@ -57,6 +57,31 @@ def _is_payment_or_legal_cred(fname, content):
     return bool(_PAYMENT_LEGAL_RE.search(fname or "") or _PAYMENT_LEGAL_RE.search(content or ""))
 
 
+MANIFEST = pathlib.Path(os.environ.get("ENCLAVE_MANIFEST",
+                        str(pathlib.Path.home() / ".config" / "enclave" / "fleet.json")))
+
+
+def _ledger():
+    """DECLARED credential-ownership ledger (manifest identities.shared + identities.owners). Empty if
+    absent — then the guard is inert (no false refusals), consistent with declare-then-diff."""
+    try:
+        idn = json.loads(MANIFEST.read_text()).get("identities", {})
+        return set(idn.get("shared", [])), dict(idn.get("owners", {}))
+    except Exception:
+        return set(), {}
+
+
+def _record_handover(fname, new_owner):
+    """Transfer ownership in the ledger (deliberate handover: e.g. channel-lab proved a channel → hands
+    the account to the owning agent). Best-effort; never raises into the staging loop."""
+    try:
+        d = json.loads(MANIFEST.read_text())
+        d.setdefault("identities", {}).setdefault("owners", {})[fname] = new_owner
+        MANIFEST.write_text(json.dumps(d, indent=2) + "\n")
+    except Exception:
+        pass
+
+
 def _escalate(target, name, msg):
     """Append a human-decision escalation to the pod's escalations.log (the dashboard HITL inbox reads
     it). Same plain-text format the monitor/supervisor use: '<iso> ESCALATE :: <msg>'."""
@@ -221,6 +246,14 @@ def _process(spec_path, stacks_root, queue):
     if staged.is_dir():
         dst = target / "secrets"
         dst.mkdir(parents=True, exist_ok=True)
+        # Explicit ownership HANDOVER: a `.handover` file in the staging dir lists filenames whose
+        # ownership is deliberately transferred to THIS pod (the real workflow — an experimenter proves
+        # a channel, then hands the account over). Anything not listed stays owned by its current owner.
+        handover = set()
+        hf = staged / ".handover"
+        if hf.exists():
+            handover = {ln.strip() for ln in hf.read_text(errors="ignore").splitlines() if ln.strip()}
+        shared, owners = _ledger()
         n = refused = 0
         for f in staged.glob("*.env"):
             try:
@@ -245,6 +278,30 @@ def _process(spec_path, stacks_root, queue):
                 print(f"  ⛔ {name}: refused to mount '{f.name}' (payment/legal cred → operator); quarantined")
                 refused += 1
                 continue
+            # OWNERSHIP guardrail: a credential another agent owns must not land in this pod (the sprawl
+            # that let a fiction identity into the experimenter pod). Refuse + quarantine + escalate,
+            # UNLESS this staging explicitly declares a handover (then transfer ownership in the ledger).
+            owner = owners.get(f.name)
+            if owner and owner != name and f.name not in shared:
+                if f.name in handover:
+                    _record_handover(f.name, name)
+                    _audit("spawn-secrets", name, "handover", f"{f.name}: ownership {owner} → {name}")
+                    print(f"  ⇄ {name}: ownership handover of '{f.name}' from {owner} (declared)")
+                else:
+                    q = queue / "secrets-refused" / name
+                    q.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(f), str(q / f.name))
+                    try: os.chmod(q / f.name, 0o600)
+                    except OSError: pass
+                    _escalate(target, name, f"refused to mount '{f.name}' — it is OWNED BY {owner} (a live "
+                              f"identity another agent operates). Mounting it into {name} risks that agent's "
+                              f"account (pacing/spam-flag). Quarantined at _queue/secrets-refused/{name}/"
+                              f"{f.name}. If this is a deliberate transfer, add '{f.name}' to a `.handover` "
+                              f"file in the staging dir.")
+                    _audit("spawn-secrets", name, "refused", f"{f.name}: owned by {owner}, no handover")
+                    print(f"  ⛔ {name}: refused '{f.name}' (owned by {owner}); quarantined")
+                    refused += 1
+                    continue
             shutil.copy2(f, dst / f.name)
             try:
                 os.chmod(dst / f.name, 0o600)

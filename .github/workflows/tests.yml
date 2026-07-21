@@ -1,0 +1,31 @@
+name: tests
+
+# Run the framework test suite on every push / PR. The suite is dependency-free (plain stdlib
+# python3 scripts — no pytest), so CI == what you run locally with `bash platform/agentd/run_tests.sh`.
+# The frontend-static suite needs `node` (for `node --check` on the embedded dashboard JS); the
+# Playwright E2E self-skips cleanly when no browser is present, so it does not gate CI here.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node (for node --check on the embedded dashboard JS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run the full suite
+        run: bash platform/agentd/run_tests.sh

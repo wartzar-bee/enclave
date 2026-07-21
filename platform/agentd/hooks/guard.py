@@ -123,6 +123,18 @@ def decide_cloud_readonly(cmd):
     return True, ""
 
 
+# Ephemeral-write warning (2026-07-21 framework fix): building product under /tmp or an
+# in-container /work path that is NOT the persistent home loses it on restart. Report-only nudge.
+_EPHEMERAL = ("/tmp/", "/workspace/work/", "/var/tmp/")
+def _ephemeral_write(tool_name, tool_input):
+    if tool_name not in ("Write", "Edit", "MultiEdit"):
+        return None
+    fp = str((tool_input or {}).get("file_path", ""))
+    if any(fp.startswith(e) or ("/"+e.strip("/")+"/") in fp for e in _EPHEMERAL):
+        return ("EPHEMERAL path — this is wiped on restart; build product under $WORK_PERSIST "
+                "(=/agent/work) or a mounted venture dir so it persists.")
+    return None
+
 def decide(tool_name, tool_input):
     """PURE allow/deny decision (unit-tested). Returns (allow: bool, reason: str)."""
     cmd = (tool_input.get("command") or "") if tool_name == "Bash" else ""
