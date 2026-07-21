@@ -181,10 +181,21 @@ def _alerts(snap, wtd, cap, ext=None):
                                                f"that model is on the FREE subscription. Switch to BRAIN=claude."})
     ext_fleet = round(((ext or {}).get("wtd", {}).get("fleet", {}) or {}).get("usd", 0), 2)
     ext_today = round(((ext or {}).get("today", {}).get("fleet", {}) or {}).get("usd", 0), 2)
-    if ext_today >= 40:
+    # ACTIVE vs HISTORICAL. "Spend today" is a calendar total: after a leak is fixed at 08:10 it stays
+    # lit all day, so a crit that means "act now" becomes one that means "yesterday's news" and the
+    # banner stops being believed — the exact fatigue that let D-124 run for hours. A leak is ACTIVE
+    # only if money moved recently; otherwise say when it stopped and let it age out.
+    last_ts = ((ext or {}).get("today", {}).get("fleet", {}) or {}).get("last_ts")
+    quiet_h = ((time.time() - last_ts) / 3600.0) if last_ts else None
+    active = quiet_h is None or quiet_h < 2.0
+    if ext_today >= 40 and active:
         al.append({"level": "crit", "msg": f"💸 Out-of-pocket spend today ${ext_today} (wtd ${ext_fleet}) — over $40/day. Investigate."})
-    elif ext_today >= 15:
+    elif ext_today >= 15 and active:
         al.append({"level": "warn", "msg": f"💸 Out-of-pocket spend today ${ext_today} — check it's intended (subscription work is $0)."})
+    elif ext_today >= 15 and last_ts:
+        when = time.strftime("%H:%MZ", time.gmtime(last_ts))
+        al.append({"level": "info", "msg": f"💸 ${ext_today} out-of-pocket earlier today — STOPPED at {when}, "
+                                           f"nothing since ({quiet_h:.1f}h quiet). Ageing out of the window."})
     fh = (cap.get("five_hour") or {}).get("pct")
     sd = (cap.get("seven_day") or {}).get("pct")
     if sd is not None and sd >= 90: al.append({"level": "crit", "msg": f"Weekly cap at {sd}% — at/over the defer floor"})
@@ -454,16 +465,19 @@ def _cost_loop():
                 fleet_t, agents_t = _usage.aggregate(paths, cut)
                 wins[w] = {"fleet": fleet_t, "agents": agents_t}
                 # REAL external-API spend ($ out of pocket) from each agent's api_spending.jsonl
-                fusd, agext, bym = 0.0, {}, {}
+                fusd, agext, bym, flast = 0.0, {}, {}, None
                 for aid, up in paths.items():
                     r = _usage.api_rollup(str(pathlib.Path(up).parent / "api_spending.jsonl"), cut)
                     if r["calls"]:
                         agext[aid] = r
                     fusd += r["usd"]
+                    if r.get("last_ts") and (flast is None or r["last_ts"] > flast):
+                        flast = r["last_ts"]
                     for m, v in r["by_model"].items():
                         b = bym.setdefault(m, {"usd": 0.0, "calls": 0})
                         b["usd"] = round(b["usd"] + v["usd"], 4); b["calls"] += v["calls"]
-                ext[w] = {"fleet": {"usd": round(fusd, 4), "by_model": bym}, "agents": agext}
+                ext[w] = {"fleet": {"usd": round(fusd, 4), "by_model": bym, "last_ts": flast},
+                          "agents": agext}
             cut7, _ = _usage.window_cutoff("7d")
             ser = {by: _usage.series(paths, cut7, "day", by) for by in ("agent", "model", "reason")}
             last = {aid: _usage.last_record(p) for aid, p in paths.items()}

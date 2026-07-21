@@ -307,3 +307,31 @@ if check.failed:
     print(f"{check.failed} FAILED")
     raise SystemExit(1)
 print("ALL PASS")
+
+# ── off_directive must not fire on a pod whose product ships EXTERNALLY (2026-07-21) ─────────
+# serves_observed is derived from LOCAL product writes, so logan-cross (which publishes chapters to
+# Royal Road) could never show as serving anything and the rule stayed lit on a working pod. Pods
+# that declare product_measured_externally now report serves_observed=None — "cannot observe" — and
+# the rule must treat unknown as not-a-failure while still catching the real cases.
+def test_offdir_external_product():
+    import json as _j, tempfile as _t, pathlib as _p
+    from monitor.playbooks import _offdir_match
+
+    def home(observed, serves):
+        d = _p.Path(_t.mkdtemp())
+        (d / "state").mkdir()
+        recs = [{"ts": "2026-07-21T1%d:00:00" % i, "config": "ok", "serves": serves,
+                 "serves_observed": observed, "writes": {"product": 0}} for i in range(3)]
+        (d / "state" / "tick-scorecard.jsonl").write_text("\n".join(_j.dumps(r) for r in recs))
+        return str(d)
+
+    assert not _offdir_match({}, home(None, ["lc-x"]), {"up": True}, {}), \
+        "unknown observation on an externally-measured pod must NOT read as off-directive"
+    assert _offdir_match({}, home(False, ["lc-x"]), {"up": True}, {}), \
+        "a pod observed NOT serving its directive must still fire"
+    assert _offdir_match({}, home(None, []), {"up": True}, {}), \
+        "declaring nothing while writing nothing must still fire"
+    print("ok: off_directive tolerates unobservable (external) product, still catches real drift")
+
+
+test_offdir_external_product()

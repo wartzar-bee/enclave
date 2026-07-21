@@ -23,7 +23,7 @@
 # limit data (ccusage), surfaced separately by the guard / dashboard.
 # ──────────────────────────────────────────────────────────────────────────
 import argparse
-import json
+import calendar, json
 import os
 import pathlib
 import sys
@@ -69,13 +69,19 @@ def window_cutoff(window, now=None, week_reset=(1, 12, 59)):
 
 
 def _parse_ts(s):
-    """Parse an ISO-8601 'Z' timestamp → local-naive epoch seconds. Tolerant."""
+    """Parse an ISO-8601 'Z' timestamp → TRUE epoch seconds. Tolerant.
+
+    calendar.timegm, not time.mktime: mktime reads the struct as LOCAL time, and `- time.timezone`
+    only corrects the standard offset, so under DST every timestamp came out an hour off. That
+    mis-binned records at window edges and surfaced visibly as a banner reading "STOPPED at 07:10Z"
+    for a call the log records at 08:10Z. window_cutoff() already returns true epochs, so this is
+    what it must be compared against.""" 
     if not s:
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):   # tolerate optional milliseconds
         try:
             dt = datetime.strptime(s, fmt)               # stored as UTC 'Z'
-            return time.mktime(dt.timetuple()) - time.timezone
+            return calendar.timegm(dt.timetuple())
         except (ValueError, TypeError):
             continue
     return None
@@ -226,7 +232,9 @@ def api_rollup(path, cutoff_epoch):
     completion_tokens, usd) since cutoff. Returns {usd, calls, by_model:{m:{usd,calls}}}. OUT-OF-POCKET
     money (OpenRouter / NVIDIA / api+optimize pools) — distinct from Claude subscription usage in
     usage.jsonl (which counts against the cap, not the wallet)."""
-    out = {"usd": 0.0, "calls": 0, "by_model": {}}
+    # last_ts: an alarm that cannot say WHEN the money was spent reads a fixed leak as a live
+    # one, and a crit that stays lit after the fix is how people learn to ignore the banner.
+    out = {"usd": 0.0, "calls": 0, "by_model": {}, "last_ts": None}
     p = pathlib.Path(path)
     if not p.exists():
         return out
@@ -243,6 +251,8 @@ def api_rollup(path, cutoff_epoch):
             if cutoff_epoch is not None and (ts is None or ts < cutoff_epoch):
                 continue
             usd = rec.get("usd") or 0
+            if ts is not None and (out["last_ts"] is None or ts > out["last_ts"]):
+                out["last_ts"] = ts
             out["usd"] += usd
             out["calls"] += 1
             bm = out["by_model"].setdefault(rec.get("model") or "unknown", {"usd": 0.0, "calls": 0})

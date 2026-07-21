@@ -221,6 +221,12 @@ def collect(base, t0, now=None):
         globs = [g for s in serves for g in (active.get(s, {}).get("artifacts") or [])]
         if globs:
             serves_observed = any(_match_any(base, p, globs) for p in touched)
+        elif (cfg or {}).get("product_measured_externally"):
+            # This pod's product ships to an EXTERNAL platform (logan-cross publishes chapters to
+            # Royal Road), so a LOCAL product write can neither prove nor disprove that it served a
+            # directive. Unknown is the honest answer: False would assert "not serving" from a signal
+            # that cannot see the work, and off_directive would then fire forever on a working pod.
+            serves_observed = None
         else:
             serves_observed = (product_val or 0) > 0 if kpi else None
 

@@ -16,9 +16,12 @@ this session surfaced (broken bin/memory.py path; delegation-verify loop) plus t
 HONESTY: a cause is asserted (confidence "high") only when a deterministic signature fires; otherwise
 the playbook carries the diagnostics anomaly's own evidence + a lower confidence.
 """
+import calendar
 import json
+import os
 import re
 import socket
+import time
 import pathlib
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -167,7 +170,53 @@ _context_bloat = Playbook(
 
 
 # (4) container_down — ran then exited unexpectedly (distinct from an operator stop / never-started).
+
+def _last_tick_age(home, now):
+    """Seconds since the newest `tick start`/`tick end` line in runner.log, or None.
+
+    The stall check used to read `last_seen` (the rollup.md mtime), so a pod ticking every few
+    minutes but no longer writing its rollup was reported as "has not produced a tick, possibly
+    wedged" — wrong cause, wrong fix, and it hid the REAL problem (it stopped recording progress),
+    which is now its own finding. calendar.timegm because the log stamps are UTC.
+    """
+    if not home:
+        return None
+    try:
+        lines = (pathlib.Path(home) / "logs" / "runner.log").read_text(errors="ignore").splitlines()[-800:]
+    except Exception:
+        return None
+    for ln in reversed(lines):
+        if "tick start" in ln or "tick end" in ln:
+            try:
+                return now - calendar.timegm(time.strptime(ln[:19], "%Y-%m-%dT%H:%M:%S"))
+            except Exception:
+                return None
+    return None
+
+
+def _deliberately_stopped(aid):
+    """True only when the manifest EXPLICITLY says we don't supervise this agent (watch: false).
+
+    A deliberately stopped pod (stoneforge; the studio's own CLI seat) is not "down unexpectedly" —
+    the guardian already reads this declaration so it never resurrects them, and the monitor must
+    agree or it parks a permanent high-sev finding on something nobody intends to run.
+
+    ABSENCE from the manifest is NOT a deliberate stop — that is a registration gap, which the
+    guardian flags separately — so an unregistered pod still alarms as before."""
+    if not aid:
+        return False
+    try:
+        man = json.loads(pathlib.Path(os.path.expanduser(
+            os.environ.get("ENCLAVE_MANIFEST", "~/.config/enclave/fleet.json"))).read_text())
+    except Exception:
+        return False
+    entry = (man.get("agents", {}) or {}).get(aid)
+    return isinstance(entry, dict) and entry.get("watch") is False
+
+
 def _down_match(diag, home, snap, ctx):
+    if _deliberately_stopped(ctx.get("agent") or snap.get("id") or ""):
+        return False                      # explicitly unsupervised -> not an incident
     return (not snap.get("up")) and "exited" in (snap.get("status", "") or "").lower()
 
 def _down_diag(diag, home, snap, ctx):
@@ -215,13 +264,18 @@ def _stalled_match(diag, home, snap, ctx):
             return False
     except Exception:
         pass
-    last = snap.get("last_seen") or 0
-    return last > 0 and (ctx.get("now", 0) - last) > ctx.get("no_tick_seconds", 6 * 3600)
+    now = ctx.get("now", 0)
+    age = _last_tick_age(home, now)
+    if age is not None:                    # authoritative: the tick log
+        return age > ctx.get("no_tick_seconds", 6 * 3600)
+    last = snap.get("last_seen") or 0      # no tick log -> fall back to rollup mtime
+    return last > 0 and (now - last) > ctx.get("no_tick_seconds", 6 * 3600)
 
 def _stalled_diag(diag, home, snap, ctx):
-    hrs = (ctx.get("now", 0) - (snap.get("last_seen") or 0)) / 3600.0
+    age = _last_tick_age(home, ctx.get("now", 0))
+    hrs = (age / 3600.0) if age is not None else (ctx.get("now", 0) - (snap.get("last_seen") or 0)) / 3600.0
     return {"cause": "an autonomous agent has not produced a tick in a long time (possibly wedged)",
-            "confidence": "med", "evidence": f"no rollup update in ~{hrs:.1f}h",
+            "confidence": "med", "evidence": f"no tick boundary in runner.log for ~{hrs:.1f}h",
             "recommendation": "check runner.log for a stuck tool/loop; restart if wedged.",
             "source": "deterministic"}
 
@@ -407,7 +461,20 @@ _wander_rate = Playbook(
 
 # (12) self_certification — most 'done' work items carry NO verify command: the deterministic
 # completion gate exists but is being bypassed by omission (self-certified doneness).
+def _idle_pod(home, aid):
+    """Paused, or explicitly unsupervised: it is not working, so a finding ABOUT its work is stale by
+    construction. stoneforge has been paused for weeks and still reported self_certification."""
+    try:
+        if home and (pathlib.Path(home) / "state" / "paused").exists():
+            return True
+    except Exception:
+        pass
+    return _deliberately_stopped(aid)
+
+
 def _selfcert_match(diag, home, snap, ctx):
+    if _idle_pod(home, ctx.get("agent") or snap.get("id") or ""):
+        return False
     if not snap.get("up"):
         return False                    # a stopped/archived pod's old work queue is history, not a finding
     import json as _json
