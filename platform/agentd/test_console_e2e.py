@@ -8,7 +8,7 @@ nav views, per-agent tabs, and the New-Agent create modal actually work.
 SELF-SKIPS cleanly (prints a reason, exits 0) when no browser/driver is available — a skip must
 never fail CI. Browser detection order:
   (a) Python Playwright (`import playwright`)
-  (b) Node Playwright  (businesses/devtools/node_modules/playwright)  <- the one present on this host
+  (b) Node Playwright  (a local node_modules/playwright)  <- the one present on this host
   (c) host browser bridge on 127.0.0.1:18184  (probed; not sufficient for the interactive drive, so
       if it is the ONLY thing up we still skip with a clear note)
 

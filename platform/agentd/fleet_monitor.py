@@ -71,7 +71,7 @@ def enqueue(control_queue, spec):
 
 def heartbeat_path():
     """Where the daemon publishes its liveness + live-findings snapshot for the dashboard to read.
-    Defaults next to the monitor state so the studio launcher's single env override covers both."""
+    Defaults next to the monitor state so the host launcher single env override covers both."""
     p = os.environ.get("ENCLAVE_MONITOR_HEARTBEAT")
     if p:
         return pathlib.Path(p).expanduser()

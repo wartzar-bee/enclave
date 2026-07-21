@@ -207,7 +207,7 @@ def _chat_model(agent_dir, brain):
         return m
     if brain == "claude":
         # NO fallback to MODEL (the WORK brain): that inherited opus onto the chat plane whenever
-        # CHAT_MODEL was unset (stoneforge chatted on claude-opus-4-8 while PAUSED — evaluation
+        # CHAT_MODEL was unset (forgepod chatted on claude-opus-4-8 while PAUSED — evaluation
         # 2026-07-19 §3.3). Chat defaults to the snappy tier; the UI picker still overrides above.
         return "claude-sonnet-4-6"
     if brain == "local":   # a local-brain agent chats on its LOCAL model (MLX), not a cloud default

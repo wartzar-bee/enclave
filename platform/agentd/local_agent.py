@@ -876,7 +876,7 @@ def run(agent_dir):
             continue
         if tool == "finish":
             # Decision capture is a RUNTIME MECHANISM, not brief prose (2026-07-20: "an instruction
-            # agents can ignore is not a mechanism" — channel-lab ignored the logging convention for
+            # agents can ignore is not a mechanism" — labpod ignored the logging convention for
             # a full day). The finish contract carries `decisions`; the RUNTIME writes the file, so
             # capture cannot be skipped silently. One nudge if the key is missing after a working
             # tick; a second finish always succeeds (never wedge an agent on paperwork).

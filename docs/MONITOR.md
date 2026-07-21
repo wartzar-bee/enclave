@@ -39,7 +39,7 @@ A noisy/expected-down agent → `observe` or `off`; a critical one → `alert`; 
 ## Tuning — `policies/monitor.json` (env `ENCLAVE_MONITOR_POLICY`)
 
 Data, not code: per-playbook enable, the `autofix_allowlist`, the fleet `default_mode`, thresholds
-(no-tick hours, rate limit). Ships conservative (alert-only, empty allowlist). The studio keeps its
+(no-tick hours, rate limit). Ships conservative (alert-only, empty allowlist). the orchestrator keeps its
 own tuned copy. Host bridges to probe come from `ENCLAVE_DOCTOR_BRIDGES` (same env `/api/doctor` uses).
 
 **Auto-fix safety rule:** autofix is allowed ONLY for liveness/restart actions that return to a

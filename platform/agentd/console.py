@@ -60,7 +60,7 @@ PROBE_SECS = 4.0
 COST_SECS = float(os.environ.get("CONSOLE_COST_SECS", "45"))  # cost changes per-tick (minutes), not per-4s
 
 # Fleet health monitor (the Agent SRE daemon) — the console READS its heartbeat/state and, when the host
-# wires a launch command, can start/stop it. Paths default next to ~/.config/enclave; the studio launcher
+# wires a launch command, can start/stop it. Paths default next to ~/.config/enclave; the host launcher
 # overrides them. ENCLAVE_MONITOR_LAUNCH = the shell command that (re)starts the daemon detached (e.g.
 # `bash …/tools/studio-monitor.sh`); absent → the Monitor view is read-only (product stays generic).
 _CFGDIR = pathlib.Path.home() / ".config" / "enclave"
@@ -415,7 +415,7 @@ def _build_graph(snap, paths, wtd_agents):
     for aid in sorted(ids):
         a = snap.get(aid, {})
         # Graveyard filter (truth review T4): a pod that is DOWN and hasn't been seen in >7 days is
-        # a killed/parked deployment, not fleet topology — rendering it (goodnight-tales, graveyard'd
+        # a killed/parked deployment, not fleet topology — rendering it (a graveyard'd deployment,
         # weeks ago) makes the map read as bigger and sicker than the real fleet.
         if not a.get("up") and (time.time() - (a.get("last_seen") or 0)) > 7 * 86400:
             continue
@@ -2275,7 +2275,7 @@ class H(BaseHTTPRequestHandler):
                 pass
             chk("docker daemon", bool(fleet._docker("version", "--format", "{{.Server.Version}}").strip()),
                 "reachable")
-            # Optional host-bridge reachability — endpoints come from ENCLAVE_DOCTOR_BRIDGES (the studio
+            # Optional host-bridge reachability — endpoints come from ENCLAVE_DOCTOR_BRIDGES (the orchestrator
             # sets its qmd/voice/mlx/… here) so the PRODUCT stays generic. Format: "name:host:port,…".
             for spec in (os.environ.get("ENCLAVE_DOCTOR_BRIDGES", "") or "").split(","):
                 spec = spec.strip()

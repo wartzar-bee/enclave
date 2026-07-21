@@ -14,7 +14,7 @@ It also flags manifest-registration drift (a fleet dir with no manifest entry �
 
 Paths are env-configurable so the framework ships no deployment constants:
   ENCLAVE_FLEET_ROOT (default <repo>/fleet) · ENCLAVE_MANIFEST (default ~/.config/enclave/fleet.json) ·
-  GUARDIAN_ESC_LOG (default <fleet>/studio/home/state/escalations.log).
+  GUARDIAN_ESC_LOG (default <fleet>/<orchestrator>/home/state/escalations.log).
 
 Run:  python3 fleet_guardian.py            (one-shot; launchd calls this every 60s)
       python3 fleet_guardian.py --install  (write + load the launchd plist)
@@ -40,7 +40,7 @@ PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
 
 def _watched_pods():
     """Watch-set is DECLARED, not hardcoded: manifest agents with supervision `watch: true` (OPT-IN, so a
-    deliberately-stopped pod like stoneforge is never resurrected — the failure mode is 'unwatched', never
+    deliberately-stopped pod like forgepod is never resurrected — the failure mode is 'unwatched', never
     'wrongly restarted'). A `.guardian-off` file in the pod dir is a runtime override that also excludes it.
     Empty/unreadable manifest → watch nothing (fail safe, never guess a pod list)."""
     try:
@@ -101,7 +101,7 @@ def _restart(pod):
 
 
 def _escalate(pod, detail):
-    # Surface a genuine down-and-recovered event to the studio decision queue / monitor.
+    # Surface a genuine down-and-recovered event to the orchestrator decision queue / monitor.
     try:
         with open(STUDIO_ESC, "a") as f:
             f.write(f"{_now()} ESCALATE :: [fleet-guardian] {pod} was DOWN and auto-restarted "

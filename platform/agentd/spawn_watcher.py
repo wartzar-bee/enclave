@@ -72,7 +72,7 @@ def _ledger():
 
 
 def _record_handover(fname, new_owner):
-    """Transfer ownership in the ledger (deliberate handover: e.g. channel-lab proved a channel → hands
+    """Transfer ownership in the ledger (deliberate handover: e.g. labpod proved a channel → hands
     the account to the owning agent). Best-effort; never raises into the staging loop."""
     try:
         d = json.loads(MANIFEST.read_text())
@@ -151,7 +151,7 @@ def _governance_check(spec):
                 isinstance(s, dict) and str(s.get("label", "")).strip() and str(s.get("url", "")).strip()
                 and str(s.get("pattern", "")).strip() for s in srcs)):
             return False, ("term_sheet has no usable kpi_sources — the external KPI probe needs "
-                           "[{label, url, pattern}] so the studio can read the KPI from the "
+                           "[{label, url, pattern}] so the orchestrator can read the KPI from the "
                            "third-party surface. A pod may not score itself (standing rule).")
         # Analytics-plan P0: PRODUCT must be machine-checkable from birth — without kpi_artifacts
         # globs the scorecard runs blind (product=null) and "done at the product level" is prose

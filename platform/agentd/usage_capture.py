@@ -59,7 +59,7 @@ _RATE_OUT = float(os.environ.get("RATE_OUTPUT_PER_MTOK", "75"))
 def _raw_est(cum):
     """Uncalibrated running $ estimate from the SUMMED per-turn tokens at the list rates above.
     Structurally biased HIGH vs the result event's authoritative total_cost_usd (measured ~7× on
-    stoneforge: real $0.43 read as $3.04) — every $ control gates on this number, which is why it
+    forgepod: real $0.43 read as $3.04) — every $ control gates on this number, which is why it
     gets CALIBRATED (below) instead of consumers inflating their caps to compensate."""
     return (cum["input"] * _RATE_IN + cum["cache_read"] * _RATE_CR
             + cum["cache_write"] * _RATE_CW + cum["output"] * _RATE_OUT) / 1e6

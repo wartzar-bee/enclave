@@ -197,9 +197,10 @@ def _last_tick_age(home, now):
 def _deliberately_stopped(aid):
     """True only when the manifest EXPLICITLY says we don't supervise this agent (watch: false).
 
-    A deliberately stopped pod (stoneforge; the studio's own CLI seat) is not "down unexpectedly" —
-    the guardian already reads this declaration so it never resurrects them, and the monitor must
-    agree or it parks a permanent high-sev finding on something nobody intends to run.
+    A deliberately stopped pod — one paused indefinitely, or a seat a human drives interactively —
+    is not "down unexpectedly". The guardian already reads this declaration so it never resurrects
+    them, and the monitor must agree or it parks a permanent high-sev finding on something nobody
+    intends to run.
 
     ABSENCE from the manifest is NOT a deliberate stop — that is a registration gap, which the
     guardian flags separately — so an unregistered pod still alarms as before."""
@@ -349,12 +350,12 @@ def _scored(home, n=10):
 
 
 # (8) zero_product — N consecutive scored ticks with zero PRODUCT writes while the pod runs green.
-# The logan-cross failure shape: 56 healthy L1 ticks, output = its own status file. Fires at 10
-# scored ticks (hours). For queue-gated agents whose no-op is by design (ideas-scout), suppress
+# the busywork failure shape: 56 healthy L1 ticks, output = its own status file. Fires at 10
+# scored ticks (hours). For queue-gated agents whose no-op is by design (scoutpod), suppress
 # per-agent via policy — don't blunt the default.
 def _product_is_external(home):
     """A pod whose product ships to an EXTERNAL platform writes no local artifact when it publishes.
-    logan-cross posts chapters to Royal Road: 10 "zero product" ticks, while the chapters were live
+    scribepod posts chapters to Royal Road: 10 "zero product" ticks, while the chapters were live
     (HTTP 200) — and this rule recommends "consider pause + board review", i.e. it was one step from
     pausing a productive pod. Declared in the pod's own state/scorecard-config.json, so the default
     stays sharp for pods that genuinely produce nothing."""
@@ -463,7 +464,7 @@ _wander_rate = Playbook(
 # completion gate exists but is being bypassed by omission (self-certified doneness).
 def _idle_pod(home, aid):
     """Paused, or explicitly unsupervised: it is not working, so a finding ABOUT its work is stale by
-    construction. stoneforge has been paused for weeks and still reported self_certification."""
+    construction. forgepod has been paused for weeks and still reported self_certification."""
     try:
         if home and (pathlib.Path(home) / "state" / "paused").exists():
             return True

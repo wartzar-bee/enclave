@@ -36,7 +36,7 @@ STOP  = ("\U0001F6D1 STOP NOW — ${cost:.2f} ≥ your ${hard:.2f} budget. Do ON
          "{{\"status\":\"continue\",\"session\":\"clear\"}}; (3) finish this turn. You will be "
          "hard-stopped in ~{grace}s.")
 # Turn-cap wrap-up (2026-07-04 fix #4/#9-adjacent): MAX_TURNS used to GUILLOTINE mid-work
-# (57 ticks / $111 on stoneforge died error_max_turns, the truncated work re-derived next tick).
+# (57 ticks / $111 on forgepod died error_max_turns, the truncated work re-derived next tick).
 # Inject a wrap-up order near the cap so the agent banks state and exits cleanly instead.
 TURNWRAP = ("⏳ TURN CAP — you are at turn {turn} of a {max_turns}-turn tick cap. WRAP UP NOW: "
             "bank the current chunk (commit if applicable), write state/handoff.md with the EXACT "

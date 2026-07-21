@@ -4,8 +4,8 @@ directives.py — the fleet's revocation primitive (2026-07-19 evaluation, fix #
 
 Problem this solves: every instruction channel was append-only prose, so a live instruction
 and its cancellation coexisted at equal priority and the agent had to resolve them by
-inference on a fresh context, every tick (stoneforge FOCUS LOCK vs 10-games mission;
-logan-cross term sheet re-asserting a retracted claim; ideas-scout's retraction never
+inference on a fresh context, every tick (forgepod FOCUS LOCK vs 10-games mission;
+scribepod term sheet re-asserting a retracted claim; scoutpod's retraction never
 reaching recall at all because memory.py filtered directives on a `\\bboard\\b` regex).
 
 The primitive: `state/directives.json` — compiled directive STATE, not paragraphs.
@@ -14,7 +14,7 @@ The primitive: `state/directives.json` — compiled directive STATE, not paragra
                       "priority": <int, lower = first>, "date": "...", "text": "..." } ] }
 
 Rules of the road:
-- The OPERATOR keeps writing prose (inbox/chat). The STUDIO compiles it into this file at
+- The OPERATOR keeps writing prose (inbox/chat). the orchestrator compiles it into this file at
   every board sweep / directive delivery — writing the inbox without recompiling is the
   "term sheet never reached the pod" failure; `verify` catches that mechanically.
 - The tick injects ACTIVE entries IN FULL, in priority order (memory.py digest reads this
@@ -112,7 +112,7 @@ def verify(base, max_age_h=None):
 
 def draft(base):
     """Zero-LLM draft compiled from ALL open '- [ ]' inbox items — no keyword filter (the old
-    `\\bboard\\b` regex silently dropped most directives). The studio edits statuses/priorities
+    `\\bboard\\b` regex silently dropped most directives). the orchestrator edits statuses/priorities
     by hand; supersession is a human judgment, this only guarantees nothing is dropped."""
     base = pathlib.Path(base)
     ib = base / "inbox.md"
@@ -145,7 +145,7 @@ def _selftest():
 
     with tempfile.TemporaryDirectory() as td:
         b = pathlib.Path(td); (b / "state").mkdir()
-        # F1: the ideas-scout fault — 3 [tier:top] inbox directives, NO directives.json.
+        # F1: the scoutpod fault — 3 [tier:top] inbox directives, NO directives.json.
         (b / "inbox.md").write_text(
             "- [ ] 2026-07-19 — [tier:top] FIRST DIRECTIVE — you are live.\n"
             "- [ ] 2026-07-19 — [tier:top] CORRECTION — THIS REPLACES IT.\n"

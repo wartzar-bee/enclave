@@ -15,7 +15,7 @@ even if prompt-injected.
 ## Quick start
 The repo is **private** — clone with your GitHub access to the org:
 ```bash
-git clone https://github.com/wartzar-bee/enclave.git enclave && cd enclave
+git clone https://github.com/demopod/enclave.git enclave && cd enclave
 ./bin/enclave init                   # wizard: name, brain, model, port, paste your credential
 ./bin/enclave run                    # build + start, then opens the chat in your browser
 ```

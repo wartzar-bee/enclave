@@ -485,7 +485,7 @@ class Memory:
         # (state/directives.json, active entries IN FULL, priority order — the revocation primitive).
         # Fallback = ALL open inbox items. The old `\bboard\b|via comms|BOARD` keyword filter is gone:
         # it silently dropped every directive that didn't happen to contain those tokens (all 3 of
-        # ideas-scout's [tier:top] orders, verified 2026-07-19).
+        # scoutpod's [tier:top] orders, verified 2026-07-19).
         directives = []; retracted = []
         acts, retr = self._directive_state()
         if acts:

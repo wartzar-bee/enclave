@@ -47,7 +47,7 @@ check("steady -> no anomalies", d["anomalies"] == [])
 check("steady -> 100% process success", d["honesty"]["process_success_pct"] == 100.0)
 check("steady -> week window", d["window"] == "week")
 
-# --- CONTEXT EXPLOSION: small last week, huge this week (the StoneForge case) ----------------
+# --- CONTEXT EXPLOSION: small last week, huge this week (observed in a long-running build pod) ----------------
 last_week = [tick(T0 + i * (DAY // 2), ctx=80_000, cost=0.3) for i in range(8)]   # ~80k
 this_week = [tick(T0 + 8 * DAY + i * (DAY // 4), ctx=3_500_000, cost=2.2) for i in range(8)]  # ~3.5M
 d = D.compute(last_week + this_week, now=T0 + 10 * DAY)

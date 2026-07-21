@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hermetic tests for tick_feeder.py's injection decision (next_injection) — the graduated
-budget warnings + the 2026-07-04 turn-cap wrap-up (57 stoneforge ticks / $111 died at
+budget warnings + the 2026-07-04 turn-cap wrap-up (57 forgepod ticks / $111 died at
 error_max_turns with the truncated work re-derived next tick; the wrap-up injection banks the
 work before the guillotine). Run: python3 test_tick_feeder.py
 """

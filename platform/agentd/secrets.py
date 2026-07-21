@@ -13,7 +13,7 @@ Three jobs, one place:
   redact(text)     -> text             STRIP credentials from anything rendered/logged/reported
   bash_pattern()   -> ERE string       the SAME families for shell hooks, generated not hand-copied
 
-PORTABILITY (this bit is not theoretical): the studio's own pre-commit hook wrote its quote class as
+PORTABILITY (this bit is not theoretical): the orchestrator's own pre-commit hook wrote its quote class as
 `["\\x27]`. GNU grep reads that as ["'], BSD grep (macOS default) reads it as the literal characters
 \\ x 2 7 — so on macOS it MISSED every single-quoted secret (`password='hunter2secretvalue'`) while
 false-blocking legitimate secrets *reads*. bash_pattern() therefore emits only POSIX-portable ERE:
@@ -62,6 +62,11 @@ _LABEL_RE = [re.compile(p) for p in LABEL_VALUE]
 _SECRETS_FILE = re.compile(r"(?i)^[\w\-./]*\.(?:env|json|ya?ml|pem|key|txt|ini|toml|cfg|conf)$")
 _ENV_REF = re.compile(r"^\$\{?[A-Za-z_]\w*\}?$")
 _DOTTED_IDENT = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
+# A CALL produces a credential, it is not one: `password = _gen_password()`,
+# `token = os.getenv("X")`, `key = load_key(path)`. This blocked channel-lab's vault for 3.7h —
+# a fail-closed gate that fires on a false positive stops the backup just as dead as a real leak,
+# so precision here is a availability property, not just tidiness. looks_random() still overrides.
+_CALL = re.compile(r"^[A-Za-z_][\w.]*\s*\(.*\)$")
 _PLACEHOLDER = re.compile(r"(?i)^(?:redacted|placeholder|example|changeme|your[-_]?\w*|dummy|fake"
                           r"|none|null|todo|tbd|x{3,}|\*{3,}|\.{3,}|_{3,}|-{3,})")
 
@@ -82,11 +87,17 @@ def is_reference(val):
     This filter is why a fail-closed gate is usable: a false positive silently freezes an agent's
     whole brain backup (it did — three pods had never backed up). Every rule is anchored or
     structural, so a bare literal like `3r2s-e726-ct5d-y4ee` still blocks."""
+    raw = (val or "").strip()
     v = (val or "").strip("'\"[](){}<>`,;")
     if not v or len(v) < 8:
         return True
     if looks_random(v):
         return False
+    # Checked against RAW, before the strip above: stripping "()" off `_gen_password()` leaves a bare
+    # identifier, so the `"(" in v` test below never fired for a no-argument call. That single gap
+    # froze channel-lab's brain backup for 3.7h.
+    if _CALL.match(raw):
+        return True
     # $VAR, $(cmd), ${A:-$B}, re.compile(...), os.environ[...]
     if v[0] == "$" or v.lstrip("-:").startswith("$") or "(" in v or "[" in v:
         return True
@@ -114,6 +125,12 @@ def scan_text(text, with_kind=False):
         for m in rx.finditer(text):
             if is_reference(m.group("val")):
                 continue
+            # The val group stops at the first non-word char, so a CALL arrives here as a bare
+            # identifier: `password = _gen_password()` captures `_gen_password`. Look at what
+            # follows — an opening paren means the value is PRODUCED, not written down. Missing
+            # this froze a pod's brain backup for 3.7h on a line that generates a password.
+            if text[m.end("val"):m.end("val") + 1] == "(":
+                continue
             snip = m.group(0)[:24] + "…"
             return (snip, "label-value") if with_kind else snip
     return None
@@ -121,7 +138,7 @@ def scan_text(text, with_kind=False):
 
 # ── redaction (for anything rendered, logged, or reported) ───────────────────────────────────
 # Both quote characters, on purpose. Written with only `"` this missed `password='...'` — the very
-# same single-quote blind spot that made the studio's shell hook useless on macOS.
+# same single-quote blind spot that made the orchestrator's shell hook useless on macOS.
 _RED_KV = re.compile(
     r"\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY)[A-Z0-9_]*)"
     r"(\\?['\"]?\s*[=:]\s*)(?P<val>\\?['\"]?[^\s\"']{6,}\\?['\"]?)", re.I)

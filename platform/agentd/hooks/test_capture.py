@@ -4,7 +4,7 @@ test_capture.py — the Stop hook's decision capture.
 
 Decision logging used to live in local_agent.py's `finish` contract, which only runs on
 BRAIN=api/local. When the fleet moved to BRAIN=claude on the subscription, every pod silently stopped
-recording WHY it acted — logan-cross had no decisions.jsonl at all, and the others' last entries were
+recording WHY it acted — scribepod had no decisions.jsonl at all, and the others' last entries were
 hours stale. These tests pin the replacement: structural capture that does not depend on the agent
 remembering, and that stays honest about which records are the agent's own words.
 """
@@ -21,7 +21,7 @@ def ck(name, cond):
         fails.append(name)
 
 
-TS, AGENT = "2026-07-21T13:00:00Z", "logan-cross"
+TS, AGENT = "2026-07-21T13:00:00Z", "scribepod"
 
 # ── explicit markers are captured as the agent wrote them ────────────────────────────────────
 final = """Looked at the RR swap engine.

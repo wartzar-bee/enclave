@@ -36,7 +36,7 @@ between ticks** + **reactive: on a real context-overflow error, clear+retry** (O
 No single layer is trusted.
 
 **C5. Clearing more often risks MORE re-grounding cost — so the handoff must be ONE lean, self-sufficient
-file.** stoneforge's waste was re-reading the whole gap-list + `recall.md` + files every fresh tick, AND
+file.** forgepod's waste was re-reading the whole gap-list + `recall.md` + files every fresh tick, AND
 reconciling TWO copies of `release-gaps.md`.
 → **One canonical lean handoff** (`state/handoff.md`) that is *everything* a fresh tick needs — so
 re-grounding is "read one small file," not "re-derive my world." Distill-up discipline (OpenClaw two-tier).
@@ -107,7 +107,7 @@ LAST TOOL RESULTS (verbatim, 1-2): <preserve the model's "rhythm">
 ## PART 4 — IMPLEMENTATION STEPS (ordered, each independently testable)
 1. **`usage_capture.py`** → write `state/.ctx-budget.json {tokens,pct,turn}` per assistant message. Unit-test.
 2. **`ctx_budget.py`** PostToolUse hook → read budget (+counter fallback) → graduated exit-2. Unit-test the
-   threshold logic. Register in the Claude templates' settings + live stoneforge.
+   threshold logic. Register in the Claude templates' settings + live forgepod.
 3. **Handoff template + tick.txt/CLAUDE.md** → mandate handoff.md write before finish; hard-warn ⇒
    `session:clear`; add Manus offload discipline.
 4. **`runtime.sh`** → keep `session:clear` honoring; lower the token-ceiling backstop to the cost floor
@@ -117,7 +117,7 @@ LAST TOOL RESULTS (verbatim, 1-2): <preserve the model's "rhythm">
    supervised Opus tick to tune `CTX_SOFT/HARD`.
 
 ## PART 5 — PHASING
-- **Phase 1 (this plan):** hook + handoff + clear + reactive, on raw `claude -p`. Land on stoneforge,
+- **Phase 1 (this plan):** hook + handoff + clear + reactive, on raw `claude -p`. Land on forgepod,
   validate cost drop on a supervised tick, then bake into the enclave product templates.
 - **Phase 2 (later, decide after P1):** Agent-SDK migration for native `/compact` + `PreCompact` +
   cheap-model flush — only if the hook approach proves insufficient.
@@ -125,7 +125,7 @@ LAST TOOL RESULTS (verbatim, 1-2): <preserve the model's "rhythm">
 ## PART 6 — DECISIONS (resolved with operator, 2026-06-29)
 1. **Budget = AGENT-PLANNED per work-package, not a fixed global line** → see PART 7 (the core refinement).
 2. **Phase 1 (hook) now; Phase 2 (Agent SDK) later** — operator deferred to me; we ship Phase 1, keep SDK as a documented Phase 2 option.
-3. **Build product-ready on stoneforge first, designed to roll to ALL agents** (templates) once validated.
+3. **Build product-ready on forgepod first, designed to roll to ALL agents** (templates) once validated.
 4. **Opus writes the handoff** + **real-time cost/budget monitoring + intervention is REQUIRED** → see PART 8.
 
 Payoff to validate on ONE supervised tick: capping context vs ballooning to 1–3.7M cache_read → est. **2–4×** cheaper ($112 run → ~$30–50) at equal quality.
@@ -136,7 +136,7 @@ plan. Flow:
 
 1. **Plan a coherent PACKAGE, not a task-hop.** At the start of a unit, the agent writes `state/plan.md`:
    the package = a set of **related** tasks (e.g. "Feature 1: tasks A–J"), explicitly NOT mixing unrelated
-   work. (Fixes stoneforge's buy-bonus→l10n→math thrash.)
+   work. (Fixes forgepod's buy-bonus→l10n→math thrash.)
 2. **Estimate a token BUDGET for the package** from budgeting knowledge we seed (a reference table — see
    below) + its own past calibration: e.g. `est 110k → soft 150k / hard 200k`. Written into plan.md.
 3. **Work the package, tracking actual vs planned in real-time.** The `ctx_budget` hook now compares the

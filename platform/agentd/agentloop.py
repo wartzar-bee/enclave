@@ -282,7 +282,7 @@ class Loop:
         """Why runtime.sh returned SKIP_RC. It exits 75 for several unrelated reasons — paused,
         spend cap, session cap, a live lock from a previous tick — and the loop logged all of them
         as "cap/lock". A pod paused by a deliberate venture decision therefore read for 15 days as
-        though it were throttled by a budget guard (stoneforge, 2026-07-04 → 07-20). The specific
+        though it were throttled by a budget guard (forgepod, 2026-07-04 → 07-20). The specific
         reason is already known one layer down; surface it instead of flattening it.
         """
         try:
@@ -323,7 +323,7 @@ class Loop:
         if st.get("status") == "blocked":
             # BLOCKED (2026-07-04 enclave review fix #7): the agent is waiting on something EXTERNAL
             # (operator answer / dead key / broken bridge) — park at the slow heartbeat instead of
-            # re-firing paid continuous ticks that can only re-log "still blocked" (stoneforge burned
+            # re-firing paid continuous ticks that can only re-log "still blocked" (forgepod burned
             # 8 back-to-back Opus WAIT ticks polling a dead image key). Wake-on-inbox/comms still
             # applies, so an operator reply resumes it within seconds; the INTERVAL heartbeat
             # self-checks the blocker a couple of times an hour. Anti-gaming: a real block names its
@@ -357,8 +357,25 @@ class Loop:
             # default: continuous work doesn't depend on agent discipline.
             if self._has_open_work():
                 self._clear_blocked_marker()
-                self.next_heartbeat = now + self.cont_cooldown
-                self.log(f"no tick-status + open work → continue in {self.cont_cooldown}s")
+                # BACKOFF ON SPINNING (2026-07-21): "open work" is not the same as ACTIONABLE work.
+                # A pod whose next step is external (waiting on a review, a reply, a budget that
+                # resets tomorrow) still has open items, so this branch re-fired a full paid tick
+                # every cont_cooldown into a wall — one pod ran 5 consecutive ~24-turn ticks
+                # producing nothing because the only thing left it was permitted to do was write
+                # notes about work it had already finished.
+                # An explicit `continue` is still honoured at full speed, and `blocked`/`idle` still
+                # park; only the SILENT + UNPRODUCTIVE case decays, and one productive tick resets it.
+                streak = self._unproductive_streak()
+                cd = min(self.interval, self.cont_cooldown * (2 ** streak)) if streak else self.cont_cooldown
+                self.next_heartbeat = now + cd
+                if streak:
+                    self.log(f"no tick-status + open work, but {streak} unproductive tick(s) in a row "
+                             f"→ backing off to {cd}s (cap {self.interval}s; wakes instantly on "
+                             f"inbox/comms; one productive tick resets). If you are waiting on "
+                             f"something external, say so: tick-status {{\"status\":\"blocked\","
+                             f"\"waiting_on\":\"…\"}}.")
+                else:
+                    self.log(f"no tick-status + open work → continue in {cd}s")
             else:
                 self.next_heartbeat = now + self.interval
                 self.log("no tick-status + empty queue → idle heartbeat (wakes on events)")
@@ -372,6 +389,40 @@ class Loop:
             return any(i.get("status") not in ("done", "dropped") for i in w)
         except Exception:
             return False
+
+    def _unproductive_streak(self, cap=6):
+        """How many of the most recent scored ticks in a row wrote NO product and NO tooling.
+
+        Reads state/tick-scorecard.jsonl, which is written OUTSIDE the agent (it never scores
+        itself). Deliberately conservative — it only counts a tick as unproductive when the scorer
+        gives a real integer zero:
+
+          * product is None  -> the scorer is BLIND for this pod (product measured externally, e.g.
+            it publishes to a platform rather than writing a local file). Unknown is not zero, and
+            treating it as zero would throttle exactly the pods that publish off-box — the same
+            false-alarm class that produced two bogus zero_product pages already.
+          * no scorecard at all -> return 0, i.e. behave exactly as before. A missing instrument
+            must never silently change the cadence.
+        """
+        f = self.dir / "state" / "tick-scorecard.jsonl"
+        try:
+            lines = [l for l in f.read_text().splitlines() if l.strip()][-cap:]
+        except Exception:
+            return 0
+        streak = 0
+        for line in reversed(lines):
+            try:
+                w = (json.loads(line).get("writes") or {})
+            except Exception:
+                break
+            prod, tool = w.get("product"), w.get("tooling")
+            if prod is None:
+                break                      # blind, not idle — stop counting
+            if int(prod or 0) == 0 and int(tool or 0) == 0:
+                streak += 1
+            else:
+                break                      # a productive tick resets the decay
+        return streak
 
     def _write_blocked_marker(self, now, why):
         """state/.blocked {since, waiting_on} — 'since' survives repeat blocked ticks so the console/

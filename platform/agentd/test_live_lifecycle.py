@@ -11,7 +11,7 @@ are actually up — so CI and the default `run_tests.sh` stay hermetic. Run it o
     ENCLAVE_LIVE=1 python3 test_live_lifecycle.py
 
 Env knobs: ENCLAVE_CONSOLE_URL (default http://127.0.0.1:8700), ENCLAVE_STACKS_ROOTS (first path =
-fleet root, default ~/Dev/agent-workspace/fleet), LIVE_PROVIDER/LIVE_SECRET/LIVE_MODEL (default the
+fleet root, default <fleet-root>), LIVE_PROVIDER/LIVE_SECRET/LIVE_MODEL (default the
 NVIDIA $0 path), LIVE_NAME (default dashtest-<pid>).
 """
 import os
@@ -25,8 +25,12 @@ sys.path.insert(0, str(HERE))
 import tests_fixtures as F
 
 BASE = os.environ.get("ENCLAVE_CONSOLE_URL", "http://127.0.0.1:8700")
-FLEET = pathlib.Path(os.environ.get("ENCLAVE_STACKS_ROOTS", "").split(":")[0]
-                     or (pathlib.Path.home() / "Dev/agent-workspace/fleet"))
+# No fallback to anyone's personal checkout: this test mutates a real fleet directory, so it must be
+# told which one rather than guessing into a path that happens to exist on the author's machine.
+_fleet = os.environ.get("ENCLAVE_STACKS_ROOTS", "").split(":")[0]
+if not _fleet:
+    raise SystemExit("set ENCLAVE_STACKS_ROOTS to the fleet root before running the live lifecycle test")
+FLEET = pathlib.Path(_fleet)
 NAME = os.environ.get("LIVE_NAME", f"dashtest-{os.getpid()}")
 PROVIDER = os.environ.get("LIVE_PROVIDER", "nvidia")
 SECRET = os.environ.get("LIVE_SECRET", "nvidia.env")

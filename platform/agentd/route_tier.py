@@ -44,7 +44,7 @@ def pending_directives(inbox):
     but don't always flip the parent '- [ ]' checkbox to '- [x]'; a stale done-but-unflipped
     directive (esp. one tagged '[tier:top]') would otherwise pin the tier router to the top
     model on EVERY tick — heartbeats included — forever (a real subscription-cap leak seen on
-    stoneforge: 19 'pending' items, all completed, kept every tick on Opus). Hygiene-tolerant
+    forgepod: 19 'pending' items, all completed, kept every tick on Opus). Hygiene-tolerant
     by design: the router shouldn't depend on perfect checkbox discipline."""
     dj = inbox.parent / "state" / "directives.json"
     if dj.exists():

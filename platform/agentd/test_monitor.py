@@ -309,7 +309,7 @@ if check.failed:
 print("ALL PASS")
 
 # ── off_directive must not fire on a pod whose product ships EXTERNALLY (2026-07-21) ─────────
-# serves_observed is derived from LOCAL product writes, so logan-cross (which publishes chapters to
+# serves_observed is derived from LOCAL product writes, so such a pod (which publishes to
 # Royal Road) could never show as serving anything and the rule stayed lit on a working pod. Pods
 # that declare product_measured_externally now report serves_observed=None — "cannot observe" — and
 # the rule must treat unknown as not-a-failure while still catching the real cases.

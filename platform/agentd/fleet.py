@@ -108,7 +108,7 @@ def _override_env(dep_dir):
 
     The base .env only passes a handful of vars through, so per-agent brain wiring (BRAIN_MODEL,
     BRAIN_API_BASE, ...) is pinned in the override's `environment:` block. A console that reads
-    only .env cannot see the brain the pod actually runs — on 2026-07-20 it displayed ideas-scout
+    only .env cannot see the brain the pod actually runs — on 2026-07-20 it displayed scoutpod
     as `qwen/qwen3-next-80b-a3b-instruct` (a stale MODEL line in .env) while the pod was really
     running anthropic/claude-sonnet-4.6, i.e. the dashboard reported the exact wrong-brain failure
     the operator had just paid to fix. Telemetry that lies about the brain is worse than none.
@@ -146,7 +146,7 @@ def _model_of(env):
 
     BRAIN=api reads BRAIN_MODEL — MODEL is inert for it, and is routinely left behind as stale
     cruft from an earlier brain. Preferring MODEL unconditionally is what made the console
-    misreport ideas-scout. For every other brain, MODEL remains authoritative.
+    misreport scoutpod. For every other brain, MODEL remains authoritative.
     """
     if (env.get("BRAIN") or "").strip() == "api":
         return env.get("BRAIN_MODEL") or env.get("MODEL") or "?"
@@ -209,7 +209,7 @@ def _state(home):
         pass
     # PAUSED is a distinct state, not a flavour of idle. runtime.sh skips every tick while
     # state/paused exists, so a paused pod is up, looping, and doing nothing — which rendered
-    # identically to a healthy agent resting between ticks. stoneforge sat like that for 15 days
+    # identically to a healthy agent resting between ticks. forgepod sat like that for 15 days
     # (paused by a venture decision on 2026-07-04) while the console showed plain "idle", so
     # "deliberately stopped" and "waiting to work" were indistinguishable at a glance.
     try:

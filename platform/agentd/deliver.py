@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """deliver.py — framework output→destination delivery: an agent's outputs REACH their pipeline.
 
-Why this is a framework primitive: ideas-scout filed candidates to `ideas/scout/*.md` for days
+Why this is a framework primitive: scoutpod filed candidates to `ideas/scout/*.md` for days
 while the deal-flow ledger read a separate file nothing ever wrote — a pipe attached to nothing.
 The pipeline reported permanent STARVED, which fired starvation escalations, a rebuke, a quota,
 and finally fabricated candidates. The failure was invisible because delivery was an unowned,
@@ -10,7 +10,7 @@ mechanism: config-driven, deterministic, idempotent, with a HEARTBEAT file that 
 `delivery` probe checks from inside the pod — so a disconnected pipe becomes a broken capability
 the agent can SEE, instead of a silent lie in its KPIs.
 
-Semantics (ported from the studio's scout_sync.py, generalised):
+Semantics (ported from the orchestrator's scout_sync.py, generalised):
   * only ADDS records it hasn't added before (id-keyed); never edits or deletes existing entries
   * never changes a record's stage once the owner moved it beyond `initial_stage`
   * an optional gate_cmd filters sources (stdout starting with "PASS" = deliverable)
@@ -19,12 +19,12 @@ Config (JSON):
   {
     "source_glob":   "/abs/ideas/scout/*.md",
     "gate_cmd":      ["python3", "/abs/candidate_gate.py", "{path}"],       // optional
-    "ledger":        "/abs/studio/deal-flow.json",
+    "ledger":        "/abs/path/deal-flow.json",
     "list_key":      "candidates",
     "id_from":       "name",                       // field slugified into the id
     "initial_stage": "raw",
     "owned_stages":  ["screened", "in_flight", "parked", "killed"],
-    "source_label":  "ideas-scout",
+    "source_label":  "scoutpod",
     "copy_fields":   ["one_line", "buyer", "demand_test", "pass_line"],
     "heartbeat":     "/abs/reports/dealflow/.deliver-heartbeat"             // optional
   }

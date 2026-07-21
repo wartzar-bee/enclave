@@ -9,7 +9,7 @@ implementation of the convergent pattern.
 
 ## Problem
 With `BRAIN=claude`, the manager (Claude) is a capable model, so a *prompt* telling it to "offload bulk
-work to local LLMs" is ignored — it just does the work itself (proven: a stoneforge tick ran on Opus,
+work to local LLMs" is ignored — it just does the work itself (proven: a forgepod tick ran on Opus,
 0 delegations, hand-wrote a whole math model). `route.mjs` only does **one-shot completions** (no tools,
 no file I/O), so it can draft text but cannot "implement this module" (which needs read→write→run→iterate).
 Result: no mechanical way to make "Claude manages, local does the labor" true.
@@ -116,7 +116,7 @@ v1 = one synchronous delegate + verify + guard enforcement. Keep it lean.
 1. **Unit:** `delegate.py --task "write prime_list(n) to /tmp/p.py" --kind code --verify "python3 -c 'import sys;sys.path.insert(0,\"/tmp\");import p;assert p.prime_list(5)==[2,3,5,7,11]'"` → expect `status:ok`, file written by a LOCAL model, verify passed, manager (caller) tokens ≈ 0.
 2. **Guard:** manager attempts a 2 KB Write to a `.py` under the repo → BLOCKED with the delegate
    instruction; a 200-char edit → allowed; a `state/rollup.md` write → allowed.
-3. **End-to-end tick:** run a stoneforge `BRAIN=claude` tick → assert `state/delegations.log` shows ≥1
+3. **End-to-end tick:** run a forgepod `BRAIN=claude` tick → assert `state/delegations.log` shows ≥1
    delegation, the bulk file was written by the worker (local model in its log), and the manager only
    planned/reviewed. Compare manager Claude tokens vs the all-Opus baseline tick (expect a large drop).
 

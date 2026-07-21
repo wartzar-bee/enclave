@@ -18,7 +18,7 @@ It ALSO writes state/decisions.jsonl (2026-07-21). Decision capture used to be p
 contract in local_agent.py, which only runs on BRAIN=api/local — so when the whole fleet moved to
 BRAIN=claude on the subscription, every pod silently stopped recording WHY it did anything, and
 effective_config still reported the claude path as "convention only (no structural capture yet)".
-Convention is not capture: logan-cross had no decisions.jsonl at all. This hook has the transcript
+Convention is not capture: scribepod had no decisions.jsonl at all. This hook has the transcript
 at tick end, so the record no longer depends on the agent remembering to write it.
 
 Fails OPEN (any error → exit 0, never wedge the tick). Fast + deterministic (no model call).

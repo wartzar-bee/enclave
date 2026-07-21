@@ -4,7 +4,7 @@
 // A drop-in replacement for `qmd mcp` that enforces a per-agent collection
 // allowlist server-side, on EVERY method (fail-closed). qmd stays pinned and
 // unmodified — this imports its public createStore() API and re-registers the
-// same tools with the allowlist applied. See experiments/enclave/MEMORY-MODES.md.
+// same tools with the allowlist applied. See docs/MEMORY-MODES.md.
 //
 // Transports:
 //   - stdio (default): for a local MCP client that spawns this process.

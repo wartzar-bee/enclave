@@ -131,7 +131,7 @@ browser ──auth(session)──▶│  ThreadingHTTPServer, 127.0.0.1   │  l
 - **Autonomous-otherwise** is already true for `autonomous`-template agents (tick toward `{MISSION}`,
   directive overrides). The console is just the steering surface.
 
-## Components & file plan (all in `businesses/enclave/platform/agentd/`, stdlib only)
+## Components & file plan (all in `platform/agentd/`, stdlib only)
 
 1. **`fleet.py`** (new) — the console server. Sections:
    - **Discovery:** `docker compose ls --all --format json` (JSON array of `{Name,Status,ConfigFiles}`)

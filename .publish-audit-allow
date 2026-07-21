@@ -1,0 +1,30 @@
+# .publish-audit-allow — terms that are DOMAIN VOCABULARY for this product, not leaks.
+#
+# enclave IS an agent-operations framework. "operator", "term sheet" and "kill-line" are the names of
+# its own concepts; flagging them forever would train everyone to ignore the gate, and an ignored
+# gate is worse than none. Each entry must say WHY. This does NOT excuse studio-SPECIFICS
+# (a pod name, an orchestrator-only path, a personal checkout) — those are real violations of the CLAUDE.md
+# invariant "never put studio-specifics in it" and must be fixed, not allowlisted.
+
+# The framework's role name for whoever runs a deployment. Product vocabulary.
+the operator (to|will|must|owns)
+for the operator
+operator-owned
+# Its governance feature: a deployment declares a term sheet with a kill-line date.
+term sheet
+kill-line
+
+# marketing/** is Wartzar Labs' OWN marketing site and brand copy. It cites tokenscope and Logan
+# Cross by name ON PURPOSE — "our pitch isn't theory, our agents run real published ventures" is the
+# whole argument, and the links go to already-public products. Deliberate reference, not a leak.
+marketing/
+
+# /agent/... is THIS PRODUCT'S OWN container path convention — enclave mounts every deployment's home
+# at /agent, so its code and tests necessarily reference /agent/memory, /agent/state, /agent/inbox.
+# The structure pattern was written to catch pod-internal paths leaking into an unrelated repo (a CI
+# action); here it is the documented interface.
+/agent/(memory|state|inbox|work\.json)
+
+# fleet/<id> is enclave's OWN layout: a "fleet root" holding one directory per deployment is the
+# product's documented structure, and its docs must be able to say so.
+fleet/

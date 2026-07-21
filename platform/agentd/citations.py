@@ -4,10 +4,10 @@
 Why this is a FRAMEWORK primitive and not an agent skill: you cannot verify a citation resolves
 by reasoning about it, and an LLM judge shares the generator's hallucination blind spot. Every
 agent that cites sources needs the same deterministic check, so it lives here (migrated 2026-07-20
-from the studio's candidate_gate.py, where it was hand-rolled and initially WRONG in a way that
+from an earlier implementation, where it was hand-rolled and initially WRONG in a way that
 invalidated every verdict the gate ever issued).
 
-The two hard-won rules — DO NOT REGRESS (see the studio handover 2026-07-20 §4):
+The two hard-won rules — DO NOT REGRESS (see the design notes):
   * A HEAD 404 is NOT evidence of absence. Many real hosts refuse HEAD outright
     (business.linkedin.com answers HEAD 404 / GET 200). Only a GET is decisive.
   * Our own transient failure (timeout/reset/rate-limit) is never proof a URL is invented.

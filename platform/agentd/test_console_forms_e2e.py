@@ -17,7 +17,7 @@ rendered page in a headless browser to empirically audit:
 
 Same opt-in/self-skip contract as test_console_e2e.py: a missing browser is a CLEAN SKIP (exit 0);
 ENCLAVE_E2E=1 turns a missing browser into a FAILURE. Backend = node-Playwright
-(businesses/devtools/node_modules), the one present on this host.
+(a local node_modules), the one present on this host.
 
 Run:  python3 test_console_forms_e2e.py
 """
@@ -478,7 +478,7 @@ def main():
     if not npw:
         extra = " (host browser bridge :18184 is up but cannot drive the interactive flow)" \
             if _bridge_up() else ""
-        _skip("no node-playwright available (businesses/devtools/node_modules)" + extra)
+        _skip("no node-playwright available (local node_modules)" + extra)
     node, cwd = npw
     print(f"E2E forms/popups audit driver: node-playwright @ {cwd}")
 

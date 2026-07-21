@@ -6,7 +6,7 @@ Wired on PreToolUse (Write|Edit|MultiEdit), where exit 2 actually PREVENTS the w
 PostToolUse hook it could only complain after the credential was already on disk.
 
 Gap 5: guard.py blocks READS of foreign secrets and egress, but nothing stopped a pod writing a
-password/token INTO its own memory/work/rollup (logan-cross leaked RR + Google app-passwords into
+password/token INTO its own memory/work/rollup (scribepod leaked RR + Google app-passwords into
 memory/activity + work.json; the vault backup silently blocked). Secrets belong only in .secrets/,
 referenced by filename. This scans Write/Edit content to memory/**, work/**, state/rollup*,
 board-report*, skills/**, and blocks (exit 2) when it looks like a real credential value.
@@ -77,7 +77,7 @@ def main():
 def _fx(*parts):
     """Assemble a test fixture. Fixtures are NEVER written as literals: this hook file is copied into
     every agent home, which is a scan-gated git vault — a literal credential-shaped fixture makes the
-    vault gate block, and that froze wartzar-bee's brain backups entirely (2026-07-21)."""
+    vault gate block, and that froze demopod's brain backups entirely (2026-07-21)."""
     return "".join(parts)
 
 

@@ -2,7 +2,7 @@
 """Hermetic tests for route_tier.py — the model-tier picker.
 
 Covers choose_tier()'s decision matrix AND pending_directives()'s done-detection
-(the fix for the stoneforge cost leak: a done-but-unflipped '- [ ]' directive must
+(the fix for the forgepod cost leak: a done-but-unflipped '- [ ]' directive must
 NOT count as pending, else a stale '[tier:top]' tag pins every tick to the top model).
 Run: python3 test_route_tier.py
 """

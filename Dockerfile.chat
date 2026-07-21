@@ -1,7 +1,7 @@
 # Dockerfile.chat — web chat sidecar for Enclave
 #
-# Build context: repo root (two levels up from experiments/enclave/)
-#   docker build -f experiments/enclave/Dockerfile.chat -t enclave-chat:latest .
+# Build context: repo root (the enclave repo root)
+#   docker build -f Dockerfile.chat -t enclave-chat:latest .
 #
 # The script lives at platform/agentd/web_chat.py relative to the repo root.
 # docker-compose.yml sets build.context to ../.. (repo root) so the COPY path

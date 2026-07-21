@@ -1,7 +1,7 @@
 # Enclave — autonomous-agent context management (research + design, 2026-06-29)
 
 How other frameworks solve "the agent's context fills up → cost explodes / it degrades", and the design
-we'll adopt. Grounds the cost lesson from the stoneforge run ($112/8h, 64.3M cache_read = 99% of the bill).
+we'll adopt. Grounds the cost lesson from the forgepod run ($112/8h, 64.3M cache_read = 99% of the bill).
 
 ## The field has converged (we're not reinventing the wheel)
 Detection / trigger / action / who-decides, across Cline, Roo, OpenHands, Aider, LangChain, Manus,
@@ -71,7 +71,7 @@ Best fit = **Manus file-offload + Cline `new_task` fresh-session handoff**, harn
    - **~60%** → "context ~60% — wrap up the current sub-task, bank as you go, no large new reads."
    - **~75%** → "context ~75% — STOP: write your handoff (template below) + signal `session:clear`, then
      `finish`." (Hook exits 2 with the message, same pattern as the existing compactor/verify hooks.)
-   This is what stoneforge lacked: it ballooned to 2–3.7M because nothing told it "you're full".
+   This is what forgepod lacked: it ballooned to 2–3.7M because nothing told it "you're full".
 2. **Deterministic handoff template** (NOT free-form): `task · decisions · files-touched (path:line) ·
    next-action · open-questions · last-2-tool-calls verbatim`. A fixed schema survives the clear; the next
    fresh session reseeds from it (Cognition: templated > model self-summary).
@@ -80,7 +80,7 @@ Best fit = **Manus file-offload + Cline `new_task` fresh-session handoff**, harn
    error, auto-clear + retry (OpenHands' reactive path).
 4. **Manus offload discipline** in CLAUDE.md: keep **paths/URLs/refs in context, bodies on disk**;
    `grep`/`cat` on demand instead of holding whole files. Recite the open `todo`/gaps at the tail.
-5. **ONE canonical handoff file** (stoneforge had release-gaps.md in /agent AND repo → it wasted turns
+5. **ONE canonical handoff file** (forgepod had release-gaps.md in /agent AND repo → it wasted turns
    reconciling "which is authoritative"). Pick one location.
 6. **Optional step-up:** move the tick to the **Agent SDK** (real `/compact` input + `PreCompact` bank hook)
    or **Messages API `compact_20260112`** for deterministic in-session compaction — removes the "can't

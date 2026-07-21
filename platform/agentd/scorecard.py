@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-scorecard.py — per-tick L2 WORK-PRODUCT scorecard (analytics plan P0, studio/agent-analytics-plan.md).
+scorecard.py — per-tick L2 WORK-PRODUCT scorecard.
 
 The gap this closes: L1 telemetry (usage.jsonl) says the loop ran; nothing said whether the tick
-produced PRODUCT or plumbing. On 2026-07-19 logan-cross ran 56 green L1 ticks whose entire output
+produced PRODUCT or plumbing. One deployment ran 56 green L1 ticks whose entire output
 was 33 rewrites of its own rollup — invisible to every existing metric. This collector runs in
 `post_tick_shared` (every brain path), is zero-LLM, and appends one record per tick to
 `state/tick-scorecard.jsonl`.
@@ -18,7 +18,7 @@ Design laws applied (plan §0):
 - All windows are TICK-denominated (churn: ≥3 same-path writes in ONE tick, or ≥5 across the last
   10 records, fires — the 33× day was detectable at rewrite #3).
 
-Config (`state/scorecard-config.json`, written by the studio / spawn_watcher from the spec):
+Config (`state/scorecard-config.json`, written by the orchestrator / spawn_watcher from the spec):
   { "kpi_artifacts":   ["content/**/*.md", "/workspace/ideas/scout/*.md", ...],
     "tooling_paths":   ["bin/**", "work/**/*.py"],        # optional; defaults below
     "self_state_paths":["state/**", ...] }                # optional; defaults below
@@ -27,7 +27,7 @@ Globs are agent-dir-relative unless absolute (in-container paths).
 CLI:
   scorecard.py <agent-dir> --t0 <epoch>     # score the tick that started at t0 (runtime.sh $NOW)
   scorecard.py <agent-dir> summary [-n 20]  # aggregate the last n records (digest/console helper)
-  scorecard.py --selftest                   # fixtures replay the REAL 2026-07-19 logan-cross day
+  scorecard.py --selftest                   # fixtures replay a real recorded day
 """
 import argparse, calendar, glob as globmod, json, os, pathlib, re, sys, tempfile, time
 
@@ -222,7 +222,7 @@ def collect(base, t0, now=None):
         if globs:
             serves_observed = any(_match_any(base, p, globs) for p in touched)
         elif (cfg or {}).get("product_measured_externally"):
-            # This pod's product ships to an EXTERNAL platform (logan-cross publishes chapters to
+            # This pod's product ships to an EXTERNAL platform (such a pod publishes its output to
             # Royal Road), so a LOCAL product write can neither prove nor disprove that it served a
             # directive. Unknown is the honest answer: False would assert "not serving" from a signal
             # that cannot see the work, and off_directive would then fire forever on a working pod.
@@ -255,7 +255,7 @@ def collect(base, t0, now=None):
     # 8) decision capture + CLAIM PROVENANCE (2026-07-20). Decisions logged this tick, and — the
     # fabrication tripwire — whether each decision's cited `evidence` is WITNESSED by the tick's
     # actual tool events. A pod once logged a decision citing web tests it NEVER ran (zero matching
-    # events) and the invented "instrument failure" was believed for a day. Generalises the studio's
+    # events) and the invented "instrument failure" was believed for a day. Generalises the orchestrator's
     # experiments_lint idea from one log file to any claim an agent emits: an unwitnessed evidence
     # string doesn't prove fabrication, but it is exactly where a human should look first.
     decisions_tick, unwitnessed = 0, 0
@@ -363,7 +363,7 @@ def summary(base, n=20):
     return lines[:4]
 
 
-# ── selftest: fixtures replay the REAL 2026-07-19 logan-cross day ──────────────────────────────
+# ── selftest: fixtures replay a real recorded day ──────────────────────────────
 def _selftest():
     fails = []
 
@@ -384,7 +384,7 @@ def _selftest():
         rec = collect(b, t0)
         check("blind-product-null", rec["writes"]["product"] is None)
         check("blind-config-missing", rec["config"] == "missing")
-        # F2: the logan-cross day — 33 rollup rewrites, a script 5×, ZERO product. Configured.
+        # F2: the scribepod day — 33 rollup rewrites, a script 5×, ZERO product. Configured.
         (b / "state" / "scorecard-config.json").write_text(json.dumps(
             {"kpi_artifacts": ["content/**/*.md"], "tooling_paths": ["bin/**", "work/*.py"]}))
         for i in range(33):

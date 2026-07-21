@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """review.py — framework review primitive: review(artifact, criticality, independence).
 
-One primitive replaces every hand-rolled "ask a model to judge this" script (the studio had three,
+One primitive replaces every hand-rolled "ask a model to judge this" script (the orchestrator had three,
 each with hardcoded endpoints). The FRAMEWORK decides which model judges, from policy.json — the
 caller declares WHAT KIND of judgment it needs, not which endpoint to hit:
 

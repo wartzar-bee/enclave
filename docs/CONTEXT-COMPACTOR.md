@@ -5,7 +5,7 @@ report/enforce, `hooks/test_compactor.py`); Tier-2 (rtk rules engine, `policies/
 never built — treat §A as backlog. (Header corrected 2026-07-04 — it stale-claimed "not built".)
 Sibling to [`CONTEXT-AND-TICKS.md`](CONTEXT-AND-TICKS.md) (which covers
 *between-tick* fixed cost) — this covers the gap that doc leaves open: **within-tick bloat**, the #1
-live cost driver on stoneforge today.
+live cost driver on forgepod today.
 
 ## The problem (measured)
 
@@ -41,7 +41,7 @@ hot tool, ticks of 40–90 mostly-tiny `python3 -c`/`grep`/`ls`/`cat` probes.
 
 ### Why a NEW mechanism (prompt discipline already failed)
 
-stoneforge's `tick.txt` **already** carries a strong efficiency directive — one-shot inspect, pipe big
+forgepod's `tick.txt` **already** carries a strong efficiency directive — one-shot inspect, pipe big
 output to a file + grep, codegraph-not-grep, delegate bulk work, don't grind past 3 failures. The
 research confirms a "Context Rules" system-prompt block is worth ~15–25% — but **we already have it and
 ticks still hit 76 turns / 5.6M.** *Requesting* discipline isn't holding; the lever is **enforcement**
@@ -147,7 +147,7 @@ No headless equivalent. But **each tick is already a fresh `claude -p` session**
 `/clear` — it's §A (smaller window) + B3 (fewer turns).
 
 ### B3. Smaller ticks (`MAX_TURNS`) — a real lever, higher-leverage than generic advice credits
-Cost ∝ turns (table above), so a hard turn cap directly bounds the worst-case tick. stoneforge=80; the
+Cost ∝ turns (table above), so a hard turn cap directly bounds the worst-case tick. forgepod=80; the
 $2.67 outlier was 76 turns. **Recommend 80→~40** as a structural guard: a tick wraps up and `continue`
 picks the work up next tick. Tradeoff: each extra tick re-pays the fixed cost (CLAUDE.md + recall +
 first reads, ~$0.3–0.5), so don't go too low. ~40 caps the tail without much fixed-cost churn.
@@ -187,7 +187,7 @@ crisp 4-line "CONTEXT RULES" block near the TOP of `tick.txt` (it's currently mi
 
 ## Prioritized plan (highest leverage first)
 
-1. **`MAX_TURNS` 80→40 on stoneforge** — 1-line `agent.env` change, live next tick, reversible, zero
+1. **`MAX_TURNS` 80→40 on forgepod** — 1-line `agent.env` change, live next tick, reversible, zero
    code. Directly caps the cost ∝ turns tail. **Do this first; it's free and measurable immediately.**
 2. **PreToolUse context-guard (Tier 1)** — `compactor.py` deny+steer for context-bombing calls, wired
    like `delegation_guard`. **Report-only first** (log would-deny to `state/compact.log`), size the
@@ -204,7 +204,7 @@ and `cache_read`/tick in `usage.jsonl` falling.
 ## Open questions
 
 - **`updatedInput` support** on our pinned Claude Code version (Tier-2 auto-rewrite vs wrapper+gate).
-- Break-even `MAX_TURNS` for stoneforge — start at 40, watch whether work fragments badly across ticks.
+- Break-even `MAX_TURNS` for forgepod — start at 40, watch whether work fragments badly across ticks.
 - Does compaction ever hide something the agent needed mid-reasoning? Mitigated by spill-file refs +
   conservative defaults + report-only burn-in.
 - Whether to ever move the runtime to the Agent SDK for real `clear_tool_uses` (§B4) — deferred; large

@@ -5,7 +5,7 @@ Covers the 2026-07-04 calibration fix: cost_est must be the raw token estimate m
 learned per-model (actual/estimate) ratio, the ratio must fold toward the authoritative
 total_cost_usd at every result event, and the end-to-end stream pipeline must emit a calibrated
 .ctx-budget.json + a usage.jsonl record + a closed budget-calibration.jsonl line.
-(The pre-fix metric ran ~7× the real bill on stoneforge — real $0.43 read as $3.04 — and this
+(The pre-fix metric ran ~7× the real bill on forgepod — real $0.43 read as $3.04 — and this
 computation had zero test coverage. Run: python3 test_usage_capture.py)
 """
 import json, os, pathlib, subprocess, sys, tempfile

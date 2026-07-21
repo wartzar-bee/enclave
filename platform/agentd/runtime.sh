@@ -4,7 +4,7 @@
 # Generalized from the host runner (same hardening: cap-guard + stale-
 # lock reclaim + heartbeat + deadman gap-log). Spec-driven, not hardcoded.
 #
-#   bash platform/agentd/runtime.sh platform/agents/<id>
+#   bash platform/agentd/runtime.sh <agent-home>
 #
 # Runs on a PERSISTENT host (the Mac that runs the launchd timers + the bridges),
 # NOT the disposable container (which can't run launchctl). One launchd timer per
@@ -27,7 +27,7 @@ FLEET_CONF="$SCRIPT_DIR/fleet.conf"; [ -f "$FLEET_CONF" ] || FLEET_CONF="${TOOLS
 cd "$AGENT_DIR" || exit 1
 # Persistent work root (framework fix 2026-07-21): the agent's HOME ($AGENT_DIR, bind-mounted) is the
 # ONLY guaranteed-persistent writable location. Container paths like /tmp or /workspace/work are
-# EPHEMERAL and wiped on restart — an agent that builds product there loses it (wartzar-bee lost a
+# EPHEMERAL and wiped on restart — an agent that builds product there loses it (demopod lost a
 # whole CI-guardrail build this way). Guarantee a persistent work dir and tell the agent to use it.
 mkdir -p "$AGENT_DIR/work" 2>/dev/null; export WORK_PERSIST="$AGENT_DIR/work"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
@@ -191,7 +191,7 @@ post_tick_shared() {
   if [ "${VAULT_SNAPSHOT:-1}" = "1" ] && [ -d "$AGENT_DIR/.git" ]; then
     python3 "$SCRIPT_DIR/vault_snapshot.py" snapshot "$AGENT_DIR" --msg "tick $(date -u +%FT%TZ)" \
       >> "$LOG" 2>&1; VS_RC=$?
-    # A BLOCK must never read like a no-op: logan-cross's vault stopped committing for DAYS behind
+    # A BLOCK must never read like a no-op: scribepod's vault stopped committing for DAYS behind
     # the old "blocked or no-op" line. exit 3 = the secret gate refused; the brain is NOT backed up.
     case "$VS_RC" in
       0) log "vault snapshot ok" ;;
@@ -275,7 +275,7 @@ fi
 # (exit 75 → agentloop re-queues, zero tokens burned) instead of the model discovering + mis-diagnosing
 # it mid-tick. ALWAYS runs (fixed 2026-07-20): tick.txt tells every agent to READ capabilities.json
 # FIRST, and this used to sit below the brain dispatch gated on REQUIRES — so BRAIN=api/local pods
-# never got the file at all (channel-lab polled for it 4x/tick), and unset REQUIRES silently skipped
+# never got the file at all (labpod polled for it 4x/tick), and unset REQUIRES silently skipped
 # it everywhere else. With no REQUIRES it probes an advisory baseline (web, qmd) and never gates.
 PREFLIGHT="$SCRIPT_DIR/preflight.py"; [ -f "$PREFLIGHT" ] || PREFLIGHT="${TOOLS_ROOT:-/workspace}/platform/agentd/preflight.py"
 if [ -f "$PREFLIGHT" ]; then

@@ -2,7 +2,7 @@
 """
 test_secrets.py — the framework's single credential definition, incl. shell PORTABILITY.
 
-The portability half is not hypothetical. The studio's pre-commit hook wrote its quote class as
+The portability half is not hypothetical. the orchestrator's pre-commit hook wrote its quote class as
 `["\x27]`. GNU grep reads that as ["'] — BSD grep (the macOS default, and what a git hook actually
 runs) reads it as the literal characters \ x 2 7. On macOS the hook therefore MISSED every
 single-quoted secret (`password='hunter2secretvalue'`) while false-blocking legitimate secrets
@@ -48,7 +48,7 @@ POSITIVE = [fx("ghp", "_") + "b" * 36,
 NEGATIVE = ["rotate the password before the next tick",
             "api_key = os.environ['NVIDIA_API_KEY']",
             "imap_code{secret:google-logancross.env}",
-            "see businesses/enclave/platform/agentd/secrets.py"]
+            "see platform/agentd/secrets.py"]
 
 pat = S.bash_pattern()
 tmp = pathlib.Path(tempfile.mkdtemp(prefix="sectest-"))
@@ -79,7 +79,7 @@ try:
     ck("single-quoted secret detected", S.scan_text("password='" + fx("hunter2", "secretvalue") + "'") is not None)
     ck("double-quoted secret detected", S.scan_text('api_key="' + fx("abcdefgh", "12345678") + '"') is not None)
     ck("secrets READ not flagged", S.scan_text("grep -oP 'TOKEN=\\K.*' /workspace/.secrets/x.env") is None)
-    # a regex read froze channel-lab's vault backup: the captured "value" was `.*\|TOKEN=.*`
+    # a regex read froze labpod's vault backup: the captured "value" was `.*\|TOKEN=.*`
     ck("regex read not flagged",
        S.scan_text("TOKEN=$(grep -o 'X_TOKEN=.*" + chr(92) + "|TOKEN=.*' /workspace/.secrets/x.env)") is None)
 finally:

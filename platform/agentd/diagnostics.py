@@ -191,7 +191,7 @@ def _anomalies(records, now, window):
             fix="compact memory / trim auto-loaded files; check for an unbounded log or inbox")
 
     # 1b) Context grew sharply WEEK-over-WEEK and/or sits very large every tick. The reviewer's
-    #     StoneForge case (18k→142k): a sustained plateau, not a one-tick spike, so it needs its
+    #     forgepod case (18k→142k): a sustained plateau, not a one-tick spike, so it needs its
     #     own check — it's the dominant cost driver and the #1 thing to debug.
     #     Gate on the CURRENT (latest) context, not the window average — an agent whose latest
     #     tick has dropped back to a small prompt is healthy NOW regardless of its history, and

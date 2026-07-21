@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_about": "Fleet health monitor policy — DATA, operator-tunable without touching code. Ships conservative: every problem is alert-only, the autofix allowlist is empty, nothing learned. The studio keeps its own tuned copy (env ENCLAVE_MONITOR_POLICY); this default is product-clean.",
+  "_about": "Fleet health monitor policy — DATA, operator-tunable without touching code. Ships conservative: every problem is alert-only, the autofix allowlist is empty, nothing learned. the orchestrator keeps its own tuned copy (env ENCLAVE_MONITOR_POLICY); this default is product-clean.",
   "_autofix_rule": "Autofix is allowed ONLY for liveness/restart actions that return an agent to a known-good state and are reversible. Anything that changes an agent's behavior, policy, or brain content is suggest-only — a human decides. A playbook with safe_to_autofix=false can never be put in autofix_allowlist.",
   "default_mode": "alert",
   "playbooks": {

@@ -20,7 +20,7 @@ Unknown names are recorded as ok=null ("no probe") — never block on those.
 CONTRACT (fixed 2026-07-20): capabilities.json is ALWAYS written, every agent, every boot — the
 tick prompt tells agents to READ it FIRST, so its absence is a framework bug, not a config choice.
 With no REQUIRES declared, a BASELINE probe set (web, qmd) runs ADVISORY-only: results are recorded
-but never escalate and never gate. (channel-lab polled a file that was never written for 4 ticks
+but never escalate and never gate. (labpod polled a file that was never written for 4 ticks
 because preflight was silently skipped when REQUIRES was unset.)
 """
 import os, sys, json, time, ssl, subprocess, pathlib, urllib.request, argparse
@@ -74,8 +74,8 @@ def probe_image(env):
 
 
 def probe_deploy_key(env):
-    k = env.get("DEPLOY_KEY", "/workspace/.secrets/stoneforge-deploy-key")
-    repo = env.get("DEPLOY_REPO", "git@github.com:wartzar-bee/stoneforge.git")
+    k = env.get("DEPLOY_KEY", "/workspace/.secrets/forgepod-deploy-key")
+    repo = env.get("DEPLOY_REPO", "git@github.com:demopod/forgepod.git")
     if not pathlib.Path(k).exists():
         return False, f"deploy key {k} missing"
     rc, out = _run(f'GIT_SSH_COMMAND="ssh -i {k} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" git ls-remote {repo} HEAD', timeout=25)
@@ -110,7 +110,7 @@ def probe_web(env):
 def probe_delivery(env):
     """Is this agent's output pipeline CONNECTED? The delivery daemon (deliver.py, host-side or
     in-pod) touches a heartbeat file each run; a stale/missing heartbeat means outputs are being
-    filed into a pipe attached to nothing (ideas-scout ran for days like that — permanent false
+    filed into a pipe attached to nothing (scoutpod ran for days like that — permanent false
     STARVED). Configure DELIVERY_MARKER (+ optional DELIVERY_MAX_AGE_H, default 3)."""
     marker = env.get("DELIVERY_MARKER", "")
     if not marker:
@@ -139,7 +139,7 @@ BASELINE = ["web", "qmd"]
 # must not brick a pod, which is the exact failure preflight itself exists to prevent.
 def _free_tier(env):
     """DECLARED free-at-margin model tier (COST_FREE_TIER, comma-sep substrings). Empty by default → a
-    metered deployment gets NO false alarm; the studio declares COST_FREE_TIER=claude for its subscription."""
+    metered deployment gets NO false alarm; the orchestrator declares COST_FREE_TIER=claude for its subscription."""
     return tuple(s.strip().lower() for s in env.get("COST_FREE_TIER", "").split(",") if s.strip())
 
 

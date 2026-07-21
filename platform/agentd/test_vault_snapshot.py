@@ -3,7 +3,7 @@
 test_vault_snapshot.py — the vault secret gate: block real credentials, allow references.
 
 The gate is fail-closed and silent (runtime.sh logs "blocked or no-op"), so a false positive costs
-DAYS of missing backups before anyone notices — logan-cross wrote a browser recipe containing
+DAYS of missing backups before anyone notices — scribepod wrote a browser recipe containing
 `imap_code{secret:google-logancross.env,...}` (a filename REFERENCE) and its vault stopped
 committing. These tests pin both directions: a reference must pass, a credential must still block.
 """
@@ -23,7 +23,7 @@ def ck(name, cond):
 def fx(*parts):
     """Assemble a fixture. Credential-shaped strings are never written as literals here — this file is
     scanned by the repo's own pre-commit hook, and the same discipline keeps any copy of it from
-    freezing a vault (a literal fixture in `hooks/secret_scan.py` did exactly that to wartzar-bee)."""
+    freezing a vault (a literal fixture in `hooks/secret_scan.py` did exactly that to demopod)."""
     return "".join(parts)
 
 
@@ -42,9 +42,9 @@ ck("auth-header",      V.scan_text(fx("Authorization: Bearer ", "eyJhbGciOiJIUzI
 ck("env-punct-value",  V.scan_text("GOOGLE_APP_PASSWORD='abcd efgh'".replace(" ", "!")) is not None)
 # a format hit inside an otherwise reference-looking line still blocks
 ck("format-wins",      V.scan_text("secret: .secrets/x.env ghp_" + "c" * 36) is not None)
-# The REAL leak this gate caught in channel-lab's memory: a bluesky app password (since revoked).
+# The REAL leak this gate caught in labpod's memory: a bluesky app password (since revoked).
 # Fixtures are ASSEMBLED, never literal — a credential-shaped literal in a scanned tree is exactly
-# what froze wartzar-bee's vault, and it trips the repo's pre-commit hook too.
+# what froze demopod's vault, and it trips the repo's pre-commit hook too.
 ck("bsky-app-password", V.scan_text(
     "- App password: " + "3r2s-e726" + "-ct5d-y4ee" + " works for x.bsky.social") is not None)
 ck("google-app-pw",    V.scan_text("app password: abcd " + "efgh ijkl mnop") is not None)

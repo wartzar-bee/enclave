@@ -4,12 +4,12 @@
 description of the running cost stack. It supersedes the *design-era* context docs where they conflict:
 [`CONTEXT-AND-TICKS.md`](CONTEXT-AND-TICKS.md) (its `--resume` ban predates warm sessions),
 [`CONTEXT-MANAGEMENT.md`](CONTEXT-MANAGEMENT.md)/[`-PLAN.md`](CONTEXT-MANAGEMENT-PLAN.md) (fresh-tick
-handoff era). Review evidence + rationale: the studio's `reports/enclave-review/PLAN.md`.
+handoff era). Review evidence + rationale: the orchestrator's `reports/enclave-review/PLAN.md`.
 
 ## The metric: calibrated `cost_est`
 `usage_capture.py` parses the tick's stream-json and writes `state/.ctx-budget.json`
 `{turn, ctx_tokens, cost_est, cost_raw}` per assistant turn. `cost_raw` sums per-turn tokens at list
-rates — structurally HIGH vs Claude Code's authoritative `total_cost_usd` (measured ~7× on stoneforge).
+rates — structurally HIGH vs Claude Code's authoritative `total_cost_usd` (measured ~7× on forgepod).
 `cost_est` = `cost_raw × ratio`, where ratio is a per-model EMA of `(actual total_cost_usd / raw
 estimate)` learned at every result event and persisted to `state/.cost-calibration.json`.
 **Rule: a wrong metric gets calibrated at the source — never compensated by inflating the caps.**

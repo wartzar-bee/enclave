@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic tests for agentloop.py — the wake decision + post-tick pacing (previously untested
 liveness core), including the 2026-07-04 `blocked` state (fix #7: a blocked agent used to re-fire
-paid continuous ticks forever — 8 back-to-back Opus WAIT ticks on stoneforge — because the only
+paid continuous ticks forever — 8 back-to-back Opus WAIT ticks on forgepod — because the only
 park state was `idle` and the no-status default treats any open work.json item as workable).
 Run: python3 test_agentloop.py
 """
