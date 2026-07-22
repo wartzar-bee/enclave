@@ -192,6 +192,40 @@ def test_external_product_pod_is_not_backed_off():
         assert lp.next_heartbeat <= t + lp.cont_cooldown + 2
 
 
+# ── tick-status: the agent's own declaration must not be lost to a relative write ──
+def test_tick_status_read_from_agent_home():
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        st = pathlib.Path(d) / "state"; st.mkdir(parents=True, exist_ok=True)
+        (st / "tick-status.json").write_text(json.dumps({"status": "continue"}))
+        assert lp._read_tick_status() == {"status": "continue"}
+        assert not (st / "tick-status.json").exists()      # one-shot
+
+
+def test_tick_status_recovered_from_work_dir():
+    """ideas-scout wrote {"status":"continue"} to /workspace/state/tick-status.json at 11:16 (its cwd,
+    because the brief names a RELATIVE path) and the loop logged 'no tick-status -> idle' at 11:17.
+    The file was missing from /agent/state on all five live pods for the same reason."""
+    with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as w:
+        os.environ["WORK_DIR"] = w
+        try:
+            lp = make_loop(d)
+            said = []
+            lp.log = said.append
+            (pathlib.Path(w) / "state").mkdir(parents=True)
+            (pathlib.Path(w) / "state" / "tick-status.json").write_text(json.dumps({"status": "continue"}))
+            assert lp._read_tick_status() == {"status": "continue"}
+            assert not (pathlib.Path(w) / "state" / "tick-status.json").exists()   # consumed there too
+            assert any("recovered from" in m for m in said)   # never silent
+        finally:
+            os.environ.pop("WORK_DIR", None)
+
+
+def test_tick_status_missing_everywhere_is_empty():
+    with tempfile.TemporaryDirectory() as d:
+        assert make_loop(d)._read_tick_status() == {}
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

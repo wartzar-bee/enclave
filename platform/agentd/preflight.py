@@ -193,8 +193,52 @@ def cfg_warm_session(env):
     return None
 
 
+def cfg_observability(env):
+    """Is this pod still REPORTING what it does? Nothing else checked, and it went dark unnoticed.
+
+    On 2026-07-22 an audit of the live fleet found event capture had been dead on THREE of five pods
+    for 27.5 hours — all three froze within 18 seconds of each other, and none of them noticed,
+    escalated, or degraded visibly. The framework ships hooks/event_log.py into every pod but the
+    default settings.json generator never wired it, so whether a pod emits events depended on which
+    template it happened to be created from. Meanwhile the pods kept ticking and the dashboard kept
+    showing them green: an agent that cannot report is indistinguishable from one that is fine.
+
+    Three cheap disk reads, in the order they fail:
+      1. the event source is present but NOT WIRED  -> it will never emit, by construction;
+      2. it is wired but events.jsonl is far older than the last tick -> it emitted and then stopped;
+      3. no tick-scorecard.jsonl while ticks are happening -> product is unmeasurable for this pod.
+    WARN only, like every config check — a monitoring gap must never stop the agent working."""
+    home = pathlib.Path(env.get("AGENT_DIR", "/agent"))
+    st = home / "state"
+    hooks_dir, setjson = home / ".claude" / "hooks", home / ".claude" / "settings.json"
+    try:
+        wired = "event_log" in setjson.read_text()
+    except Exception:
+        wired = False
+    if (hooks_dir / "event_log.py").exists() and not wired:
+        return ("warn", "event_log.py is shipped but NOT WIRED in .claude/settings.json — this pod "
+                        "emits no tool events, so nothing can report what it actually did. Add it as "
+                        "a PostToolUse hook.")
+    ev, sc = st / "events.jsonl", st / "tick-scorecard.jsonl"
+    try:
+        last_tick = sc.stat().st_mtime
+    except OSError:
+        last_tick = 0
+    if wired and last_tick and ev.exists():
+        gap = last_tick - ev.stat().st_mtime
+        if gap > 6 * 3600:
+            return ("warn", f"events.jsonl is {gap/3600:.1f}h older than the last scored tick — the "
+                            f"event stream went dark while this pod kept working. Restart the pod "
+                            f"(a hook change does not reach an already-running loop).")
+    if last_tick == 0 and (st / ".heartbeat").exists() and not (st / "paused").exists():
+        return ("warn", "no state/tick-scorecard.jsonl on a live pod — product output is unmeasurable, "
+                        "so this agent reads as idle no matter what it produces.")
+    return None
+
+
 CONFIG_CHECKS = {"cost": cfg_cost, "permission": cfg_permission,
-                 "persistence": cfg_persistence, "warm_session": cfg_warm_session}
+                 "persistence": cfg_persistence, "warm_session": cfg_warm_session,
+                 "observability": cfg_observability}
 
 
 def _run_config_checks(env, st):

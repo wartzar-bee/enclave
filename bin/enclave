@@ -640,6 +640,14 @@ def cmd_init(args):
             if (home / ".claude" / "hooks" / "ctx_budget.py").exists():
                 _post.append({"matcher": "*",
                     "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/ctx_budget.py"}]})
+            # event_log: THE monitoring event source. It was shipped into every pod's hooks dir but
+            # wired nowhere here, so whether an agent reported its tool calls depended entirely on
+            # whether its template happened to carry a settings.json that mentioned it. Three of five
+            # live pods were emitting no events at all — for 27.5h, silently, while showing green.
+            # Monitoring must be wired BY CONSTRUCTION, never left to a template's good intentions.
+            if (home / ".claude" / "hooks" / "event_log.py").exists():
+                _post.append({"matcher": "*",
+                    "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/event_log.py"}]})
             if _post:
                 _hk["PostToolUse"] = _post
             _write(setjson, json.dumps({"hooks": _hk}, indent=2) + "\n")

@@ -474,14 +474,40 @@ class Loop:
     def _read_tick_status(self):
         """Read state/tick-status.json the tick wrote to declare continue vs idle. Best-effort:
         missing/garbled => {} (caller applies the safe default pace). One-shot — consumed each
-        cycle so a stale 'continue' can't pin the loop hot forever."""
-        f = self.dir / "state" / "tick-status.json"
-        try:
-            d = json.loads(f.read_text())
-            f.unlink()
-            return d if isinstance(d, dict) else {}
-        except Exception:
-            return {}
+        cycle so a stale 'continue' can't pin the loop hot forever.
+
+        Looks in the WORK DIR too, because the agent's cwd is not its home. Briefs tell the agent to
+        "write state/tick-status.json" — a RELATIVE path, which lands under whatever directory the
+        tick is running in (/workspace for a studio pod), while the loop only ever read /agent/state.
+        On 2026-07-22 the file was missing on all five live pods; ideas-scout had in fact written
+        {"status":"continue"} to /workspace/state/tick-status.json at 11:16 and the loop logged
+        "no tick-status + empty queue -> idle heartbeat" one minute later. The agent's own
+        declaration of what it is doing — the single most direct signal in the system — was being
+        dropped fleet-wide, leaving every pacing decision to inference. A recovered file is logged
+        by path so the misplaced write gets fixed at the source instead of silently papered over."""
+        home = self.dir / "state" / "tick-status.json"
+        alts = [home]
+        for base in (os.environ.get("WORK_DIR"), "/workspace", "/work"):
+            if base:
+                p = pathlib.Path(base) / "state" / "tick-status.json"
+                if p not in alts:
+                    alts.append(p)
+        for f in alts:
+            try:
+                d = json.loads(f.read_text())
+            except Exception:
+                continue
+            try:
+                f.unlink()
+            except OSError:
+                pass
+            if not isinstance(d, dict):
+                continue
+            if f != home:
+                self.log(f"tick-status recovered from {f} (agent wrote it relative to its cwd, not "
+                         f"{home}) — status={d.get('status','?')}. Fix the brief to name an absolute path.")
+            return d
+        return {}
 
 
 def main():
