@@ -392,18 +392,40 @@ _zero_product = Playbook(
 # (9) churn_spike — the same non-product file rewritten ≥3× in one tick or ≥5× across 10 ticks
 # (the 33×-rollup day, caught at rewrite #3). scorecard.py sets churn_alarm per record.
 def _churn_match(diag, home, snap, ctx):
-    return snap.get("up") and any(r.get("churn_alarm") for r in _jsonl_tail(home, "state/tick-scorecard.jsonl", 10))
+    """Is the pod churning NOW — read the newest record only.
+
+    This used to be `any(churn_alarm for the last 10 records)`. But churn_alarm is ITSELF already a
+    windowed verdict (scorecard aggregates the last 10 ticks before setting it), so any-of-10 made it
+    a window of a window: one transient spike stayed visible for up to ~20 ticks after the condition
+    cleared, and the finding could never recover while the pod kept ticking. logan-cross showed
+    churn_spike whose own newest three records all said churn_alarm=False. An alarm that cannot clear
+    is indistinguishable from one that is stuck on, and it trains you to ignore the panel."""
+    if not snap.get("up"):
+        return False
+    recs = _jsonl_tail(home, "state/tick-scorecard.jsonl", 1)
+    return bool(recs and recs[-1].get("churn_alarm"))
 
 def _churn_diag(diag, home, snap, ctx):
+    # Report what is churning in the CURRENT record — matching what triggered the finding. Scanning
+    # 10 records here named a file that had stopped being touched ticks ago.
     worst, wn = None, 0
-    for r in _jsonl_tail(home, "state/tick-scorecard.jsonl", 10):
+    recs = _jsonl_tail(home, "state/tick-scorecard.jsonl", 1)
+    for r in recs:
         for p, n in (r.get("churn") or {}).items():
             if n > wn:
                 worst, wn = p, n
+    if worst is None:      # cross-tick form: this tick is clean but the 10-tick total tripped it
+        agg = {}
+        for r in _jsonl_tail(home, "state/tick-scorecard.jsonl", 10):
+            for p, n in (r.get("churn") or {}).items():
+                agg[p] = agg.get(p, 0) + n
+        if agg:
+            worst, wn = max(agg.items(), key=lambda kv: kv[1])
     return {"cause": f"churn: '{worst}' rewritten {wn}× — the agent is spinning on its own files "
                      "instead of producing",
             "confidence": "high",
-            "evidence": "state/tick-scorecard.jsonl churn/churn_alarm (last 10 records)",
+            "evidence": "state/tick-scorecard.jsonl churn_alarm (newest record; counts from that "
+                        "record, falling back to the 10-tick aggregate for the cross-tick form)",
             "recommendation": "inspect the churned file's purpose; usually a cancelled/blocked task "
                               "the agent keeps re-attempting — close it via directives.json, or park the channel.",
             "source": "deterministic"}

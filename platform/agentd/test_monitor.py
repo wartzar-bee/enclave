@@ -336,6 +336,30 @@ check("events_dark: registered in the runbook",
       "events_dark" in playbooks.BY_KEY and playbooks._events_dark in playbooks.ALL)
 
 
+# ── churn_spike must CLEAR when the pod stops churning (2026-07-22) ──────────────────────────
+# churn_alarm is already a 10-tick windowed verdict; the matcher then took any() over 10 of those,
+# so a transient spike latched the finding for ~20 ticks. logan-cross showed churn_spike while its
+# own newest three records all said churn_alarm=False.
+def _churn_home(alarms, churn=None):
+    d = pathlib.Path(tempfile.mkdtemp()); (d / "state").mkdir()
+    with (d / "state" / "tick-scorecard.jsonl").open("w") as f:
+        for a in alarms:
+            f.write(json.dumps({"ts": "2026-07-22T10:00:00Z", "churn_alarm": a,
+                                "churn": (churn or {}) if a else {}}) + "\n")
+    return str(d)
+
+check("churn_spike fires while the newest record is alarming",
+      playbooks._churn_spike.match({}, _churn_home([True] * 3, {"state/rollup.md": 9}),
+                                   {"up": True}, {}) is True)
+check("churn_spike CLEARS once the newest record is clean (no latch)",
+      playbooks._churn_spike.match({}, _churn_home([True, True, False, False, False]),
+                                   {"up": True}, {}) is False)
+check("churn_spike is silent on a down container",
+      playbooks._churn_spike.match({}, _churn_home([True] * 3, {"x": 9}), {"up": False}, {}) is False)
+_cd = playbooks._churn_spike.diagnose({}, _churn_home([True] * 3, {"state/rollup.md": 9}), {"up": True}, {})
+check("churn_spike names the file churning in the CURRENT record", "state/rollup.md" in _cd["cause"])
+
+
 print()
 if check.failed:
     print(f"{check.failed} FAILED")
