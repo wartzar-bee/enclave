@@ -522,6 +522,24 @@ if [ -f "$MEM" ]; then
   python3 "$MEM" --base "$AGENT_DIR" digest > "$AGENT_DIR/state/recall.md" 2>>"$LOG" || true
 fi
 
+# INJECT recall into the prompt — do NOT merely write the file (2026-07-23).
+# recall.md was written every tick since P3 and NOTHING pointed the agent at it: the tick prompt
+# names capabilities.json / inbox.md / work.json and never recall.md, and the agents' CLAUDE.md says
+# only "read your memory". So the digest — learned skills, and now skillforge's "you have done this
+# 4× with no skill" nudge — landed in a file nobody opened. The learning loop was complete except
+# for the last inch. A file the agent is not told to read is not context.
+PROMPT_FILE="$AGENT_DIR/tick.txt"
+if [ -s "$AGENT_DIR/state/recall.md" ]; then
+  COMPOSED="$AGENT_DIR/state/.tick-prompt.txt"
+  { cat "$AGENT_DIR/tick.txt"
+    printf '\n\n---\n# YOUR OWN MEMORY (auto-recalled — read before deciding)\n'
+    printf 'Learned skills below are procedures YOU wrote: follow them instead of re-deriving.\n'
+    printf 'If a "Recurring work with no skill" section appears, you have now done that job several\n'
+    printf 'times from scratch — WRITE THE SKILL with the given command as part of this tick.\n\n'
+    cat "$AGENT_DIR/state/recall.md"
+  } > "$COMPOSED" 2>>"$LOG" && PROMPT_FILE="$COMPOSED"
+fi
+
 # (Preflight moved ABOVE the brain dispatch, 2026-07-20 — it ran only on the Claude path here, so
 # BRAIN=api/local pods never got a capabilities.json no matter what they declared.)
 
@@ -676,7 +694,7 @@ if [ -n "$INJECT" ]; then
   # then injects graduated budget warnings (obeyed) + a kill backstop. claude reads the FIFO as stdin.
   FIFO="$AGENT_DIR/state/.tick-fifo"; rm -f "$FIFO"; mkfifo "$FIFO" 2>/dev/null
   CTX_COST_SOFT_USD="${CTX_COST_SOFT_USD:-2.0}" CTX_COST_HARD_USD="${CTX_COST_HARD_USD:-3.5}" \
-  python3 "$FEEDER" --fifo "$FIFO" --prompt-file "$AGENT_DIR/tick.txt" --state "$AGENT_DIR/state" \
+  python3 "$FEEDER" --fifo "$FIFO" --prompt-file "$PROMPT_FILE" --state "$AGENT_DIR/state" \
       --soft-floor "${CTX_COST_SOFT_USD:-2.0}" --hard-floor "${CTX_COST_HARD_USD:-3.5}" \
       --grace "${CTX_STOP_GRACE_SEC:-60}" 2>>"$LOG" & FEED_PID=$!
   ${TO:+$TO -k 30 ${TICK_TIMEOUT:-2400}} claude -p --input-format stream-json \
@@ -697,7 +715,7 @@ elif [ -f "$CAP" ]; then
   # Usage-accounting path (P1): stream-json → usage_capture.py. The parser renders the turn into
   # runner.log (no log regression) AND appends this tick's first-party usage to state/usage.jsonl.
   # claude's stderr still tees to runner.log; PIPESTATUS[0] keeps claude's OWN rc (not the parser's).
-  ${TO:+$TO -k 30 ${TICK_TIMEOUT:-2400}} claude -p "$(cat "$AGENT_DIR/tick.txt")" \
+  ${TO:+$TO -k 30 ${TICK_TIMEOUT:-2400}} claude -p "$(cat "$PROMPT_FILE")" \
     --append-system-prompt "$(cat "$AGENT_DIR/CLAUDE.md")" \
     --model "$MODEL_EFF" \
     "${SESS[@]}" \
@@ -712,7 +730,7 @@ elif [ -f "$CAP" ]; then
   rc=${PIPESTATUS[0]}
 else
   # Fallback (capture script absent): original raw-text tick — no usage accounting, never blocks.
-  ${TO:+$TO -k 30 ${TICK_TIMEOUT:-2400}} claude -p "$(cat "$AGENT_DIR/tick.txt")" \
+  ${TO:+$TO -k 30 ${TICK_TIMEOUT:-2400}} claude -p "$(cat "$PROMPT_FILE")" \
     --append-system-prompt "$(cat "$AGENT_DIR/CLAUDE.md")" \
     --model "$MODEL_EFF" \
     "${SESS[@]}" \

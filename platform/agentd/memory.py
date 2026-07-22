@@ -26,7 +26,7 @@ CLI:
   memory.py --base D index    [skills]
   memory.py --base D forget   <type>/<slug>
 """
-import sys, os, re, json, argparse, pathlib, datetime, subprocess, math, time
+import sys, os, re, json, argparse, pathlib, datetime, subprocess, math, time, hashlib
 
 def _slug(s, n=48):
     s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
@@ -132,19 +132,110 @@ class Memory:
         except Exception:
             return True, "ok", "unverified"         # router unavailable → admit, mark unverified
 
+    # ── VALIDATION GATE (borrowed, re-authored, from microsoft/SkillOpt — D-117/D-117a) ──────────
+    # SkillOpt's one genuinely transferable idea: **accept a skill edit only when a held-out
+    # measurement does not get worse.** Our existing _skill_gate checks SHAPE (length, bullets,
+    # dedup) and never asks whether the skill helped — a skill could be rewritten into nonsense and
+    # sail through. This closes that asymmetry without adopting the package (its Sleep engine ships
+    # raw transcripts to an optimizer model; ours carry .secrets paths — see D-117 blocker (b)).
+    #
+    # HONEST SCOPE: this is a REGRESSION gate, not an optimizer. SkillOpt replays tasks with the
+    # candidate skill and scores the rollouts. We do not replay; we score the ARTIFACTS the skill
+    # governs. So it answers "did revising this skill coincide with the evidence getting worse?",
+    # not "is this edit optimal". That is the honest claim, and it is still the thing that was
+    # missing: a skill revision must now come with evidence.
+    #
+    # A skill opts in by carrying `validate:` in its frontmatter — a command printing a float 0..1:
+    #   ---
+    #   skill: source-verify-code-citation
+    #   validate: python3 /workspace/tools/verify/citation_check.py --score <held-out files>
+    #   score: 0.8462
+    #   ---
+    # No `validate:` → unchanged behaviour (shape gate only). Fail-open on an unrunnable command,
+    # but recorded as `unvalidated` so it is never mistaken for a pass.
+    VAL_EPS = 1e-6
+
+    def _read_frontmatter(self, path, key):
+        try:
+            m = re.search(rf"(?m)^{key}:\s*(.+)$", path.read_text())
+            return m.group(1).strip() if m else None
+        except Exception:
+            return None
+
+    def _rejected(self):
+        f = self.skills / ".rejected.json"
+        try: return json.loads(f.read_text())
+        except Exception: return {}
+
+    def _reject(self, slug, body, reason, score=None):
+        """Rejected-edit buffer (also SkillOpt's): remember what was refused so the same edit is not
+        re-proposed next tick. Without it a losing revision loops forever at full model price."""
+        f = self.skills / ".rejected.json"
+        d = self._rejected()
+        h = hashlib.sha256(body.strip().encode()).hexdigest()[:16]
+        d.setdefault(slug, [])
+        if not any(e.get("hash") == h for e in d[slug]):
+            d[slug].append({"hash": h, "ts": self._now(), "reason": reason, "score": score})
+            d[slug] = d[slug][-20:]
+        try: f.write_text(json.dumps(d, indent=1))
+        except Exception: pass
+
+    def _validation_gate(self, slug, body):
+        """(ok, reason, new_score). Runs the skill's own `validate:` command against the CURRENT
+        artifacts and compares to the score recorded when the skill was last accepted."""
+        f = self.skills / f"{slug}.md"
+        if not f.exists():
+            return True, "new skill — no prior score to regress against", None
+        cmd = self._read_frontmatter(f, "validate")
+        if not cmd:
+            return True, "no validate: declared", None
+
+        h = hashlib.sha256(body.strip().encode()).hexdigest()[:16]
+        for e in self._rejected().get(slug, []):
+            if e.get("hash") == h:
+                return False, (f"this exact revision was already rejected ({e.get('reason')}) — "
+                               "change the approach, do not re-submit it"), None
+        try:
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300,
+                               cwd=str(self.REPO))
+            new = float((r.stdout or "").strip().splitlines()[-1])
+        except Exception as ex:
+            return True, f"validate command did not run ({type(ex).__name__}) — admitted UNVALIDATED", None
+
+        prev = self._read_frontmatter(f, "score")
+        try: old = float(prev) if prev is not None else None
+        except Exception: old = None
+        if old is not None and new < old - self.VAL_EPS:
+            self._reject(slug, body, f"held-out score fell {old:.4f} → {new:.4f}", new)
+            return False, (f"REGRESSION: held-out score fell {old:.4f} → {new:.4f}. The revision is "
+                           "refused and recorded; fix the evidence or change the approach."), new
+        return True, "ok", new
+
     def learn(self, slug, title, body, gate=False):
         slug = _slug(slug)
         verdict = None
+        new_score = None
         if gate:
             ok, reason, verdict = self._skill_gate(slug, title, body)
             if not ok:
                 return None, reason
+            ok, reason, new_score = self._validation_gate(slug, body)
+            if not ok:
+                return None, reason
         f = self.skills / f"{slug}.md"
         ver = 1
+        prior_validate = self._read_frontmatter(f, "validate") if f.exists() else None
         if f.exists():
             m = re.search(r"version:\s*(\d+)", f.read_text()); ver = int(m.group(1)) + 1 if m else 2
         gline = f"gated: {verdict}\n" if verdict else ""
-        f.write_text(f"---\nskill: {slug}\nversion: {ver}\nts: {self._now()}\n{gline}---\n\n# {title}\n\n{body.strip()}\n")
+        # carry `validate:` forward (a revision must not silently drop its own gate) and stamp the
+        # score this version was accepted at — that becomes the bar the NEXT revision must clear.
+        vline = ""
+        if prior_validate and "validate:" not in body:
+            vline += f"validate: {prior_validate}\n"
+        if new_score is not None:
+            vline += f"score: {new_score:.4f}\n"
+        f.write_text(f"---\nskill: {slug}\nversion: {ver}\nts: {self._now()}\n{gline}{vline}---\n\n# {title}\n\n{body.strip()}\n")
         line = f"- **{title}** → `{slug}.md` (v{ver})"
         idx = self.skills / "INDEX.md"; lines = idx.read_text().splitlines()
         lines = [l for l in lines if f"`{slug}.md`" not in l]
@@ -557,6 +648,19 @@ class Memory:
         if skills:
             out.append("\n## Learned skills — reusable procedures (recall, don't re-derive)\n" +
                        "\n".join(f"- **{ti}** → `skills/{nm}.md`" for _, nm, ti in skills))
+        # SKILLFORGE nudge — the half that was missing. Recall could only ever return skills that
+        # were WRITTEN, and across 4 pods / 486 ticks only 4 ever were. This surfaces work the agent
+        # has now repeated N times with no skill covering it, every tick, in its own recall file.
+        # Deterministic, zero-LLM, silent when there is nothing to say.
+        try:
+            sf = pathlib.Path(__file__).resolve().parent / "skillforge.py"
+            if sf.exists():
+                r = subprocess.run([sys.executable, str(sf), str(self.base), "nudge", "--min", "3"],
+                                   capture_output=True, text=True, timeout=20)
+                if (r.stdout or "").strip():
+                    out.append("\n" + r.stdout.strip())
+        except Exception:
+            pass
         out.append(f"\n_focus: {q[:160] or '(none)'}_\n")
         return "\n".join(out)
 
