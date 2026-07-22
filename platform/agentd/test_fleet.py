@@ -132,6 +132,29 @@ def main():
     check.eq("_headline falls back to first line when no dates are present",
              fleet._headline("# h\n\nplain line\nsecond\n"), "plain line")
 
+    # ---- _loop_wait: runner.log interleaves the AGENT's transcript with the LOOP's decisions ----
+    h3 = rootp / "loopagent"
+    (h3 / "logs").mkdir(parents=True)
+    lg = h3 / "logs" / "runner.log"
+    lg.write_text(
+        "2026-07-22T09:00:00Z — [x] loop: no tick-status + open work → continue in 900s\n"
+        "  ⏴ ⚠ PreToolUse:Bash hook error: [agent-guard] BLOCKED: git is disabled for agents\n")
+    # The guard message is the AGENT being denied one Bash call — not the loop being blocked.
+    # logan-cross was reported `blocked` on exactly this while it was mid-tick and healthy.
+    check.eq("_loop_wait ignores a guard BLOCKED inside the tick transcript",
+             fleet._loop_wait(h3)["kind"], "continue")
+    lg.write_text("2026-07-22T09:00:00Z — [x] loop: ... → backing off to 9600s (cap 10800s)\n")
+    check.eq("_loop_wait reads a backoff", fleet._loop_wait(h3), {"kind": "backoff", "wait_s": 9600})
+    lg.write_text("2026-07-22T09:00:00Z — [x] loop: tick deferred (cap/lock) — retry in 600s\n")
+    check.eq("_loop_wait surfaces a deferred tick with its retry", fleet._loop_wait(h3),
+             {"kind": "deferred", "wait_s": 600})
+    (h3 / "state").mkdir(parents=True, exist_ok=True)
+    (h3 / "state" / "paused").write_text("stopped by operator directive\n")
+    # A pod parked on purpose must say so: the generic "deferred (cap/lock)" line explains nothing,
+    # and stoneforge (stopped by operator directive) showed an EMPTY status column because of it.
+    check.eq("_loop_wait reports a deliberately paused pod as paused",
+             fleet._loop_wait(h3)["kind"], "paused")
+
     h2 = rootp / "seenagent"
     (h2 / "state").mkdir(parents=True)
     (h2 / "state" / "rollup.md").write_text("2026-07-21 stale rollup\n")

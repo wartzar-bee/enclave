@@ -212,17 +212,36 @@ def _loop_wait(home):
 
     "idle" and "backing off to 4800s" look identical in a liveness badge but mean opposite things:
     one is the design, the other is the loop having decided this pod is not worth paying for."""
+    # state/paused is the MECHANISM the loop actually checks, so read it rather than inferring the
+    # pod's most important status from log prose. The loop's own follow-up line is a generic
+    # "tick deferred (cap/lock)" that names neither the pause nor the reason.
+    if (home / "state" / "paused").exists():
+        return {"kind": "paused", "wait_s": None}
     try:
         lines = (home / "logs" / "runner.log").read_text(errors="ignore").splitlines()[-400:]
     except Exception:
         return {"kind": "", "wait_s": None}
     for l in reversed(lines):
-        m = re.search(r"(backing off to (\d+)s|continue in (\d+)s|next tick in (\d+)s|idle|BLOCKED)", l)
+        # ONLY the loop's own status lines. runner.log interleaves the agent's whole tick transcript,
+        # so a free-text scan reads the AGENT's words as the LOOP's state: logan-cross was reported
+        # `blocked` because a guard hook had printed "BLOCKED: git is disabled for agents" about one
+        # Bash call inside its transcript, while the loop was running a tick perfectly normally and
+        # no state/.blocked marker existed. Anchor on the "] loop:" / "] paused (" prefixes the loop
+        # actually emits.
+        if "] loop:" not in l and "] paused (" not in l:
+            continue
+        if "] paused (" in l:
+            # A deliberately parked pod (state/paused). The loop then logs a generic
+            # "tick deferred (cap/lock)" that says nothing about WHY, so stoneforge — stopped on
+            # purpose by operator directive — showed an empty status column and read as unexplained.
+            return {"kind": "paused", "wait_s": None}
+        m = re.search(r"(backing off to (\d+)s|continue in (\d+)s|next tick in (\d+)s"
+                      r"|deferred \(cap/lock\) — retry in (\d+)s|idle|BLOCKED)", l)
         if not m:
             continue
         t = m.group(1)
         kind = ("backoff" if t.startswith("backing off") else "blocked" if t == "BLOCKED"
-                else "idle" if t == "idle" else "continue")
+                else "deferred" if t.startswith("deferred") else "idle" if t == "idle" else "continue")
         wait = next((int(g) for g in m.groups()[1:] if g and g.isdigit()), None)
         return {"kind": kind, "wait_s": wait}
     return {"kind": "", "wait_s": None}
