@@ -2436,8 +2436,31 @@ class H(BaseHTTPRequestHandler):
                                           "kind": "approval", "text": str(txt)[:400]})
                     except Exception:
                         pass
-            items.sort(key=lambda x: x["ts"], reverse=True)
-            return self._send(200, "application/json", json.dumps({"items": items[:100]}))
+            # COLLAPSE REPEATS OF ONE ASK. A pod that is blocked re-escalates the same thing every
+            # tick — the queue hit 26 on 2026-07-22 and roughly half of it was duplicates
+            # (`[capability:hcaptcha-solver]` twice, `[capability:dns-broker-apex]` twice, five
+            # separate `[coach]` interventions for two conditions). Twenty-six rows reads as
+            # twenty-six decisions and trains the operator to ignore the badge; the honest count was
+            # about a dozen. Same agent + same [tag] = one row, newest text, with how many times it
+            # was raised — which is itself the signal that a pod is stuck on it.
+            grouped, order = {}, []
+            for it in items:
+                tags = re.findall(r"\[[a-z0-9:_-]+\]", it["text"], re.I)
+                # skip generic envelope tags that would over-merge unrelated asks
+                key = (it["agent"], next((t.lower() for t in tags
+                                          if t.lower() not in ("[fyi]", "[board]", "[studio-action]")), None))
+                if key[1] is None:
+                    order.append(it)
+                    continue
+                if key in grouped:
+                    grouped[key]["repeats"] += 1
+                    if it["ts"] > grouped[key]["ts"]:
+                        grouped[key].update(ts=it["ts"], text=it["text"])
+                else:
+                    grouped[key] = {**it, "repeats": 1}
+                    order.append(grouped[key])
+            order.sort(key=lambda x: x["ts"], reverse=True)
+            return self._send(200, "application/json", json.dumps({"items": order[:100]}))
         if p == "/api/goal":   # P3 steering: the autonomous-supervisor goal (state/phase-goal.txt)
             aid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
             if not fleet._SAFE.match(aid or ""):
