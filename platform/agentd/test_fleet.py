@@ -225,6 +225,29 @@ def main():
     check.eq("_fmt_age minutes", fleet._fmt_age(now - 600), "10m")
     check.eq("_fmt_age hours", fleet._fmt_age(now - 7200), "2h")
 
+    # ------------------------------------------------------- cmd_start is state-aware
+    # `up` and `restart` were two buttons with an invisible difference and a real trap: `compose
+    # restart` bounces the SAME container, so an agent.env edit silently does not apply. cmd_start
+    # is the single verb the console sends — it must pick the right compose call from live state.
+    calls = []
+    _orig_compose, _orig_resolve = fleet._compose, fleet._resolve
+    fleet._compose = lambda a, *args, **kw: calls.append(list(args))
+    try:
+        fleet._resolve = lambda aid: {"id": "alpha", "dir": str(root), "up": False}
+        fleet.cmd_start("alpha")
+        check.eq("cmd_start on a STOPPED agent brings the stack up", calls[-1], ["up", "-d"])
+
+        fleet._resolve = lambda aid: {"id": "alpha", "dir": str(root), "up": True}
+        fleet.cmd_start("alpha")
+        check("cmd_start on a RUNNING agent force-recreates it (applies config)",
+              calls[-1][:3] == ["up", "-d", "--force-recreate"], f"{calls[-1]}")
+        check("cmd_start on a RUNNING agent leaves chat/relay alone (--no-deps agent)",
+              "--no-deps" in calls[-1] and calls[-1][-1] == "agent", f"{calls[-1]}")
+        check("cmd_start never uses bare `restart` (it would skip config changes)",
+              not any(c and c[0] == "restart" for c in calls), f"{calls}")
+    finally:
+        fleet._compose, fleet._resolve = _orig_compose, _orig_resolve
+
     raise SystemExit(check.report())
 
 

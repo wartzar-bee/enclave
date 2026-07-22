@@ -822,9 +822,8 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
     <div id="bar"><button id="railtoggle" title="Show agents" onclick="toggleRail()">☰</button>
       <span class="t" id="bt">—</span><span class="m" id="bm"></span><span style="flex:1"></span>
       <button class="btn" id="agpausebtn" onclick="actPause()" title="Skip ticks; container and chat stay up">Pause</button>
-      <button class="btn" onclick="act('restart')">Restart</button>
+      <button class="btn" id="aglifebtn" onclick="act('start')" title="Run this agent on its current config">Start</button>
       <button class="btn danger" onclick="act('down')">Stop</button>
-      <button class="btn" onclick="act('up')">Start</button>
       <button class="btn" onclick="openChat()">↗ Chat tab</button></div>
     <div class="tabs"><span class="tab sel" data-t="chat" onclick="tab('chat')">Chat</span>
       <span class="tab" data-t="activity" onclick="tab('activity')">Activity</span>
@@ -1379,11 +1378,21 @@ async function act(action){if(!sel)return;if(action==="down"&&!confirm("Stop "+s
    re-reads state/paused on boot and keeps skipping ticks. */
 async function actPause(){if(!sel)return;const paused=((agents||{})[sel]||{}).tick==="paused";
   await post("/api/action",{action:paused?"resume":"pause",id:sel});setTimeout(load,800);}
-function syncPauseBtn(){const b=document.getElementById("agpausebtn");if(!b)return;
-  const paused=((agents||{})[sel]||{}).tick==="paused";
-  b.textContent=paused?"Resume":"Pause";b.classList.toggle("go",paused);
-  b.title=paused?"Clear state/paused — the loop ticks again on its next wake"
-                :"Skip ticks; container and chat stay up";}
+function syncPauseBtn(){const a=(agents||{})[sel]||{};
+  const b=document.getElementById("agpausebtn");
+  if(b){const paused=a.tick==="paused";
+    b.textContent=paused?"Resume":"Pause";
+    b.title=paused?"Clear state/paused — the loop ticks again on its next wake"
+                  :"Skip ticks; container and chat stay up";}
+  /* One lifecycle button, labelled by state — same pattern the Monitor tab already uses. It always sends
+     `start`, which the backend resolves: bring the stack up if down, or recreate the agent on its
+     CURRENT config if already running. The old pair was a trap — `restart` bounces the same
+     container, so config edits silently did not apply. */
+  const l=document.getElementById("aglifebtn");
+  if(l){const up=!!a.up;
+    l.textContent=up?"Restart":"Start";
+    l.title=up?"Restart on current config (chat stays up)"
+              :"Start this agent";}}
 async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dtext.value="";
   await post("/api/action",{action:"send",id:sel,text:t});}
 async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});}catch(e){}}
@@ -2723,14 +2732,16 @@ class H(BaseHTTPRequestHandler):
                     _set_operator_stopped(aid, False)
                 return self._send(200, "application/json",
                                   json.dumps({"ok": True, "out": f"{aid} {action}d"}))
-            if action not in ("up", "down", "restart", "send") or not fleet._SAFE.match(aid or ""):
+            # `start` is the state-aware verb the UI sends; `up`/`restart` stay accepted so any
+            # existing script or bookmark keeps working.
+            if action not in ("start", "up", "down", "restart", "send") or not fleet._SAFE.match(aid or ""):
                 return self._send(400, "application/json", '{"error":"bad action"}')
             args = [action, aid] + ([text] if action == "send" and text else [])
             try:
                 r = _fleet_cmd(*args, timeout=190)
                 # D3 safety: mark an operator-initiated stop so the monitor's autofix never "helpfully"
                 # restarts a pod the operator deliberately took down (cleared on the next up/restart).
-                if r.returncode == 0 and action in ("down", "up", "restart"):
+                if r.returncode == 0 and action in ("down", "up", "restart", "start"):
                     _set_operator_stopped(aid, action == "down")
                 return self._send(200, "application/json", json.dumps({"ok": r.returncode == 0, "out": (r.stdout or r.stderr)[-400:]}))
             except Exception as e:

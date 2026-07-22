@@ -558,6 +558,32 @@ def _compose(a, *verb, timeout=180):
 
 def cmd_up(aid):
     a = _resolve(aid); print(f"starting {aid} …"); _compose(a, "up", "-d")
+
+
+def cmd_start(aid):
+    """"Make this agent run, on its CURRENT config, freshly." One verb for what the operator means.
+
+    `up` and `restart` were two buttons whose difference was invisible and whose behaviour differed
+    in exactly the way that bites: `docker compose restart` bounces the SAME container, so a change
+    to agent.env or the compose override is silently NOT applied — the pod comes back looking
+    restarted and running the old settings. (That is the shape of the override-dropping bug we
+    already fixed once at the CLI layer.) Meanwhile `up -d` on an unchanged, running stack is a
+    no-op, so it could not be used to un-stick anything.
+
+    So: neither verb alone is the one you want, which is why there were two of them and why
+    picking the right one required knowing which docker subcommand was underneath.
+
+      stopped  -> `up -d`, the whole stack (agent + chat/relay).
+      running  -> `up -d --force-recreate --no-deps agent`: the agent restarts on fresh config while
+                  chat and the relay stay up, so an operator watching a conversation keeps it.
+    """
+    a = _resolve(aid)
+    if a.get("up"):
+        print(f"restarting {aid} on current config (chat stays up) …")
+        _compose(a, "up", "-d", "--force-recreate", "--no-deps", "agent")
+    else:
+        print(f"starting {aid} …")
+        _compose(a, "up", "-d")
 def cmd_down(aid):
     a = _resolve(aid); print(f"stopping {aid} …"); _compose(a, "stop")
 def cmd_restart(aid):
@@ -773,8 +799,10 @@ def main():
         cmd_list(as_json="--json" in args)
     elif cmd == "open" and pos:
         cmd_open(pos[0])
-    elif cmd in ("up", "start") and pos:
-        cmd_up(pos[0])
+    elif cmd == "start" and pos:
+        cmd_start(pos[0])          # state-aware: start if down, recreate-on-current-config if up
+    elif cmd == "up" and pos:
+        cmd_up(pos[0])             # kept: the literal `compose up -d`, for scripts that mean only that
     elif cmd in ("down", "stop") and pos:
         cmd_down(pos[0])
     elif cmd == "restart" and pos:
