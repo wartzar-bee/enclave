@@ -821,7 +821,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <main id="main">
     <div id="bar"><button id="railtoggle" title="Show agents" onclick="toggleRail()">☰</button>
       <span class="t" id="bt">—</span><span class="m" id="bm"></span><span style="flex:1"></span>
-      <button class="btn" id="pausebtn" onclick="actPause()" title="Skip ticks; container and chat stay up">Pause</button>
+      <button class="btn" id="agpausebtn" onclick="actPause()" title="Skip ticks; container and chat stay up">Pause</button>
       <button class="btn" onclick="act('restart')">Restart</button>
       <button class="btn danger" onclick="act('down')">Stop</button>
       <button class="btn" onclick="act('up')">Start</button>
@@ -1379,7 +1379,7 @@ async function act(action){if(!sel)return;if(action==="down"&&!confirm("Stop "+s
    re-reads state/paused on boot and keeps skipping ticks. */
 async function actPause(){if(!sel)return;const paused=((agents||{})[sel]||{}).tick==="paused";
   await post("/api/action",{action:paused?"resume":"pause",id:sel});setTimeout(load,800);}
-function syncPauseBtn(){const b=document.getElementById("pausebtn");if(!b)return;
+function syncPauseBtn(){const b=document.getElementById("agpausebtn");if(!b)return;
   const paused=((agents||{})[sel]||{}).tick==="paused";
   b.textContent=paused?"Resume":"Pause";b.classList.toggle("go",paused);
   b.title=paused?"Clear state/paused — the loop ticks again on its next wake"

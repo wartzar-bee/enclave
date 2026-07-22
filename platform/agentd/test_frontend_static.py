@@ -76,6 +76,16 @@ def main():
     else:
         print("  NOTE: node not on PATH — skipping `node --check` syntax gate (non-blocking)")
 
+    # ---- 1b. every element id is UNIQUE -----------------------------------------------------------
+    # getElementById returns the FIRST match, so a duplicate id does not error — it silently wires a
+    # handler to the wrong element. Adding an agent Pause button as a second #pausebtn meant
+    # syncPauseBtn() relabelled the nav's auto-refresh ⏸ instead: the word "Resume" appeared in a
+    # different row from the agent controls, and the real button never updated. Nothing failed; it
+    # just moved. This is the cheapest possible guard against a whole class of that.
+    ids = re.findall(r'\bid="([A-Za-z0-9_-]+)"', page)
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    check("no duplicate element ids in PAGE", not dupes, f"duplicated: {dupes}")
+
     # ---- 2. structural anchors -------------------------------------------------------------------
     # nav views: data-v + view(...) + matching #view-<x> container.  ("Audit" label -> activity view)
     nav = dict(re.findall(r'data-v="([a-z]+)"[^>]*>([^<]+)<', page))
