@@ -36,6 +36,8 @@ import fleet            # snapshot() — agent discovery incl. down/stopped/stan
 import diagnostics      # the detection layer (pure stdlib)
 from monitor import playbooks
 from monitor import state as mstate
+import framework_version
+
 from monitor import intel        # D2b: off-Opus LLM cause/fix for novel anomalies (fail-open)
 from monitor import notify       # D2b: critical-alert push (Telegram), fail-open
 from monitor.policy import Policy, MODES
@@ -305,7 +307,12 @@ def main():
     hb_path = heartbeat_path()
     print(f"fleet_monitor: control_queue={control_queue} interval={interval}s once={once} "
           f"dryrun={dryrun} heartbeat={hb_path}")
+    stale = framework_version.StaleCheck()
     while True:
+        # Between cycles: adopt new framework code. This daemon is a pure reader, so a restart here
+        # loses nothing — and it had already run a whole session on a stale RUNBOOK, where a newly
+        # added detector simply never fired and looked like a false negative.
+        stale.restart_if_stale(log=lambda m: print(f"[monitor] {m}"), what="monitor daemon")
         policy = Policy.load()   # reload each cycle so policy edits take effect without a restart
         hb = {"ts": _iso(), "error": "cycle did not complete"}
         try:

@@ -28,6 +28,9 @@ Env: INTERVAL_SECONDS(10800) POLL_SECONDS(5) CAP_RETRY_SECONDS(600) INITIAL_TICK
 """
 import os, sys, time, json, subprocess, pathlib, urllib.request, urllib.error
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import framework_version
+
 HERE = pathlib.Path(__file__).resolve().parent
 SKIP_RC = 75                                   # runtime.sh: cap-guard / lock skip (deferred, not done)
 
@@ -261,6 +264,7 @@ class Loop:
 
     def run(self):
         self.log(f"start (interval={self.interval}s poll={self.poll}s comms={'on' if self.comms_url else 'off'})")
+        self._stale = framework_version.StaleCheck()
         self._ensure_supervisor()                  # co-located off-opus supervisor (BRAIN=local)
         self._start_supervisor_watchdog()          # tick-independent self-heal (the loop blocks during a tick)
         self._start_chat_responder()               # REAL-TIME chat plane (concurrent; never blocked by a work tick)
@@ -272,6 +276,11 @@ class Loop:
         while True:
             time.sleep(self.poll)
             now = time.time()
+            # BETWEEN ticks is the only safe moment to adopt new framework code: no tick is running,
+            # so nothing is lost. A file edit or image rebuild does NOT reach an already-running
+            # process — this loop once ran 4h29m of stale code while its fix sat bind-mounted on
+            # disk, and the fix looked broken rather than un-deployed.
+            self._stale.restart_if_stale(log=self.log, what="agent loop", now=now)
             ibm = _mtime(self.inbox)
             inbox_changed = (ibm is not None and self.inbox_baseline is not None and ibm > self.inbox_baseline)
             reason = due(now, self.next_heartbeat, inbox_changed, self.comms_pending(), self.defer_until)

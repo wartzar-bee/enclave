@@ -30,6 +30,7 @@ from urllib.parse import urlparse, parse_qs
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import framework_version
 import fleet   # the control-plane helper (snapshot + lifecycle); read-only here, mutations via subprocess
 import usage as _usage          # cost rollups (in-process; reuse aggregate/series/last_record)
 import claude_usage as _capusage  # subscription cap % (5h / 7d), cached
@@ -503,7 +504,13 @@ def _snapshot_loop():
     """The single state reader. fleet.snapshot() = disk reads; add a bounded TCP probe for chat-port
     reachability. Writes one cached dict; all consumers read it. No request thread ever does this work."""
     from concurrent.futures import ThreadPoolExecutor
+    stale = framework_version.StaleCheck()
     while True:
+        # The dashboard is where staleness does the most damage: it had been up 22h59m holding
+        # yesterday's fleet.py, so it rendered every working agent as idle-or-down and the operator
+        # reasonably read that as an AGENT failure. A dashboard that lies is worse than one that is
+        # off. This thread only reads, so re-exec'ing here loses nothing.
+        stale.restart_if_stale(log=lambda m: sys.stderr.write(f"[console] {m}\n"), what="console")
         try:
             snap = fleet.snapshot()
             ports = {aid: a.get("port") for aid, a in snap.items()}
