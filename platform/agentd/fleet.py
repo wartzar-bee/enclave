@@ -179,9 +179,11 @@ def _productivity(home, window_s=PRODUCTIVITY_WINDOW_S):
     working agent."""
     f = (home / "state" / "tick-scorecard.jsonl") if home else None
     if not f or not f.exists():
-        return {"product": None, "tooling": None, "ticks": 0, "blind": True}
+        return {"product": None, "tooling": None, "ticks": 0, "blind": True,
+                "files": 0, "new": 0, "unclassified": 0}
     cut = time.time() - window_s
-    prod = tool = ticks = 0
+    prod = tool = ticks = other = 0
+    touched, before = set(), set()      # distinct product paths in-window / ever seen before it
     try:
         for line in f.read_text(errors="replace").splitlines()[-400:]:
             try:
@@ -189,15 +191,21 @@ def _productivity(home, window_s=PRODUCTIVITY_WINDOW_S):
             except Exception:
                 continue
             ts = _utc_epoch(r.get("ts"))
+            paths = r.get("product_paths") or []
             if ts is None or ts < cut:
+                before.update(paths)    # anything already written is not NEW work in this window
                 continue
             w = r.get("writes") or {}
             prod += int(w.get("product") or 0)
             tool += int(w.get("tooling") or 0)
+            other += int(w.get("other") or 0)
+            touched.update(paths)
             ticks += 1
     except Exception:
-        return {"product": None, "tooling": None, "ticks": 0, "blind": True}
-    return {"product": prod, "tooling": tool, "ticks": ticks, "blind": False}
+        return {"product": None, "tooling": None, "ticks": 0, "blind": True,
+                "files": 0, "new": 0, "unclassified": 0}
+    return {"product": prod, "tooling": tool, "ticks": ticks, "blind": False,
+            "files": len(touched), "new": len(touched - before), "unclassified": other}
 
 
 def _utc_epoch(ts):
@@ -626,7 +634,12 @@ def cmd_list(as_json=False):
         d = dot.get(a["tick"], "?")
         pr = a.get("productivity") or {}
         # BLIND is not zero. A pod that has never been measured must not read as an idle one.
-        prod = "prod:blind" if pr.get("blind") else f"prod:{pr.get('product', 0)}/{pr.get('ticks', 0)}t"
+        # NEW/FILES/WRITES, because a raw write count cannot tell progress from churn: channel-lab's
+        # "prod:16" was the same ~4 files rewritten across 7 ticks, which reads identically to having
+        # produced 16 things. `new` counts product paths not touched before this window — the only
+        # one of the three that means the pod moved forward.
+        prod = ("prod:blind" if pr.get("blind") else
+                f"prod:{pr.get('new', 0)}n/{pr.get('files', 0)}f/{pr.get('product', 0)}w")
         lp = a.get("loop") or {}
         wait = lp.get("kind") or ""
         if wait == "backoff" and lp.get("wait_s"):
@@ -649,7 +662,9 @@ def cmd_list(as_json=False):
             print("▸ standalone")
         for a in sorted(standalone, key=lambda x: x["id"]):
             line(a)
-    print(f"\n  {len(snap)} agent(s)   ● working  ○ idle  ✗ down")
+    print(f"\n  {len(snap)} agent(s)   ● working  ○ idle  ✗ down   "
+          f"prod:NEWn/FILESf/WRITESw over {int(PRODUCTIVITY_WINDOW_S/3600)}h "
+          f"(new=paths not touched before; writes alone cannot tell progress from churn)")
 
 
 def _restart_after(a, diff):

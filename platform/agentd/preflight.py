@@ -233,6 +233,23 @@ def cfg_observability(env):
     if last_tick == 0 and (st / ".heartbeat").exists() and not (st / "paused").exists():
         return ("warn", "no state/tick-scorecard.jsonl on a live pod — product output is unmeasurable, "
                         "so this agent reads as idle no matter what it produces.")
+    # Writes that match NO configured glob land in `other`. A pod whose output is mostly unclassified
+    # is producing into paths its own scorecard cannot see, so it reads unproductive while working —
+    # the same failure as being blind, just arrived at through a mis-scoped glob instead of a missing
+    # one. Needs several ticks of evidence: one odd tick is noise.
+    try:
+        recs = [json.loads(l) for l in sc.read_text(errors="replace").splitlines()[-12:] if l.strip()]
+    except Exception:
+        recs = []
+    if len(recs) >= 6:
+        oth = sum(int((r.get("writes") or {}).get("other") or 0) for r in recs)
+        prod = sum(int((r.get("writes") or {}).get("product") or 0) for r in recs)
+        tool = sum(int((r.get("writes") or {}).get("tooling") or 0) for r in recs)
+        if oth >= 5 and oth > 2 * (prod + tool):
+            return ("warn", f"{oth} writes across the last {len(recs)} ticks matched NO scorecard glob "
+                            f"(product={prod}, tooling={tool}) — kpi_artifacts is probably mis-scoped, "
+                            f"so real output is being scored as nothing. Check state/scorecard-config.json "
+                            f"against where this agent actually writes.")
     return None
 
 
