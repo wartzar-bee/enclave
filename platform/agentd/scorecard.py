@@ -86,14 +86,61 @@ def _norm(base, path):
     return os.path.normpath(p)
 
 
+PRUNE = {"node_modules", ".git", ".venv", "venv", "dist", "build", ".next", ".nuxt",
+         ".cache", "__pycache__", ".pnpm-store", "target", ".pytest_cache", "site-packages"}
+
+
+def _glob_rx(pat):
+    """Glob -> regex. `**` spans directories, `*` and `?` never cross a `/`."""
+    out, i = [], 0
+    while i < len(pat):
+        if pat.startswith("**/", i):
+            out.append("(?:[^/]+/)*"); i += 3
+        elif pat.startswith("**", i):
+            out.append(".*"); i += 2
+        elif pat[i] == "*":
+            out.append("[^/]*"); i += 1
+        elif pat[i] == "?":
+            out.append("[^/]"); i += 1
+        else:
+            out.append(re.escape(pat[i])); i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def _iter_files(pattern):
+    """Files matching a glob, never descending into dependency trees.
+
+    "Bounded: globs are expected to be targeted" was an ASSUMPTION, not a guard, and it did not
+    hold: stoneforge's configured `work/**/apps/**/src/**` walks node_modules, and glob(recursive=
+    True) on it does not return in any useful time. That hung the studio's host-side status tool
+    for >110s; the same pattern is scored here every tick, so the hazard is the framework's too.
+    A scorer that hangs fails exactly like a scorer that reports zero — the tick looks unproductive."""
+    if "**" not in pattern:
+        for f in globmod.glob(pattern):
+            if os.path.isfile(f):
+                yield f
+        return
+    head = pattern.split("**", 1)[0]
+    root = head if os.path.isdir(head) else (os.path.dirname(head.rstrip("/")) or ".")
+    if not os.path.isdir(root):
+        return
+    rx = _glob_rx(pattern)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in PRUNE]
+        for f in filenames:
+            p = os.path.join(dirpath, f)
+            if rx.match(p):
+                yield p
+
+
 def _glob_matches(base, patterns, since=None):
     """Paths matched by patterns; when `since` is set, only files with mtime >= since-1.
-    Bounded: globs are expected to be targeted (content/**, ideas/scout/*.md), never '/'."""
+    Dependency dirs are pruned (see _iter_files) — targeting is enforced, not assumed."""
     hits = set()
     for pat in patterns or []:
         root_pat = pat if pat.startswith("/") else str(base / pat)
         try:
-            for m in globmod.glob(root_pat, recursive=True):
+            for m in _iter_files(root_pat):
                 if not os.path.isfile(m):
                     continue
                 if since is not None:
