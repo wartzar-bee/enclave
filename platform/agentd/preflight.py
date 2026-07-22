@@ -120,8 +120,22 @@ def probe_delivery(env):
         age = time.time() - os.path.getmtime(marker)
     except OSError:
         return False, f"delivery heartbeat {marker} missing — output pipeline NOT connected"
-    return (age <= max_age), (f"delivery heartbeat {int(age/60)}m old"
-                              + ("" if age <= max_age else f" (> {int(max_age/60)}m — daemon stalled?)"))
+    if age > max_age:
+        return False, f"delivery heartbeat {int(age/60)}m old (> {int(max_age/60)}m — daemon stalled?)"
+    # A fresh heartbeat proves the daemon RAN, not that anything flowed. deliver.py records how many
+    # files its source glob matched; zero means the daemon and the agent disagree about where output
+    # goes, which looks exactly like health from a timestamp alone (ideas-scout, 2026-07-22: 6h of
+    # fresh heartbeats over an empty glob while it filed 16 candidates into another directory).
+    try:
+        lines = open(marker).read().splitlines()
+        seen = json.loads(lines[1]).get("sources_seen") if len(lines) > 1 else None
+    except Exception:
+        seen = None
+    if seen == 0:
+        return False, ("delivery ran but its source glob matched NOTHING — you are writing "
+                       "somewhere the pipeline does not read. Check where your outputs land.")
+    return True, (f"delivery heartbeat {int(age/60)}m old"
+                  + (f", {seen} source(s) seen" if seen is not None else ""))
 
 
 PROBES = {"route": probe_route, "render": probe_render, "qmd": probe_qmd, "codegraph": probe_codegraph,
@@ -316,6 +330,27 @@ def _selftest():
     ck("warm fires: daemon + warm", cfg_warm_session({"RUNTIME_MODE":"daemon","WARM_SESSION":"1"}) and cfg_warm_session({"RUNTIME_MODE":"daemon","WARM_SESSION":"1"})[0]=="warn")
     ck("warm silent: daemon + WARM_SESSION=0", cfg_warm_session({"RUNTIME_MODE":"daemon","WARM_SESSION":"0"}) is None)
     ck("warm silent: non-daemon", cfg_warm_session({"RUNTIME_MODE":"oneshot","WARM_SESSION":"1"}) is None)
+    # delivery: a FRESH heartbeat over an EMPTY source glob is the failure that looks like health —
+    # the daemon runs, the timestamp is current, and nothing is flowing because the agent writes
+    # somewhere else (ideas-scout, 2026-07-22).
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _d:
+        def _hb(payload):
+            p = os.path.join(_d, "hb")
+            with open(p, "w") as fh:
+                fh.write(time.strftime("%Y-%m-%dT%H:%M:%S") + "\n")
+                if payload is not None:
+                    fh.write(json.dumps(payload) + "\n")
+            return {"DELIVERY_MARKER": p}
+        ck("delivery fires: fresh heartbeat, zero sources seen",
+           probe_delivery(_hb({"sources_seen": 0}))[0] is False)
+        ck("delivery passes: fresh heartbeat with sources",
+           probe_delivery(_hb({"sources_seen": 3}))[0] is True)
+        ck("delivery passes: legacy timestamp-only heartbeat",
+           probe_delivery(_hb(None))[0] is True)
+        ck("delivery fires: heartbeat missing",
+           probe_delivery({"DELIVERY_MARKER": os.path.join(_d, "nope")})[0] is False)
+        ck("delivery silent: not configured", probe_delivery({})[0] is None)
     print("SELFTEST", "OK" if ok else "FAILED")
     return 0 if ok else 1
 

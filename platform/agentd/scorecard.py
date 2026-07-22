@@ -295,6 +295,13 @@ def collect(base, t0, now=None):
     w10 = {}
     for r in prior:
         for p, n in (r.get("churn") or {}).items():
+            # Filter the HISTORY too, not just this tick. Records written before a file joined
+            # BOOKKEEPING still name it, so the cross-tick window kept the alarm lit for another 10
+            # ticks after the fix landed — wartzar-bee went on escalating churn_spike for
+            # `chat-reply.md` from stale records alone. A retroactive exclusion also means the next
+            # file added here takes effect immediately instead of on a lag nobody remembers.
+            if p in BOOKKEEPING:
+                continue
             w10[p] = w10.get(p, 0) + n
     for p, n in churn_tick.items():
         w10[p] = w10.get(p, 0) + n

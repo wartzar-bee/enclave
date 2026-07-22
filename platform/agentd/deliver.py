@@ -115,7 +115,8 @@ def deliver(cfg, dry=False):
     initial = cfg.get("initial_stage", "raw")
 
     added, skipped, rejected = [], [], []
-    for path in sorted(glob.glob(cfg["source_glob"])):
+    sources = sorted(glob.glob(cfg["source_glob"]))
+    for path in sources:
         base = os.path.basename(path)
         ok, verdict = gate_ok(cfg.get("gate_cmd"), path)
         if not ok:
@@ -153,12 +154,24 @@ def deliver(cfg, dry=False):
 
     # Heartbeat LAST and unconditionally (even a no-op run proves the pipe is attended) — this is
     # what preflight's `delivery` probe reads in-pod to assert the pipeline is connected.
+    #
+    # It records HOW MANY SOURCES THE GLOB SAW, not just that the run happened. A timestamp alone
+    # says the daemon is alive; it says nothing about whether the daemon and the agent still agree
+    # on WHERE output goes. On 2026-07-22 ideas-scout began writing candidates to /agent/ideas/scout
+    # while this glob pointed at /workspace/ideas/scout: the run kept firing, the heartbeat stayed
+    # fresh, the probe stayed green, and 16 gate-passing candidates piled up somewhere nothing read.
+    # That is D-110 again in a new spelling — a connected pipe with nothing flowing through it reads
+    # identical to a healthy one unless you record the flow. First line stays a bare timestamp so
+    # anything reading it as text still works.
     hb = cfg.get("heartbeat")
     if hb and not dry:
         try:
             os.makedirs(os.path.dirname(hb), exist_ok=True)
             with open(hb, "w") as fh:
                 fh.write(datetime.now(timezone.utc).isoformat(timespec="seconds") + "\n")
+                fh.write(json.dumps({"sources_seen": len(sources), "added": len(added),
+                                     "skipped": len(skipped), "rejected": len(rejected),
+                                     "source_glob": cfg["source_glob"]}) + "\n")
         except OSError:
             pass
     return added, skipped, rejected
