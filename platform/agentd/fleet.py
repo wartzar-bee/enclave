@@ -18,7 +18,7 @@ privilege helper; this module is read-only + open-in-browser.
 
 Usage: fleet.py list [--json] | fleet.py open <agent-id>
 """
-import os, sys, json, subprocess, pathlib, re, webbrowser, time
+import calendar, os, sys, json, subprocess, pathlib, re, webbrowser, time
 
 MANIFEST = pathlib.Path(os.environ.get("ENCLAVE_FLEET_MANIFEST",
                         pathlib.Path.home() / ".config" / "enclave" / "fleet.json"))
@@ -160,6 +160,74 @@ def _port(env):
     return b or "8888"
 
 
+PRODUCTIVITY_WINDOW_S = 7200
+
+
+def _productivity(home, window_s=PRODUCTIVITY_WINDOW_S):
+    """How much PRODUCT this agent wrote recently, read from the record the framework already keeps.
+
+    Every tick appends {"writes": {"product": N, "tooling": N, ...}} to state/tick-scorecard.jsonl.
+    Anything that wants to know whether a pod is producing must read THAT — the numbers are computed
+    in-container by scorecard.py, where the agent's own globs resolve natively.
+
+    Written because the studio had grown a second, host-side implementation that re-globbed the same
+    question and got it wrong: container paths like /workspace and /work do not exist on the host, so
+    three of four pods scored a permanent product=0 while producing normally, and one glob pattern
+    walked node_modules and hung. None of that was possible from this file. `blind` is reported
+    distinctly from zero — a pod with no scorecard record has not been measured, which is not the
+    same as measured-and-idle, and conflating them is what makes a productivity backoff punish a
+    working agent."""
+    f = (home / "state" / "tick-scorecard.jsonl") if home else None
+    if not f or not f.exists():
+        return {"product": None, "tooling": None, "ticks": 0, "blind": True}
+    cut = time.time() - window_s
+    prod = tool = ticks = 0
+    try:
+        for line in f.read_text(errors="replace").splitlines()[-400:]:
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            ts = _utc_epoch(r.get("ts"))
+            if ts is None or ts < cut:
+                continue
+            w = r.get("writes") or {}
+            prod += int(w.get("product") or 0)
+            tool += int(w.get("tooling") or 0)
+            ticks += 1
+    except Exception:
+        return {"product": None, "tooling": None, "ticks": 0, "blind": True}
+    return {"product": prod, "tooling": tool, "ticks": ticks, "blind": False}
+
+
+def _utc_epoch(ts):
+    try:
+        return calendar.timegm(time.strptime(str(ts)[:19], "%Y-%m-%dT%H:%M:%S"))
+    except Exception:
+        return None
+
+
+def _loop_wait(home):
+    """The loop's OWN last decision — continue / backoff / blocked / idle — and how long it waits.
+
+    "idle" and "backing off to 4800s" look identical in a liveness badge but mean opposite things:
+    one is the design, the other is the loop having decided this pod is not worth paying for."""
+    try:
+        lines = (home / "logs" / "runner.log").read_text(errors="ignore").splitlines()[-400:]
+    except Exception:
+        return {"kind": "", "wait_s": None}
+    for l in reversed(lines):
+        m = re.search(r"(backing off to (\d+)s|continue in (\d+)s|next tick in (\d+)s|idle|BLOCKED)", l)
+        if not m:
+            continue
+        t = m.group(1)
+        kind = ("backoff" if t.startswith("backing off") else "blocked" if t == "BLOCKED"
+                else "idle" if t == "idle" else "continue")
+        wait = next((int(g) for g in m.groups()[1:] if g and g.isdigit()), None)
+        return {"kind": kind, "wait_s": wait}
+    return {"kind": "", "wait_s": None}
+
+
 def _state(home):
     """Cheap disk read of the agent's brain: headline + open work + tick liveness. mtime-gated reads."""
     s = {"headline": "", "work_open": 0, "tick": "", "last_seen": 0}
@@ -263,6 +331,8 @@ def snapshot():
             "hb_age_s": st.get("hb_age_s"),
             "interval_s": _int_or_none(env.get("INTERVAL_SECONDS")) or _agent_env_interval(home),
             "subtitle": env.get("ENCLAVE_SUBTITLE", ""),
+            "productivity": _productivity(home),
+            "loop": _loop_wait(home) if home else {"kind": "", "wait_s": None},
         }
     # Folder-scan: surface DOWN / never-`up`'d deployments compose-ls can't see (incl. standalone
     # agents outside the main fleet root), marked down — so the console shows the whole fleet.
@@ -485,8 +555,16 @@ def cmd_list(as_json=False):
     dot = {"working": "●", "idle": "○", "down": "✗"}
     def line(a, indent=""):
         d = dot.get(a["tick"], "?")
+        pr = a.get("productivity") or {}
+        # BLIND is not zero. A pod that has never been measured must not read as an idle one.
+        prod = "prod:blind" if pr.get("blind") else f"prod:{pr.get('product', 0)}/{pr.get('ticks', 0)}t"
+        lp = a.get("loop") or {}
+        wait = lp.get("kind") or ""
+        if wait == "backoff" and lp.get("wait_s"):
+            wait = f"backoff:{lp['wait_s']}s"     # the loop has decided this pod is not worth paying for
         print(f"  {indent}{d} {a['id']:<22} {a['brain']:<9} {a['model']:<20} :{a['port']:<5} "
-              f"work:{a['work_open']:<2} seen:{_fmt_age(a['last_seen']):<4} {a['headline']}")
+              f"work:{a['work_open']:<2} {prod:<12} {wait:<13} seen:{_fmt_age(a['last_seen']):<4} "
+              f"{a['headline']}")
     standalone = by_mgr.pop("", [])
     for mgr, subs in by_mgr.items():
         print(f"▸ {mgr} (manager)")
