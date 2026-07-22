@@ -267,8 +267,15 @@ def collect(base, t0, now=None):
     # "tick-status.json 16×" at the top of a pod's churn panel (truth review T4). Not churn.
     # (state/rollup.md deliberately NOT excluded — per-tick rollup rewriting was the real churn
     # pattern this panel was built to catch; the agent writes it, not the loop.)
+    # state/handoff.md is agent-WRITTEN but framework-MANDATED once per tick: ctx_budget blocks the
+    # work tools until the agent finalizes it, runtime.sh writes a fallback when it is empty, and the
+    # chunked-work design reconstructs the next tick from it. One write per tick is compliance with
+    # that contract, so it accumulated 1×10 across the 10-record window and pinned churn_alarm=True
+    # permanently — logan-cross showed an alarm whose entire evidence was {handoff.md: 1}. An alarm
+    # that is always on is not a signal. (rollup.md stays IN: nobody requires it per tick, and
+    # rewriting it instead of producing is the exact pathology this panel was built to catch.)
     BOOKKEEPING = {"state/tick-status.json", "state/.heartbeat", "state/recall.md",
-                   "state/effective-config.json"}
+                   "state/effective-config.json", "state/handoff.md"}
     churn_all = {}
     for p, n in ev_writes.items():
         if kpi and _match_any(base, p, kpi):
@@ -502,6 +509,28 @@ def _selftest():
         # the churn KEY must stay readable/relative — realpath would make it /private/var/...
         check("symlink: _norm keeps a relative key readable",
               _norm(b, "state/rollup.md") == os.path.normpath(str(b / "state/rollup.md")))
+
+        # F2c: an alarm that is ALWAYS ON is not a signal. state/handoff.md is framework-mandated
+        # once per tick (ctx_budget blocks work until it is finalized), so 1 write x 10 ticks crossed
+        # the cross-tick threshold and pinned churn_alarm permanently — logan-cross showed an alarm
+        # whose entire evidence was {handoff.md: 1}.
+        b2 = b / "_handoff"; (b2 / "state").mkdir(parents=True)
+        (b2 / "state" / "scorecard-config.json").write_text(json.dumps({"kpi_artifacts": ["content/**/*.md"]}))
+        t2 = int(time.time()) - 60
+        for i in range(9):
+            _ev(b2, t2 + 5 + i, "Write", "state/handoff.md")
+        rec2 = collect(b2, t2)
+        check("handoff.md is compliance, not churn", "state/handoff.md" not in rec2["churn"])
+        check("handoff.md alone does not raise the alarm", rec2["churn_alarm"] is False)
+        # …but rollup.md must STILL be caught: rewriting it instead of producing is the pathology.
+        b3 = b / "_rollup"; (b3 / "state").mkdir(parents=True)
+        (b3 / "state" / "scorecard-config.json").write_text(json.dumps({"kpi_artifacts": ["content/**/*.md"]}))
+        t3 = int(time.time()) - 60
+        for i in range(6):
+            _ev(b3, t3 + 5 + i, "Write", "state/rollup.md")
+        rec3 = collect(b3, t3)
+        check("rollup.md is still churn", rec3["churn"].get("state/rollup.md", 0) >= 6)
+        check("rollup.md still raises the alarm", rec3["churn_alarm"] is True)
         append(b, rec)
         # F3: churn fires at the THIRD rewrite within a single tick (not the 33rd).
         b2 = pathlib.Path(td) / "b2"; (b2 / "state").mkdir(parents=True)
