@@ -79,7 +79,11 @@ def _load_config(base):
 
 
 def _norm(base, path):
-    """Normalize an event/glob path to a comparable absolute-ish string."""
+    """Normalize an event/glob path to a comparable absolute-ish string.
+
+    Deliberately does NOT resolve symlinks: this value is also used as the churn KEY, and realpath
+    turns a readable "state/rollup.md" into "/private/var/folders/.../state/rollup.md". Symlink
+    resolution belongs to matching only — see _match_any."""
     p = str(path)
     if not p.startswith("/"):
         p = str(base / p)
@@ -155,14 +159,52 @@ def _glob_matches(base, patterns, since=None):
     return hits
 
 
+def _pattern_forms(base, pat):
+    """A pattern as written, plus the same pattern with its literal prefix symlink-resolved.
+
+    _norm resolves the EVENT path, but the link is usually inside the PATTERN: logan-cross globs
+    `content/**/*.md` while /agent/content is a link to /work/content, so a resolved event path
+    (/work/content/...) could never match the unresolved pattern (/agent/content/...). Resolve the
+    part of the pattern before the first wildcard — the only part that is a real directory."""
+    raw = pat if pat.startswith("/") else str(base / pat)
+    raw = os.path.normpath(raw)
+    forms = [raw]
+    head = raw.split("*", 1)[0]
+    d = head if os.path.isdir(head) else os.path.dirname(head.rstrip("/"))
+    try:
+        real = os.path.realpath(d)
+    except OSError:
+        real = d
+    if d and real != d and raw.startswith(d):
+        forms.append(real + raw[len(d):])
+    return forms
+
+
 def _match_any(base, path, patterns):
+    """Does this write match any of these globs — SAME FILE, not same spelling?
+
+    A pod's product dir is routinely a symlink, and the two path forms of one file were scored as two
+    different things. logan-cross has /agent/content -> /work/content: an edit reported as
+    /agent/content/...ch05.md matched its `content/**/*.md` glob and scored as PRODUCT, while the
+    identical edit reported as /work/content/...ch05.md matched nothing and fell through to CHURN. So
+    the same chapter counted as work or as spinning depending only on which spelling the event
+    carried. On 2026-07-22 that fired a churn_spike alarm ("ch05 rewritten 8x") at an agent doing
+    exactly the revision it had been asked to do, while its product scored 0 — and `collect` already
+    promises that product rewrites are excluded from churn. Without resolving links, it wasn't."""
     from fnmatch import fnmatch
     p = _norm(base, path)
+    cands = [p]
+    try:
+        rp = os.path.realpath(p)
+        if rp != p:
+            cands.append(rp)
+    except OSError:
+        pass
     for pat in patterns or []:
-        rp = pat if pat.startswith("/") else str(base / pat)
-        rp = os.path.normpath(rp).replace("**/", "*").replace("**", "*")   # fnmatch has no **
-        if fnmatch(p, rp) or fnmatch(p, os.path.normpath(pat if pat.startswith("/") else str(base / pat))):
-            return True
+        for raw in _pattern_forms(base, pat):
+            loose = raw.replace("**/", "*").replace("**", "*")   # fnmatch has no **
+            if any(fnmatch(c, loose) or fnmatch(c, raw) for c in cands):
+                return True
     return False
 
 
@@ -442,6 +484,24 @@ def _selftest():
         check("logan-product-zero", rec["writes"]["product"] == 0)
         check("logan-churn-alarm", rec["churn_alarm"] is True)
         check("logan-churn-count", rec["churn"].get("state/rollup.md", 0) >= 33)
+
+        # F2b: SYMLINKED PRODUCT DIR — the same file must not be product under one spelling and churn
+        # under another. logan-cross has /agent/content -> /work/content; an edit reported via the
+        # link's target matched no glob, so a chapter revision scored product=0 AND raised a
+        # churn_spike ("ch05 rewritten 8x") against an agent doing the work it was asked to do.
+        real = b / "_real_content"; real.mkdir()
+        (real / "ch05.md").write_text("x")
+        link = b / "linked"; os.symlink(real, link)
+        pats = ["linked/**/*.md"]
+        check("symlink: product matches via the LINK path",
+              _match_any(b, str(link / "ch05.md"), pats) is True)
+        check("symlink: product matches via the RESOLVED path (the real fleet bug)",
+              _match_any(b, str(real / "ch05.md"), pats) is True)
+        check("symlink: a non-product file under the same root still does not match",
+              _match_any(b, str(real / "notes.txt"), pats) is False)
+        # the churn KEY must stay readable/relative — realpath would make it /private/var/...
+        check("symlink: _norm keeps a relative key readable",
+              _norm(b, "state/rollup.md") == os.path.normpath(str(b / "state/rollup.md")))
         append(b, rec)
         # F3: churn fires at the THIRD rewrite within a single tick (not the 33rd).
         b2 = pathlib.Path(td) / "b2"; (b2 / "state").mkdir(parents=True)
