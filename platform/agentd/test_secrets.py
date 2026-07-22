@@ -47,7 +47,7 @@ POSITIVE = [fx("ghp", "_") + "b" * 36,
             fx("-----BEGIN ", "OPENSSH PRIVATE KEY-----")]
 NEGATIVE = ["rotate the password before the next tick",
             "api_key = os.environ['NVIDIA_API_KEY']",
-            "imap_code{secret:google-logancross.env}",
+            "imap_code{secret:google-scribepod.env}",
             "see platform/agentd/secrets.py"]
 
 pat = S.bash_pattern()

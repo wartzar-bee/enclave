@@ -230,7 +230,7 @@ def selftest():
     ck("auth-header", scan_text(fx("Authorization: Bearer ", "eyJhbGciOiJIUzI1NiJ9", ".abcdefghij")) is not None)
     ck("bsky-app-pw", scan_text("App password: " + fx("3r2s-e726", "-ct5d-y4ee")) is not None)
     # reference, not credential
-    ck("recipe-ref", scan_text("imap_code{secret:google-logancross.env,x:1}") is None)
+    ck("recipe-ref", scan_text("imap_code{secret:google-scribepod.env,x:1}") is None)
     ck("env-ref", scan_text("password: $RR_PASSWORD") is None)
     ck("shell-default", scan_text('TOKEN="${BROWSER_BRIDGE_TOKEN:-$X_TOKEN}"') is None)
     ck("code-attr", scan_text("password = args.password") is None)

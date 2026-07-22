@@ -140,7 +140,7 @@ def main():
         "2026-07-22T09:00:00Z — [x] loop: no tick-status + open work → continue in 900s\n"
         "  ⏴ ⚠ PreToolUse:Bash hook error: [agent-guard] BLOCKED: git is disabled for agents\n")
     # The guard message is the AGENT being denied one Bash call — not the loop being blocked.
-    # logan-cross was reported `blocked` on exactly this while it was mid-tick and healthy.
+    # scribepod was reported `blocked` on exactly this while it was mid-tick and healthy.
     check.eq("_loop_wait ignores a guard BLOCKED inside the tick transcript",
              fleet._loop_wait(h3)["kind"], "continue")
     lg.write_text("2026-07-22T09:00:00Z — [x] loop: ... → backing off to 9600s (cap 10800s)\n")
@@ -151,7 +151,7 @@ def main():
     (h3 / "state").mkdir(parents=True, exist_ok=True)
     (h3 / "state" / "paused").write_text("stopped by operator directive\n")
     # A pod parked on purpose must say so: the generic "deferred (cap/lock)" line explains nothing,
-    # and stoneforge (stopped by operator directive) showed an EMPTY status column because of it.
+    # and forgepod (stopped by operator directive) showed an EMPTY status column because of it.
     check.eq("_loop_wait reports a deliberately paused pod as paused",
              fleet._loop_wait(h3)["kind"], "paused")
 
@@ -162,7 +162,7 @@ def main():
     tick_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 600))
     (h2 / "state" / "tick-scorecard.jsonl").write_text(
         json.dumps({"ts": tick_ts, "writes": {"product": 1}}) + "\n")
-    # last_seen must follow the TICK (10m), not the rollup's mtime (27h) — channel-lab displayed
+    # last_seen must follow the TICK (10m), not the rollup's mtime (27h) — labpod displayed
     # seen:27h while it had ticked ten minutes earlier and had 6 productive ticks in 2h.
     check("_state last_seen comes from the tick record, not rollup mtime",
              abs(fleet._state(h2)["last_seen"] - (time.time() - 600)) < 120)

@@ -170,7 +170,7 @@ def _productivity(home, window_s=PRODUCTIVITY_WINDOW_S):
     Anything that wants to know whether a pod is producing must read THAT — the numbers are computed
     in-container by scorecard.py, where the agent's own globs resolve natively.
 
-    Written because the studio had grown a second, host-side implementation that re-globbed the same
+    Written because the orchestrator had grown a second, host-side implementation that re-globbed the same
     question and got it wrong: container paths like /workspace and /work do not exist on the host, so
     three of four pods scored a permanent product=0 while producing normally, and one glob pattern
     walked node_modules and hung. None of that was possible from this file. `blind` is reported
@@ -231,7 +231,7 @@ def _loop_wait(home):
         return {"kind": "", "wait_s": None}
     for l in reversed(lines):
         # ONLY the loop's own status lines. runner.log interleaves the agent's whole tick transcript,
-        # so a free-text scan reads the AGENT's words as the LOOP's state: logan-cross was reported
+        # so a free-text scan reads the AGENT's words as the LOOP's state: scribepod was reported
         # `blocked` because a guard hook had printed "BLOCKED: git is disabled for agents" about one
         # Bash call inside its transcript, while the loop was running a tick perfectly normally and
         # no state/.blocked marker existed. Anchor on the "] loop:" / "] paused (" prefixes the loop
@@ -240,7 +240,7 @@ def _loop_wait(home):
             continue
         if "] paused (" in l:
             # A deliberately parked pod (state/paused). The loop then logs a generic
-            # "tick deferred (cap/lock)" that says nothing about WHY, so stoneforge — stopped on
+            # "tick deferred (cap/lock)" that says nothing about WHY, so forgepod — stopped on
             # purpose by operator directive — showed an empty status column and read as unexplained.
             return {"kind": "paused", "wait_s": None}
         m = re.search(r"(backing off to (\d+)s|continue in (\d+)s|next tick in (\d+)s"
@@ -263,9 +263,9 @@ def _headline(text):
     """The NEWEST rollup line — never the first one, and never the seeding placeholder.
 
     Two ways this lied. `enclave init` seeds rollup.md with "(no ticks yet)" and agents append
-    BELOW it, so the first non-# line stayed that placeholder forever: channel-lab and wartzar-bee,
+    BELOW it, so the first non-# line stayed that placeholder forever: labpod and demopod,
     the two most productive pods in the fleet, both displayed "(no ticks yet)". And rollup ordering
-    is not a convention agents share — channel-lab appends oldest-first, logan-cross prepends
+    is not a convention agents share — labpod appends oldest-first, scribepod prepends
     newest-first — so "first line" is the newest entry for some pods and the oldest for others.
     Pick by the date IN the line where there is one; only fall back to position when there is not."""
     best, best_d, first = "", "", ""
@@ -284,7 +284,7 @@ def _last_tick(home):
     """When the agent last actually TICKED, from the record ticks write — not a file's mtime.
 
     last_seen used to be rollup.md's mtime, which is only "when the agent last chose to write a
-    rollup". channel-lab displayed seen:27h while it had ticked ten minutes earlier and had 6 ticks
+    rollup". labpod displayed seen:27h while it had ticked ten minutes earlier and had 6 ticks
     of product in the last two hours — the row contradicted itself, and that number was reported to
     the operator as fleet status."""
     f = home / "state" / "tick-scorecard.jsonl"
@@ -660,7 +660,7 @@ def cmd_list(as_json=False):
         d = dot.get(a["tick"], "?")
         pr = a.get("productivity") or {}
         # BLIND is not zero. A pod that has never been measured must not read as an idle one.
-        # NEW/FILES/WRITES, because a raw write count cannot tell progress from churn: channel-lab's
+        # NEW/FILES/WRITES, because a raw write count cannot tell progress from churn: labpod's
         # "prod:16" was the same ~4 files rewritten across 7 ticks, which reads identically to having
         # produced 16 things. `new` counts product paths not touched before this window — the only
         # one of the three that means the pod moved forward.

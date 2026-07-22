@@ -115,8 +115,8 @@ def _iter_files(pattern):
     """Files matching a glob, never descending into dependency trees.
 
     "Bounded: globs are expected to be targeted" was an ASSUMPTION, not a guard, and it did not
-    hold: stoneforge's configured `work/**/apps/**/src/**` walks node_modules, and glob(recursive=
-    True) on it does not return in any useful time. That hung the studio's host-side status tool
+    hold: forgepod's configured `work/**/apps/**/src/**` walks node_modules, and glob(recursive=
+    True) on it does not return in any useful time. That hung the orchestrator's host-side status tool
     for >110s; the same pattern is scored here every tick, so the hazard is the framework's too.
     A scorer that hangs fails exactly like a scorer that reports zero — the tick looks unproductive."""
     if "**" not in pattern:
@@ -162,7 +162,7 @@ def _glob_matches(base, patterns, since=None):
 def _pattern_forms(base, pat):
     """A pattern as written, plus the same pattern with its literal prefix symlink-resolved.
 
-    _norm resolves the EVENT path, but the link is usually inside the PATTERN: logan-cross globs
+    _norm resolves the EVENT path, but the link is usually inside the PATTERN: scribepod globs
     `content/**/*.md` while /agent/content is a link to /work/content, so a resolved event path
     (/work/content/...) could never match the unresolved pattern (/agent/content/...). Resolve the
     part of the pattern before the first wildcard — the only part that is a real directory."""
@@ -184,7 +184,7 @@ def _match_any(base, path, patterns):
     """Does this write match any of these globs — SAME FILE, not same spelling?
 
     A pod's product dir is routinely a symlink, and the two path forms of one file were scored as two
-    different things. logan-cross has /agent/content -> /work/content: an edit reported as
+    different things. scribepod has /agent/content -> /work/content: an edit reported as
     /agent/content/...ch05.md matched its `content/**/*.md` glob and scored as PRODUCT, while the
     identical edit reported as /work/content/...ch05.md matched nothing and fell through to CHURN. So
     the same chapter counted as work or as spinning depending only on which spelling the event
@@ -271,13 +271,13 @@ def collect(base, t0, now=None):
     # work tools until the agent finalizes it, runtime.sh writes a fallback when it is empty, and the
     # chunked-work design reconstructs the next tick from it. One write per tick is compliance with
     # that contract, so it accumulated 1×10 across the 10-record window and pinned churn_alarm=True
-    # permanently — logan-cross showed an alarm whose entire evidence was {handoff.md: 1}. An alarm
+    # permanently — scribepod showed an alarm whose entire evidence was {handoff.md: 1}. An alarm
     # that is always on is not a signal. (rollup.md stays IN: nobody requires it per tick, and
     # rewriting it instead of producing is the exact pathology this panel was built to catch.)
     # state/chat-reply.md is the same class: the shipped templates tell the agent to write its status
     # line there EVERY tick (analyst/support tick.txt + CLAUDE.md), and chat_responder writes it too —
     # it is the channel the web chat polls. One write per tick is the design, so it accumulated 8 in a
-    # 10-tick window and left wartzar-bee as the last pod showing churn_spike, on a file it was
+    # 10-tick window and left demopod as the last pod showing churn_spike, on a file it was
     # instructed to write. Three bookkeeping files have now been mistaken for churn; the rule is: if
     # the FRAMEWORK asks for it once per tick, its cadence is compliance, not spinning.
     BOOKKEEPING = {"state/tick-status.json", "state/.heartbeat", "state/recall.md",
@@ -297,7 +297,7 @@ def collect(base, t0, now=None):
         for p, n in (r.get("churn") or {}).items():
             # Filter the HISTORY too, not just this tick. Records written before a file joined
             # BOOKKEEPING still name it, so the cross-tick window kept the alarm lit for another 10
-            # ticks after the fix landed — wartzar-bee went on escalating churn_spike for
+            # ticks after the fix landed — demopod went on escalating churn_spike for
             # `chat-reply.md` from stale records alone. A retroactive exclusion also means the next
             # file added here takes effect immediately instead of on a lag nobody remembers.
             if p in BOOKKEEPING:
@@ -506,7 +506,7 @@ def _selftest():
         check("logan-churn-count", rec["churn"].get("state/rollup.md", 0) >= 33)
 
         # F2b: SYMLINKED PRODUCT DIR — the same file must not be product under one spelling and churn
-        # under another. logan-cross has /agent/content -> /work/content; an edit reported via the
+        # under another. scribepod has /agent/content -> /work/content; an edit reported via the
         # link's target matched no glob, so a chapter revision scored product=0 AND raised a
         # churn_spike ("ch05 rewritten 8x") against an agent doing the work it was asked to do.
         real = b / "_real_content"; real.mkdir()
@@ -525,7 +525,7 @@ def _selftest():
 
         # F2c: an alarm that is ALWAYS ON is not a signal. state/handoff.md is framework-mandated
         # once per tick (ctx_budget blocks work until it is finalized), so 1 write x 10 ticks crossed
-        # the cross-tick threshold and pinned churn_alarm permanently — logan-cross showed an alarm
+        # the cross-tick threshold and pinned churn_alarm permanently — scribepod showed an alarm
         # whose entire evidence was {handoff.md: 1}.
         b2 = b / "_handoff"; (b2 / "state").mkdir(parents=True)
         (b2 / "state" / "scorecard-config.json").write_text(json.dumps({"kpi_artifacts": ["content/**/*.md"]}))

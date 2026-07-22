@@ -1,0 +1,9 @@
+{
+  "_doc": "Cloudflare API + Pages/Workers. This grants WRITE access to live sites — a deploy is not reversible by the guard.",
+  "allow": [
+    {"host": "api.cloudflare.com",      "ports": [443],  "comment": "Cloudflare API"},
+    {"host": "*.cloudflare.com",        "ports": [443]},
+    {"host": "*.pages.dev",             "ports": [443],  "comment": "Cloudflare Pages"},
+    {"host": "*.workers.dev",           "ports": [443],  "comment": "Cloudflare Workers"}
+  ]
+}

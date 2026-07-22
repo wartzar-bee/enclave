@@ -1,0 +1,20 @@
+{
+  "_doc": "Publishing + social platforms. Add ONLY the ones this deployment actually posts to — an agent that can reach a platform can post to it, under your identity, unattended.",
+  "allow": [
+    {"host": "dev.to",                  "ports": [443],  "comment": "dev.to articles"},
+    {"host": "medium.com",              "ports": [443],  "comment": "Medium"},
+    {"host": "api.medium.com",          "ports": [443]},
+    {"host": "api.bluesky.social",      "ports": [443],  "comment": "Bluesky"},
+    {"host": "bsky.social",             "ports": [443]},
+    {"host": "*.bsky.app",              "ports": [443]},
+    {"host": "api.twitter.com",         "ports": [443],  "comment": "X/Twitter API"},
+    {"host": "*.tumblr.com",            "ports": [443],  "comment": "Tumblr"},
+    {"host": "royalroad.com",           "ports": [443],  "comment": "Royal Road (serial fiction)"},
+    {"host": "www.royalroad.com",       "ports": [443]},
+    {"host": "scribblehub.com",         "ports": [443],  "comment": "ScribbleHub (serial fiction)"},
+    {"host": "www.scribblehub.com",     "ports": [443]},
+    {"host": "www.webnovel.com",        "ports": [443],  "comment": "Webnovel"},
+    {"host": "api.indexnow.org",        "ports": [443],  "comment": "IndexNow ping"},
+    {"host": "www.bing.com",            "ports": [443]}
+  ]
+}

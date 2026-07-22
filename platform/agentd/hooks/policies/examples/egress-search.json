@@ -1,0 +1,10 @@
+{
+  "_doc": "Search APIs. All metered — every call costs. Add one, not all five.",
+  "allow": [
+    {"host": "search.brave.com",        "ports": [443],  "comment": "Brave Search"},
+    {"host": "api.search.brave.com",    "ports": [443]},
+    {"host": "api.bing.microsoft.com",  "ports": [443],  "comment": "Bing Search API"},
+    {"host": "serpapi.com",             "ports": [443],  "comment": "SerpAPI"},
+    {"host": "api.tavily.com",          "ports": [443],  "comment": "Tavily"}
+  ]
+}

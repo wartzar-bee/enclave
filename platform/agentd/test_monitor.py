@@ -338,7 +338,7 @@ check("events_dark: registered in the runbook",
 
 # ── churn_spike must CLEAR when the pod stops churning (2026-07-22) ──────────────────────────
 # churn_alarm is already a 10-tick windowed verdict; the matcher then took any() over 10 of those,
-# so a transient spike latched the finding for ~20 ticks. logan-cross showed churn_spike while its
+# so a transient spike latched the finding for ~20 ticks. scribepod showed churn_spike while its
 # own newest three records all said churn_alarm=False.
 def _churn_home(alarms, churn=None):
     d = pathlib.Path(tempfile.mkdtemp()); (d / "state").mkdir()

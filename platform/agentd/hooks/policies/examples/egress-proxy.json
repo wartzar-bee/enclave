@@ -1,0 +1,6 @@
+{
+  "_doc": "An outbound proxy vendor, as an EXAMPLE of the shape — this is not a recommendation and enclave has no affiliation. Routing an agent's traffic through a proxy changes who that traffic appears to be, which has legal and terms-of-service consequences that are yours, not the framework's. Replace the host with your own provider.",
+  "allow": [
+    {"host": "*.example-proxy-vendor.com", "ports": [443, 8080], "comment": "Replace with your provider's endpoint + ports"}
+  ]
+}

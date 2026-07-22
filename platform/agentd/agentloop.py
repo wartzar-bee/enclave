@@ -361,9 +361,9 @@ class Loop:
             # The backoff below the `else` branch only ever protected the SILENT case, so any brief
             # that hardcodes `Write state/tick-status.json {"status":"continue"}` — several do, it
             # reads as boilerplate — bought itself full-speed paid ticks forever and could never
-            # park. Two pods sat on it at once: wartzar-bee declared in its own status line that it
+            # park. Two pods sat on it at once: demopod declared in its own status line that it
             # was "fully outward-blocked" pending an operator action and still fired every 15 min,
-            # and ideas-scout ran 10 consecutive scorer-confirmed zero-product ticks. ~$110/day of
+            # and scoutpod ran 10 consecutive scorer-confirmed zero-product ticks. ~$110/day of
             # Opus narrating that there was nothing to do.
             # The agent still sets the PACE; it just cannot contradict the measurement. Safe by
             # construction: _unproductive_streak returns 0 for blind and externally-measured pods
@@ -437,7 +437,7 @@ class Loop:
           * the pod declares product_measured_externally -> a local integer 0 carries no
             information about whether it produced, so it cannot decay the cadence either.
 
-        That last case was missing and it bit exactly the pod it was written for. logan-cross
+        That last case was missing and it bit exactly the pod it was written for. scribepod
         publishes chapters and swap posts to Royal Road; its scorecard config has said
         product_measured_externally: true since 2026-07-19, and the MONITOR honours that flag (it is
         why zero_product does not page for it). The loop did not. Because the pod also configures
@@ -510,7 +510,7 @@ class Loop:
         Looks in the WORK DIR too, because the agent's cwd is not its home. Briefs tell the agent to
         "write state/tick-status.json" — a RELATIVE path, which lands under whatever directory the
         tick is running in (/workspace for a studio pod), while the loop only ever read /agent/state.
-        On 2026-07-22 the file was missing on all five live pods; ideas-scout had in fact written
+        On 2026-07-22 the file was missing on all five live pods; scoutpod had in fact written
         {"status":"continue"} to /workspace/state/tick-status.json at 11:16 and the loop logged
         "no tick-status + empty queue -> idle heartbeat" one minute later. The agent's own
         declaration of what it is doing — the single most direct signal in the system — was being

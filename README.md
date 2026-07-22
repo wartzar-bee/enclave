@@ -2,20 +2,32 @@
 
 **A security-first, brain-agnostic agent runtime.** Run an autonomous agent in a hardened
 container with scoped credentials and a local web chat — `docker compose up`, talk to it in your
-browser. The agent is architecturally constrained: it can only reach what you explicitly give it,
-even if prompt-injected.
+browser.
 
-> Status: **team-private alpha.** Internal team use while we harden it. See "Known gaps" below.
+**What "constrained" means here, precisely** (read this before you trust it with anything):
+- **Architectural, always on** — the agent runs with `--cap-drop=ALL --security-opt=no-new-privileges`
+  and no inbound ports; it reads exactly the mounts you gave it and a **read-only** `secrets/`. It
+  cannot see the rest of your disk, and a prompt injection does not change that.
+- **Policy, report-only by DEFAULT** — the egress allowlist
+  (`platform/agentd/hooks/policies/default-egress.json`) **logs** disallowed hosts rather than
+  blocking them until you set **`GUARD_EGRESS_ENFORCE=1`**. We ship it off so a first run doesn't
+  fail in a way you can't diagnose; run it **on** for anything real. Verify which mode you are in:
+  `grep enforce home/state/egress-policy.log`.
+
+So: the container boundary is enforced by the kernel, the *network* boundary is enforced only when
+you turn it on. We would rather say that than let you find out from an audit.
+
+> Status: **public alpha**, Apache-2.0. Used daily by its authors to run a live agent fleet; the
+> API and layout still move. See "Known gaps" below.
 
 ## Requirements
 - **Docker** (Desktop or Engine) — **running**. The agent runs in a container. (`enclave run`/`console` check this and tell you if it's not.)
-- **Python 3** — runs `bin/enclave`. **Git** + access to this private repo.
+- **Python 3** — runs `bin/enclave`. **Git**.
 - Brain credential: `BRAIN=claude` → the **`claude` CLI** (the `init` wizard runs `claude setup-token`) + a Claude subscription · `api` → an OpenAI-compatible key (e.g. OpenRouter) · `local` → a model server on the host (Ollama/MLX).
 
 ## Quick start
-The repo is **private** — clone with your GitHub access to the org:
 ```bash
-git clone https://github.com/demopod/enclave.git enclave && cd enclave
+git clone https://github.com/wartzar-bee/enclave.git enclave && cd enclave
 ./bin/enclave init                   # wizard: name, brain, model, port, paste your credential
 ./bin/enclave run                    # build + start, then opens the chat in your browser
 ```
@@ -215,6 +227,16 @@ manual commits too. `enclave vault-encrypt` writes an AES-256 archive (key in `s
 so an off-machine copy is ciphertext. The agent can't `git` (guard-blocked) — the runtime owns commits.
 
 ## Known gaps (honest)
+- **Egress enforcement is off by default** — see the top of this README. `GUARD_EGRESS_ENFORCE=1`
+  turns the allowlist from a log into a boundary. The shipped default list is deliberately minimal
+  (model APIs, package registries, source, images); everything else — publishing, mail, search,
+  cloud, proxies — is an opt-in file under `platform/agentd/hooks/policies/examples/`.
+- **Host capabilities (bridges) are NOT included** — browser automation, transcription, TTS and
+  similar live *outside* the container as host services. Enclave ships the **pattern**, not the
+  services: `docs/BRIDGES.md` + a working `tools/bridge-template/`. Out of the box an agent can
+  think, read, write files and call APIs; it cannot drive a browser until you stand a bridge up.
+- **macOS + Linux only, and Docker-dependent** — developed on macOS (Apple silicon) and Linux.
+  Windows is untested; WSL2 is the likely path and nobody has verified it. Reports welcome.
 - **Prebuilt images** — `enclave-agent`/`enclave-chat` publish to ghcr (`run --pull`); single-arch by
   default, **multi-arch on demand** via `publish --platform linux/amd64,linux/arm64`. The optional
   `qmd`/`codegraph` accelerator images still build locally on first `--profile … up`.
@@ -224,3 +246,11 @@ so an off-machine copy is ciphertext. The agent can't `git` (guard-blocked) — 
   transparent) are drop-in upgrades when installed.
 
 See `SECURITY.md` for the threat model and `docs/` for design notes.
+
+## Contributing
+The most useful contribution is a **bridge** — a host capability an agent can call through a narrow,
+audited surface. Start from `docs/BRIDGES.md` and `tools/bridge-template/`. Bug reports that include
+`enclave status` output and the relevant `home/logs/runner.log` lines are worth ten that don't.
+
+## Licence
+Apache-2.0 — see `LICENSE` and `NOTICE`. Contributions are accepted under the same licence.

@@ -1,0 +1,8 @@
+{
+  "_doc": "'What is my egress IP' services — useful when verifying that a proxy or network policy is actually in effect.",
+  "allow": [
+    {"host": "api.ipify.org",           "ports": [443, 80]},
+    {"host": "ipinfo.io",               "ports": [443]},
+    {"host": "ifconfig.me",             "ports": [443, 80]}
+  ]
+}

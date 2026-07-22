@@ -124,7 +124,7 @@ def probe_delivery(env):
         return False, f"delivery heartbeat {int(age/60)}m old (> {int(max_age/60)}m — daemon stalled?)"
     # A fresh heartbeat proves the daemon RAN, not that anything flowed. deliver.py records how many
     # files its source glob matched; zero means the daemon and the agent disagree about where output
-    # goes, which looks exactly like health from a timestamp alone (ideas-scout, 2026-07-22: 6h of
+    # goes, which looks exactly like health from a timestamp alone (scoutpod, 2026-07-22: 6h of
     # fresh heartbeats over an empty glob while it filed 16 candidates into another directory).
     try:
         lines = open(marker).read().splitlines()
@@ -332,7 +332,7 @@ def _selftest():
     ck("warm silent: non-daemon", cfg_warm_session({"RUNTIME_MODE":"oneshot","WARM_SESSION":"1"}) is None)
     # delivery: a FRESH heartbeat over an EMPTY source glob is the failure that looks like health —
     # the daemon runs, the timestamp is current, and nothing is flowing because the agent writes
-    # somewhere else (ideas-scout, 2026-07-22).
+    # somewhere else (scoutpod, 2026-07-22).
     import tempfile as _tf
     with _tf.TemporaryDirectory() as _d:
         def _hb(payload):

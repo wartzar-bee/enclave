@@ -77,8 +77,9 @@ firewalled — a heavy lift for an opt-in the wiki already replaces.
 
 ## `ECC` ("Everything Claude Code", github.com/affaan-m/ECC) — v2.0.0 — VERDICT: BORROW FILE-BY-FILE, DO NOT INSTALL (2026-06-28)
 Not a baked dependency — a large MIT framework of agentic-coding methodology/skills/agents/hooks we
-mined for ideas. We **re-authored** (did NOT copy) 8 starter skills + 3 verifier subagents from it into
-`skills/` + `agents/` (seeded by `bin/enclave init`). Precedent: re-author rather than
+mined for ideas. We **re-authored** (did NOT copy) 8 starter skills + verifier subagents from it into
+`skills/` + `agents/` (seeded by `bin/enclave init`; the current `agents/` set is code-reviewer,
+security-reviewer, silent-failure-hunter, test-writer, ui-reviewer). Precedent: re-author rather than
 install — distil the idea, own the file.
 
 | Check | Result |
@@ -89,4 +90,5 @@ install — distil the idea, own the file.
 | Instruction-injection | Clean — scanned 271 skills/67 agents; hits are *defensive* (skills that treat plan/file content as untrusted data). No malicious prompts |
 | **Risks (why NOT install wholesale)** | (1) `hooks/hooks.json` = ~25 auto-running, full-priv hooks re-trusted on every upstream pull — poor fit for our no-timer/no-auto rules; (2) `scripts/auto-update.js` = `git pull`+reinstall (never cron it); (3) SaaS-wired pieces: `skills/social-publisher` (getsocialclaw.com), `scripts/hooks/insaits-*` (pip `insa-its`), `.mcp.json` `chrome-devtools-mcp@latest` (unpinned) |
 
-**Decision:** safe to READ + to re-author individual `.md` skills/agents after per-file review. **Never** run `install.sh`/`auto-update.js`, adopt the hook bundle, or copy the SaaS-wired files. The borrowed pack carries `origin: ECC-distilled` in its frontmatter.
+**Decision:** safe to READ + to re-author individual `.md` skills/agents after per-file review. **Never** run `install.sh`/`auto-update.js`, adopt the hook bundle, or copy the SaaS-wired files. The borrowed **skills** carry `origin: ECC-distilled` in their frontmatter
+(the `agents/` verifiers ship clean `name/description/tools/model` frontmatter, no origin tag).

@@ -1,6 +1,8 @@
 {
   "_doc": "Declarative egress allowlist for guard.py (P1). Checked on every Bash/WebFetch/BrowserAction call. Reload on each request — no restart needed. Override path via GUARD_EGRESS_POLICY env.",
 
+  "_policy": "MINIMAL BY DEFAULT. This list is only what an agent needs to think and to install its own dependencies: model APIs, package registries, source, and images. Anything task-specific — publishing platforms, mail, search APIs, cloud consoles, proxies — is DELIBERATELY absent, because the product's claim is that an agent can only reach what you explicitly gave it. A default that already reaches everything is not a security boundary, it is a formality. Opt in by copying an entry from policies/examples/ into this file, or point GUARD_EGRESS_POLICY at your own.",
+
   "allow": [
     {"host": "*.anthropic.com",          "ports": [443],       "comment": "Anthropic API"},
     {"host": "api.anthropic.com",        "ports": [443]},
@@ -30,53 +32,11 @@
     {"host": "security.ubuntu.com",      "ports": [80, 443]},
     {"host": "deb.debian.org",           "ports": [80, 443]},
 
-    {"host": "api.cloudflare.com",       "ports": [443],       "comment": "Cloudflare API"},
-    {"host": "*.cloudflare.com",         "ports": [443]},
-    {"host": "*.pages.dev",              "ports": [443],       "comment": "CF Pages"},
-    {"host": "*.workers.dev",            "ports": [443]},
-
-    {"host": "api.ipify.org",            "ports": [443, 80],   "comment": "Egress IP check"},
-    {"host": "ipinfo.io",                "ports": [443]},
-    {"host": "ifconfig.me",              "ports": [443, 80]},
-
-    {"host": "*.googleapis.com",         "ports": [443],       "comment": "Google APIs (Gmail/Sheets/Drive/etc.)"},
-    {"host": "accounts.google.com",      "ports": [443]},
-    {"host": "oauth2.googleapis.com",    "ports": [443]},
-
-    {"host": "royalroad.com",            "ports": [443],       "comment": "Content platforms"},
-    {"host": "www.royalroad.com",        "ports": [443]},
-    {"host": "api.medium.com",           "ports": [443]},
-    {"host": "medium.com",               "ports": [443]},
-    {"host": "dev.to",                   "ports": [443]},
-    {"host": "api.bluesky.social",       "ports": [443]},
-    {"host": "*.bsky.app",              "ports": [443]},
-    {"host": "bsky.social",             "ports": [443]},
-    {"host": "api.twitter.com",         "ports": [443]},
-    {"host": "*.tumblr.com",            "ports": [443]},
-
-    {"host": "api.indexnow.org",         "ports": [443],       "comment": "IndexNow"},
-    {"host": "www.bing.com",             "ports": [443]},
-
-    {"host": "*.iproyal.com",            "ports": [443, 8080, 12321], "comment": "IPRoyal residential proxy"},
-    {"host": "geo.iproyal.com",          "ports": [443]},
-
     {"host": "registry-1.docker.io",     "ports": [443],       "comment": "Docker Hub"},
     {"host": "auth.docker.io",           "ports": [443]},
     {"host": "production.cloudflare.docker.com", "ports": [443]},
 
-    {"host": "scribblehub.com",          "ports": [443],       "comment": "Fiction platforms"},
-    {"host": "www.scribblehub.com",      "ports": [443]},
-    {"host": "www.webnovel.com",         "ports": [443]},
-
-    {"host": "search.brave.com",         "ports": [443],       "comment": "Search"},
-    {"host": "api.search.brave.com",     "ports": [443]},
-    {"host": "api.bing.microsoft.com",   "ports": [443]},
-    {"host": "serpapi.com",              "ports": [443]},
-    {"host": "api.tavily.com",           "ports": [443]},
-
-    {"host": "smtp.gmail.com",           "ports": [465, 587],  "comment": "Email"},
-    {"host": "imap.gmail.com",           "ports": [993]},
-    {"host": "*.amazonaws.com",          "ports": [443],       "comment": "AWS (e.g. S3 for Anthropic)"}
+    {"host": "*.amazonaws.com",          "ports": [443],       "comment": "S3-style object storage (some model APIs stream from it)"}
   ],
 
   "binary_deny_by_default": true,

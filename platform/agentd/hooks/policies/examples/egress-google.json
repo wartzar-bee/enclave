@@ -1,0 +1,10 @@
+{
+  "_doc": "Google APIs + OAuth + Gmail. NOTE: `*.googleapis.com` is a very broad wildcard — it covers most Google services, not just the one you wanted. Narrow it to the specific API host if you can.",
+  "allow": [
+    {"host": "*.googleapis.com",        "ports": [443],       "comment": "Google APIs (Gmail/Sheets/Drive/...) — broad"},
+    {"host": "accounts.google.com",     "ports": [443],       "comment": "OAuth"},
+    {"host": "oauth2.googleapis.com",   "ports": [443]},
+    {"host": "smtp.gmail.com",          "ports": [465, 587],  "comment": "Outbound mail"},
+    {"host": "imap.gmail.com",          "ports": [993],       "comment": "Inbound mail"}
+  ]
+}

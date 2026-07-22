@@ -4,7 +4,7 @@ test_vault_snapshot.py — the vault secret gate: block real credentials, allow 
 
 The gate is fail-closed and silent (runtime.sh logs "blocked or no-op"), so a false positive costs
 DAYS of missing backups before anyone notices — scribepod wrote a browser recipe containing
-`imap_code{secret:google-logancross.env,...}` (a filename REFERENCE) and its vault stopped
+`imap_code{secret:google-scribepod.env,...}` (a filename REFERENCE) and its vault stopped
 committing. These tests pin both directions: a reference must pass, a credential must still block.
 """
 import os, shutil, subprocess, sys, tempfile, pathlib
@@ -51,7 +51,7 @@ ck("google-app-pw",    V.scan_text("app password: abcd " + "efgh ijkl mnop") is 
 
 # ── must ALLOW: references, placeholders, prose ──────────────────────────────────────────────
 ck("recipe-ref",       V.scan_text(
-    "imap_code{secret:google-logancrossy.env,from_contains:spotify,max_age:240}") is None)
+    "imap_code{secret:google-scribepod.env,from_contains:example-service,max_age:240}") is None)
 ck("secrets-path",     V.scan_text("api_key: .secrets/nvidia.env") is None)
 ck("bare-secrets-path", V.scan_text("password = secrets/royalroad.env") is None)
 ck("env-var-ref",      V.scan_text("password: $RR_PASSWORD") is None)
@@ -82,7 +82,7 @@ if shutil.which("git"):
         home = tmp / "home"
         (home / "skills").mkdir(parents=True)
         (home / "skills" / "recipe.md").write_text(
-            "STEPS: imap_code{secret:google-logancrossy.env,from_contains:spotify}\n")
+            "STEPS: imap_code{secret:google-scribepod.env,from_contains:example-service}\n")
         V.ensure_repo(home)
         r, hits = V.snapshot(home, "reference-only")
         ck("e2e-ref-commits", r in ("ok", "nochange") and not hits)

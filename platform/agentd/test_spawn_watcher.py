@@ -216,7 +216,7 @@ def main():
         staged = q / "secrets-staging" / "labpod"
         staged.mkdir(parents=True)
         (staged / "nvidia.env").write_text("NVIDIA_API_KEY=x\n")    # shared infra → mounted
-        (staged / "bluesky.env").write_text("BLUESKY_HANDLE=logancross\n")  # owned by logan → refused
+        (staged / "bluesky.env").write_text("BLUESKY_HANDLE=scribepod\n")  # owned by another agent → refused
         rec = Recorder(returncode=0); SW.subprocess.run = rec
         SW._process(_drop(q, "labpod.json", {"name": "labpod"}), stacks, q)
         target = (stacks / "labpod").resolve()
@@ -233,7 +233,7 @@ def main():
         stacks = root / "stacks_hand"; stacks.mkdir()
         staged = q / "secrets-staging" / "scribepod"
         staged.mkdir(parents=True)
-        (staged / "bluesky.env").write_text("BLUESKY_HANDLE=logancross\n")
+        (staged / "bluesky.env").write_text("BLUESKY_HANDLE=scribepod\n")
         (staged / ".handover").write_text("bluesky.env\n")
         rec = Recorder(returncode=0); SW.subprocess.run = rec
         SW._process(_drop(q, "scribepod.json", {"name": "scribepod"}), stacks, q)

@@ -163,7 +163,7 @@ def test_streak_stops_at_a_blind_tick():
 
 
 def test_streak_ignores_zeros_when_product_ships_externally():
-    """logan-cross publishes to Royal Road. Its config has said product_measured_externally since
+    """scribepod publishes to Royal Road. Its config has said product_measured_externally since
     2026-07-19 and the monitor honours it, but the loop did not: because the pod also configures
     kpi_artifacts, the scorer returns integer 0 (not None) for a tick that published off-box, so
     four successful external ticks read as unproductive and the cooldown doubled to 9600s against a
@@ -203,8 +203,8 @@ def _continue_loop(d, ticks, external=False, work=True):
 
 
 def test_declared_continue_decays_after_three_unproductive_ticks():
-    """wartzar-bee's own status line said it was "fully outward-blocked" pending an operator action
-    and it still fired every 15 min; ideas-scout ran 10 scorer-confirmed zero-product ticks at full
+    """demopod's own status line said it was "fully outward-blocked" pending an operator action
+    and it still fired every 15 min; scoutpod ran 10 scorer-confirmed zero-product ticks at full
     speed. Both briefs hardcode {"status":"continue"}, and the backoff only ever guarded the SILENT
     branch — so the declaration bought full-speed paid ticks forever."""
     with tempfile.TemporaryDirectory() as d:
@@ -240,7 +240,7 @@ def test_declared_continue_resets_on_one_productive_tick():
 
 
 def test_declared_continue_untouched_for_externally_measured_pods():
-    """logan-cross publishes to Royal Road; a local zero says nothing about whether it produced.
+    """scribepod publishes to Royal Road; a local zero says nothing about whether it produced.
     The override must never reach the pods the exemption was written for."""
     with tempfile.TemporaryDirectory() as d:
         lp = _continue_loop(d, [{"product": 0, "tooling": 0}] * 6, external=True)
@@ -270,7 +270,7 @@ def test_tick_status_read_from_agent_home():
 
 
 def test_tick_status_recovered_from_work_dir():
-    """ideas-scout wrote {"status":"continue"} to /workspace/state/tick-status.json at 11:16 (its cwd,
+    """scoutpod wrote {"status":"continue"} to /workspace/state/tick-status.json at 11:16 (its cwd,
     because the brief names a RELATIVE path) and the loop logged 'no tick-status -> idle' at 11:17.
     The file was missing from /agent/state on all five live pods for the same reason."""
     with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as w:

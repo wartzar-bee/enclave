@@ -157,7 +157,7 @@ def deliver(cfg, dry=False):
     #
     # It records HOW MANY SOURCES THE GLOB SAW, not just that the run happened. A timestamp alone
     # says the daemon is alive; it says nothing about whether the daemon and the agent still agree
-    # on WHERE output goes. On 2026-07-22 ideas-scout began writing candidates to /agent/ideas/scout
+    # on WHERE output goes. On 2026-07-22 scoutpod began writing candidates to /agent/ideas/scout
     # while this glob pointed at /workspace/ideas/scout: the run kept firing, the heartbeat stayed
     # fresh, the probe stayed green, and 16 gate-passing candidates piled up somewhere nothing read.
     # That is D-110 again in a new spelling — a connected pipe with nothing flowing through it reads

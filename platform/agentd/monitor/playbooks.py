@@ -397,7 +397,7 @@ def _churn_match(diag, home, snap, ctx):
     This used to be `any(churn_alarm for the last 10 records)`. But churn_alarm is ITSELF already a
     windowed verdict (scorecard aggregates the last 10 ticks before setting it), so any-of-10 made it
     a window of a window: one transient spike stayed visible for up to ~20 ticks after the condition
-    cleared, and the finding could never recover while the pod kept ticking. logan-cross showed
+    cleared, and the finding could never recover while the pod kept ticking. scribepod showed
     churn_spike whose own newest three records all said churn_alarm=False. An alarm that cannot clear
     is indistinguishable from one that is stuck on, and it trains you to ignore the panel."""
     if not snap.get("up"):
