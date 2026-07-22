@@ -185,8 +185,10 @@ platform/agentd/          the runtime: agentloop, runtime.sh, guard + delegation
                           memory (memory.py + wiki.py), vault_snapshot.py, web_chat, chat_responder,
                           qmd + codegraph gateways, rlm.py
 tools/gcloud/             optional multi-tenant, read-only gcloud bridge (per-agent credential isolation)
+tools/bridge-template/    a WORKING bridge to copy — the extension point for host capabilities
 templates/                starter agent homes (ops, support, analyst) — all wired with guard + delegation_guard
 docs/                     design notes — CHAT (the chat plane + per-brain endpoints + tunables),
+                          BRIDGES (give an agent a host capability — the contribution surface),
                           DELEGATION (manager→worker), OPTIMIZE-BRAIN, WORK-DIR (working folder + indexing),
                           WIKI-LAYER, MEMORY-PROVIDERS, MEMORY-MODES, CODE-MEMORY, WASM-SANDBOX,
                           VETTING (dependency security passes), ROADMAP
