@@ -192,6 +192,73 @@ def test_external_product_pod_is_not_backed_off():
         assert lp.next_heartbeat <= t + lp.cont_cooldown + 2
 
 
+# ── a self-declared `continue` cannot outrank the external scorer ──────────
+def _continue_loop(d, ticks, external=False, work=True):
+    lp = make_loop(d)
+    if work:
+        (pathlib.Path(d) / "work.json").write_text(json.dumps([{"id": "t", "status": "doing"}]))
+    _scorecard(d, ticks, external=external)
+    write_status(d, {"status": "continue"})
+    return lp
+
+
+def test_declared_continue_decays_after_three_unproductive_ticks():
+    """wartzar-bee's own status line said it was "fully outward-blocked" pending an operator action
+    and it still fired every 15 min; ideas-scout ran 10 scorer-confirmed zero-product ticks at full
+    speed. Both briefs hardcode {"status":"continue"}, and the backoff only ever guarded the SILENT
+    branch — so the declaration bought full-speed paid ticks forever."""
+    with tempfile.TemporaryDirectory() as d:
+        lp = _continue_loop(d, [{"product": 0, "tooling": 0}] * 3)
+        t = time.time()
+        lp._after(0)
+        assert lp.next_heartbeat >= t + lp.cont_cooldown * 2 - 2
+
+
+def test_declared_continue_decay_is_capped_at_the_heartbeat():
+    with tempfile.TemporaryDirectory() as d:
+        lp = _continue_loop(d, [{"product": 0, "tooling": 0}] * 6)
+        t = time.time()
+        lp._after(0)
+        assert t + lp.interval - 2 <= lp.next_heartbeat <= t + lp.interval + 2
+
+
+def test_declared_continue_honoured_below_the_threshold():
+    """Two zeros is noise, not a pattern — the agent still sets the pace."""
+    with tempfile.TemporaryDirectory() as d:
+        lp = _continue_loop(d, [{"product": 0, "tooling": 0}] * 2)
+        t = time.time()
+        lp._after(0)
+        assert lp.next_heartbeat <= t + lp.cont_cooldown + 2
+
+
+def test_declared_continue_resets_on_one_productive_tick():
+    with tempfile.TemporaryDirectory() as d:
+        lp = _continue_loop(d, [{"product": 0, "tooling": 0}] * 5 + [{"product": 1, "tooling": 0}])
+        t = time.time()
+        lp._after(0)
+        assert lp.next_heartbeat <= t + lp.cont_cooldown + 2
+
+
+def test_declared_continue_untouched_for_externally_measured_pods():
+    """logan-cross publishes to Royal Road; a local zero says nothing about whether it produced.
+    The override must never reach the pods the exemption was written for."""
+    with tempfile.TemporaryDirectory() as d:
+        lp = _continue_loop(d, [{"product": 0, "tooling": 0}] * 6, external=True)
+        t = time.time()
+        lp._after(0)
+        assert lp.next_heartbeat <= t + lp.cont_cooldown + 2
+
+
+def test_declared_continue_untouched_without_a_scorecard():
+    """A missing instrument must never silently change the cadence."""
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        write_status(d, {"status": "continue"})
+        t = time.time()
+        lp._after(0)
+        assert lp.next_heartbeat <= t + lp.cont_cooldown + 2
+
+
 # ── tick-status: the agent's own declaration must not be lost to a relative write ──
 def test_tick_status_read_from_agent_home():
     with tempfile.TemporaryDirectory() as d:

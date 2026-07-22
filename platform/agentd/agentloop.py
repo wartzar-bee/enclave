@@ -357,8 +357,30 @@ class Loop:
         elif st.get("status") == "continue":
             self._clear_blocked_marker()
             cd = max(self.min_cooldown, int(st.get("cooldown_s") or self.cont_cooldown))
+            # A SELF-DECLARED `continue` MUST NOT OUTRANK THE EXTERNAL SCORER (2026-07-22).
+            # The backoff below the `else` branch only ever protected the SILENT case, so any brief
+            # that hardcodes `Write state/tick-status.json {"status":"continue"}` — several do, it
+            # reads as boilerplate — bought itself full-speed paid ticks forever and could never
+            # park. Two pods sat on it at once: wartzar-bee declared in its own status line that it
+            # was "fully outward-blocked" pending an operator action and still fired every 15 min,
+            # and ideas-scout ran 10 consecutive scorer-confirmed zero-product ticks. ~$110/day of
+            # Opus narrating that there was nothing to do.
+            # The agent still sets the PACE; it just cannot contradict the measurement. Safe by
+            # construction: _unproductive_streak returns 0 for blind and externally-measured pods
+            # (so a pod publishing off-box is untouched), one productive tick resets it, and
+            # inbox/comms still wake the loop instantly.
+            streak = self._unproductive_streak()
+            decayed = min(self.interval, self.cont_cooldown * (2 ** (streak - 2))) if streak >= 3 else 0
+            if decayed > cd:
+                self.log(f"continue declared, but the scorer says {streak} unproductive tick(s) in a "
+                         f"row → overriding {cd}s with {decayed}s (cap {self.interval}s; wakes "
+                         f"instantly on inbox/comms; one productive tick resets). If you are waiting "
+                         f"on something external, say so: tick-status "
+                         f"{{\"status\":\"blocked\",\"waiting_on\":\"…\"}}.")
+                cd = decayed
+            else:
+                self.log(f"continue → next tick in {cd}s")
             self.next_heartbeat = now + cd
-            self.log(f"continue → next tick in {cd}s")
         else:
             # No explicit signal — default to CONTINUOUS while there's open work (so agents work
             # back-to-back on their backlog without having to remember to write tick-status), and
