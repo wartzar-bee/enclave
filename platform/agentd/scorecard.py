@@ -274,8 +274,14 @@ def collect(base, t0, now=None):
     # permanently — logan-cross showed an alarm whose entire evidence was {handoff.md: 1}. An alarm
     # that is always on is not a signal. (rollup.md stays IN: nobody requires it per tick, and
     # rewriting it instead of producing is the exact pathology this panel was built to catch.)
+    # state/chat-reply.md is the same class: the shipped templates tell the agent to write its status
+    # line there EVERY tick (analyst/support tick.txt + CLAUDE.md), and chat_responder writes it too —
+    # it is the channel the web chat polls. One write per tick is the design, so it accumulated 8 in a
+    # 10-tick window and left wartzar-bee as the last pod showing churn_spike, on a file it was
+    # instructed to write. Three bookkeeping files have now been mistaken for churn; the rule is: if
+    # the FRAMEWORK asks for it once per tick, its cadence is compliance, not spinning.
     BOOKKEEPING = {"state/tick-status.json", "state/.heartbeat", "state/recall.md",
-                   "state/effective-config.json", "state/handoff.md"}
+                   "state/effective-config.json", "state/handoff.md", "state/chat-reply.md"}
     churn_all = {}
     for p, n in ev_writes.items():
         if kpi and _match_any(base, p, kpi):
@@ -521,6 +527,16 @@ def _selftest():
             _ev(b2, t2 + 5 + i, "Write", "state/handoff.md")
         rec2 = collect(b2, t2)
         check("handoff.md is compliance, not churn", "state/handoff.md" not in rec2["churn"])
+        # chat-reply.md — the third file mistaken for churn. Shipped templates tell the agent to write
+        # its status line there every tick, and chat_responder writes it too.
+        b4 = b / "_chatreply"; (b4 / "state").mkdir(parents=True)
+        (b4 / "state" / "scorecard-config.json").write_text(json.dumps({"kpi_artifacts": ["content/**/*.md"]}))
+        t4 = int(time.time()) - 60
+        for i in range(8):
+            _ev(b4, t4 + 5 + i, "Write", "state/chat-reply.md")
+        rec4 = collect(b4, t4)
+        check("chat-reply.md is compliance, not churn", "state/chat-reply.md" not in rec4["churn"])
+        check("chat-reply.md alone does not raise the alarm", rec4["churn_alarm"] is False)
         check("handoff.md alone does not raise the alarm", rec2["churn_alarm"] is False)
         # …but rollup.md must STILL be caught: rewriting it instead of producing is the pathology.
         b3 = b / "_rollup"; (b3 / "state").mkdir(parents=True)
