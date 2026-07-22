@@ -258,6 +258,26 @@ def main():
         code, _ = F.post(base, "/api/action", {"action": "down", "id": "../etc"})
         check.eq("POST action bad id -> 400", code, 400)
 
+        # ---------- pause/resume write the file the LOOP checks ----------
+        # The console rendered "Paused" but could not set it, and Start looked like the resume
+        # button while being container `up` — success reported, nothing changed.
+        home = pathlib.Path(root) / "alpha" / "home"
+        if home.exists():
+            pf = home / "state" / "paused"
+            code, _ = F.post(base, "/api/action", {"action": "pause", "id": "alpha"})
+            check.eq("POST pause -> 200", code, 200)
+            check("pause created state/paused", pf.exists())
+            code, _ = F.post(base, "/api/action", {"action": "resume", "id": "alpha"})
+            check.eq("POST resume -> 200", code, 200)
+            check("resume removed state/paused", not pf.exists())
+            # resuming twice must not error — the operator will double-click it
+            code, _ = F.post(base, "/api/action", {"action": "resume", "id": "alpha"})
+            check.eq("POST resume when not paused -> 200", code, 200)
+        code, _ = F.post(base, "/api/action", {"action": "pause", "id": "../etc"})
+        check.eq("POST pause bad id -> 400", code, 400)
+        code, _ = F.post(base, "/api/action", {"action": "pause", "id": "nosuchagent"})
+        check("POST pause unknown agent -> 4xx", code in (400, 404))
+
         # ---------- /api/config POST validation ----------
         code, _ = F.post(base, "/api/config", {"id": "../etc", "preset": "x"})
         check.eq("POST config bad id -> 400", code, 400)

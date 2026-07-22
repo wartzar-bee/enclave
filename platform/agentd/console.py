@@ -821,6 +821,7 @@ table.cost tr:last-child td{border-bottom:none}table.cost tbody tr{cursor:pointe
   <main id="main">
     <div id="bar"><button id="railtoggle" title="Show agents" onclick="toggleRail()">☰</button>
       <span class="t" id="bt">—</span><span class="m" id="bm"></span><span style="flex:1"></span>
+      <button class="btn" id="pausebtn" onclick="actPause()" title="Skip ticks; container and chat stay up">Pause</button>
       <button class="btn" onclick="act('restart')">Restart</button>
       <button class="btn danger" onclick="act('down')">Stop</button>
       <button class="btn" onclick="act('up')">Start</button>
@@ -969,7 +970,7 @@ function render(){
   }
   document.getElementById("list").innerHTML=h||`<div class="grp" style="color:var(--mut)">no agents discovered</div>`;
 }
-function setBar(a){bm.innerHTML=a?`${statusPill(a)} · <span class="mono">${esc(a.status)}</span> · :${a.port}`:"";}
+function setBar(a){bm.innerHTML=a?`${statusPill(a)} · <span class="mono">${esc(a.status)}</span> · :${a.port}`:"";syncPauseBtn();}
 function pick(id){sel=id;if(curview!=="agents")view("agents");render();const a=agents[id];bt.textContent=id;setBar(a);tab(curtab);loadAgBlockers();}
 /* ---------- per-agent blocker strip — visible on EVERY tab of the selected agent ---------- */
 /* DEDUPED by class (a recurring monitor alert like context_bloat fires every tick → collapse to one
@@ -1373,6 +1374,16 @@ async function saveCfg(){if(!sel)return;const upd=Object.assign({},_pending);if(
   else{if(msg){msg.style.color="var(--err)";msg.textContent="error: "+esc((r&&(r.error||r.out))||"failed");}updateDirty();}}
 async function act(action){if(!sel)return;if(action==="down"&&!confirm("Stop "+sel+"?"))return;
   await post("/api/action",{action,id:sel});setTimeout(load,800);}
+/* Pause/resume toggle. Deliberately NOT the Start button: Start runs container `up`, and a paused
+   pod's container is already up — it would report success and change nothing, because the loop
+   re-reads state/paused on boot and keeps skipping ticks. */
+async function actPause(){if(!sel)return;const paused=((agents||{})[sel]||{}).tick==="paused";
+  await post("/api/action",{action:paused?"resume":"pause",id:sel});setTimeout(load,800);}
+function syncPauseBtn(){const b=document.getElementById("pausebtn");if(!b)return;
+  const paused=((agents||{})[sel]||{}).tick==="paused";
+  b.textContent=paused?"Resume":"Pause";b.classList.toggle("go",paused);
+  b.title=paused?"Clear state/paused — the loop ticks again on its next wake"
+                :"Skip ticks; container and chat stay up";}
 async function sendD(){if(!sel)return;const t=dtext.value.trim();if(!t)return;dtext.value="";
   await post("/api/action",{action:"send",id:sel,text:t});}
 async function post(path,body){try{await fetch(qs(path),{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"fetch"},body:JSON.stringify(body)});}catch(e){}}
@@ -2679,6 +2690,39 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(400, "application/json", '{"error":"bad json"}')
             action, aid, text = d.get("action", ""), d.get("id", ""), d.get("text", "")
+            # PAUSE/RESUME are not container lifecycle — they are `state/paused`, which is what the
+            # loop actually checks. The dashboard could READ that file (it renders "Paused"
+            # correctly) but had no way to WRITE it, so a paused pod could only be resumed by
+            # exec'ing into the container. Worse, Start looked like the button for the job: it runs
+            # `up`, the container is already running, the loop boots, re-reads state/paused and goes
+            # straight back to skipping ticks — reporting success while changing nothing. That is
+            # the same class of silent lie as a fresh heartbeat over an empty queue.
+            if action in ("pause", "resume"):
+                if not fleet._SAFE.match(aid or ""):
+                    return self._send(400, "application/json", '{"error":"bad id"}')
+                with _lock:
+                    a = (_cache.get("agents") or {}).get(aid)
+                home = (a or {}).get("home")
+                if not home:
+                    return self._send(404, "application/json", '{"error":"unknown agent"}')
+                pf = pathlib.Path(home) / "state" / "paused"
+                try:
+                    if action == "pause":
+                        pf.parent.mkdir(parents=True, exist_ok=True)
+                        pf.write_text(f"PAUSED {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                                      f"from the console.\nTicks are skipped; the container stays up "
+                                      f"and chat still answers. Resume from the console or delete "
+                                      f"this file.\n")
+                    else:
+                        pf.unlink(missing_ok=True)
+                except OSError as e:
+                    return self._send(500, "application/json", json.dumps({"error": str(e)}))
+                # A resumed pod must not stay flagged as operator-stopped, or the monitor keeps
+                # treating it as deliberately down and never autofixes it again.
+                if action == "resume":
+                    _set_operator_stopped(aid, False)
+                return self._send(200, "application/json",
+                                  json.dumps({"ok": True, "out": f"{aid} {action}d"}))
             if action not in ("up", "down", "restart", "send") or not fleet._SAFE.match(aid or ""):
                 return self._send(400, "application/json", '{"error":"bad action"}')
             args = [action, aid] + ([text] if action == "send" and text else [])
