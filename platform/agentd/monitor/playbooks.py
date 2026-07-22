@@ -527,12 +527,66 @@ _scorecard_blind = Playbook(
     _blind_match, _blind_diag, intent=lambda *a: None, safe_to_autofix=False)
 
 
+# (14) events_dark — the pod is ticking but has STOPPED REPORTING what it does.
+#
+# On 2026-07-22 event capture was found dead on three of five live pods for 27.5 hours; all three
+# froze within 18 seconds of each other and none of them degraded visibly — they kept ticking and kept
+# showing green, because nothing in the monitor asked whether the event stream was still alive. An
+# agent that cannot report is indistinguishable from a healthy one, which makes this the failure that
+# hides every other failure.
+#
+# preflight now checks the same thing, but only at BOOT — and this outage began mid-run and survived
+# 27 hours of continuous operation without a restart. A stream that dies between boots is only ever
+# caught by something that runs while the pod runs. That is this daemon.
+_EVENTS_DARK_S = 6 * 3600
+
+def _dark_match(diag, home, snap, ctx):
+    if not snap.get("up") or not home:
+        return False
+    h = pathlib.Path(home)
+    if (h / "state" / "paused").exists():
+        return False                                  # parked on purpose: silence is correct
+    ev, sc = h / "state" / "events.jsonl", h / "state" / "tick-scorecard.jsonl"
+    if not ev.exists() or not sc.exists():
+        return False                                  # covered by scorecard_blind / a fresh pod
+    try:
+        return (sc.stat().st_mtime - ev.stat().st_mtime) > _EVENTS_DARK_S
+    except OSError:
+        return False
+
+def _dark_diag(diag, home, snap, ctx):
+    h = pathlib.Path(home)
+    try:
+        gap = (h / "state" / "tick-scorecard.jsonl").stat().st_mtime - \
+              (h / "state" / "events.jsonl").stat().st_mtime
+    except OSError:
+        gap = 0
+    wired = False
+    try:
+        wired = "event_log" in (h / ".claude" / "settings.json").read_text()
+    except Exception:
+        pass
+    return {"cause": f"events.jsonl is {gap/3600:.1f}h older than the last scored tick — this pod is "
+                     f"working but no longer reporting what it does, so every activity view of it is "
+                     f"stale while it reads green",
+            "confidence": "high",
+            "evidence": f"event_log hook {'WIRED' if wired else 'NOT WIRED'} in .claude/settings.json; "
+                        f"events.jsonl vs tick-scorecard.jsonl mtime gap {gap/3600:.1f}h",
+            "recommendation": ("wire event_log.py as a PostToolUse hook" if not wired else
+                               "restart the pod — a hook change does not reach an already-running loop"),
+            "source": "deterministic"}
+
+_events_dark = Playbook(
+    "events_dark", "Pod is ticking but has stopped reporting activity", "high",
+    _dark_match, _dark_diag, intent=lambda *a: None, safe_to_autofix=False)
+
+
 # The per-agent runbook (bridge_down is a FLEET-level check the daemon runs separately — it has no
 # single agent home to escalate into; full inbox surfacing is D2).
 ALL = [_memory_path_broken, _delegation_loop, _context_bloat,
        _container_down, _up_but_unreachable, _stalled, _kill_line,
        _zero_product, _churn_spike, _off_directive, _wander_rate,
-       _self_certification, _scorecard_blind]
+       _self_certification, _scorecard_blind, _events_dark]
 
 BY_KEY = {p.key: p for p in ALL}
 

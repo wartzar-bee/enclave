@@ -302,6 +302,40 @@ check("autofix: operator-stopped pod is NOT auto-restarted", len(specs_b) == 0)
 esc_b = (pathlib.Path(downhome) / "state" / "escalations.log").read_text()
 check("autofix: escalation explains the operator-stopped skip", "operator stopped it deliberately" in esc_b)
 
+# ── events_dark: a pod that is ticking but has STOPPED REPORTING (2026-07-22) ────────────────
+# Three of five live pods had event capture dead for 27.5h — all froze within 18 seconds of each
+# other, kept ticking, and kept showing green, because nothing asked whether the stream was alive.
+# preflight checks the same thing at BOOT, but this outage began mid-run and survived 27h without a
+# restart: only a continuously-running check catches that.
+def _dark_home(gap_h, paused=False, wired=False):
+    d = pathlib.Path(tempfile.mkdtemp()); (d / "state").mkdir(); (d / ".claude").mkdir()
+    (d / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"PostToolUse": [
+        {"hooks": [{"command": "python3 /agent/.claude/hooks/event_log.py" if wired else "x"}]}]}}))
+    (d / "state" / "events.jsonl").write_text("{}\n")
+    (d / "state" / "tick-scorecard.jsonl").write_text("{}\n")
+    os.utime(d / "state" / "events.jsonl", (time.time() - gap_h * 3600,) * 2)
+    if paused:
+        (d / "state" / "paused").write_text("x")
+    return str(d)
+
+check("events_dark: fires on 27.5h of silence while ticking",
+      playbooks._events_dark.match({}, _dark_home(27.5), {"up": True}, {}) is True)
+check("events_dark: silent when the stream is fresh",
+      playbooks._events_dark.match({}, _dark_home(0.1), {"up": True}, {}) is False)
+check("events_dark: a PAUSED pod is silent on purpose, not broken",
+      playbooks._events_dark.match({}, _dark_home(27.5, paused=True), {"up": True}, {}) is False)
+check("events_dark: a DOWN container is container_down's job",
+      playbooks._events_dark.match({}, _dark_home(27.5), {"up": False}, {}) is False)
+_dx = playbooks._events_dark.diagnose({}, _dark_home(27.5), {"up": True}, {})
+check("events_dark: names the real root cause (hook not wired)", "NOT WIRED" in _dx["evidence"])
+check("events_dark: recommends wiring when unwired", "wire event_log" in _dx["recommendation"])
+_dx2 = playbooks._events_dark.diagnose({}, _dark_home(27.5, wired=True), {"up": True}, {})
+check("events_dark: recommends a RESTART when wired but stale (a hook change misses a live loop)",
+      "restart the pod" in _dx2["recommendation"])
+check("events_dark: registered in the runbook",
+      "events_dark" in playbooks.BY_KEY and playbooks._events_dark in playbooks.ALL)
+
+
 print()
 if check.failed:
     print(f"{check.failed} FAILED")
@@ -335,3 +369,4 @@ def test_offdir_external_product():
 
 
 test_offdir_external_product()
+
