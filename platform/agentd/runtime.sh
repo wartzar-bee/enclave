@@ -51,7 +51,17 @@ if [ -n "${STUDIO_SESSION_LIMIT_PCT_FLOOR:-}" ] && [ "${STUDIO_SESSION_LIMIT_PCT
 fi
 STALE_LOCK_SECS="${AGENT_STALE_LOCK_SECS:-2700}"     # 45m > any real tick
 log(){ echo "$(date -u +%FT%TZ) — [$AGENT_ID] $*" >> "$LOG"; }
-_mtime(){ stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# GNU form FIRST, then BSD. Order is load-bearing: the agent runs on Linux, where `stat -f %m` does
+# NOT fail — `-f` means "filesystem status" there, so it prints a multi-line block about the overlayfs
+# and EXITS 0. The `||` fallback therefore never fired, _mtime returned that block instead of an
+# epoch, and `AGE=$(( NOW - <block> ))` threw a shell syntax error. AGE ended up unset, every numeric
+# comparison against it silently failed, and the lock guard fell through to its last branch —
+# "previous tick running" → exit 75 → DEFERRED. Two resumed pods sat in that loop, retrying every
+# 600s and never ticking, reporting a cause ("cap/lock") that was neither a cap nor a real lock.
+# macOS is unaffected by the swap: `stat -c` fails cleanly there, so the BSD form still answers.
+_mtime(){ stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+# Never let a non-numeric mtime wedge the loop again: force it to a plain integer.
+_age(){ local m; m="$(_mtime "$1")"; case "$m" in (''|*[!0-9]*) m=0 ;; esac; echo $(( ${NOW:-$(date +%s)} - m )); }
 
 # Effective-config report (N1, 2026-07-20) — writes state/effective-config.json: every mechanism
 # ACTIVE|INACTIVE + why + per-var provenance, and logs any ACTIVE→INACTIVE flip since the last tick.
@@ -77,7 +87,7 @@ echo "$NOW" > "$HEARTBEAT"
 # PID — a dead holder is reclaimed IMMEDIATELY; a live holder is respected (never start a second
 # claude beside a running tick; TICK_TIMEOUT bounds the real work).
 if ! mkdir "$LOCK" 2>/dev/null; then
-  AGE=$(( NOW - $(_mtime "$LOCK") ))
+  AGE="$(_age "$LOCK")"
   LOCK_PID="$(cat "$LOCK/pid" 2>/dev/null)"
   if [ -n "$LOCK_PID" ] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
     log "lock holder (pid $LOCK_PID) is DEAD — reclaiming immediately (was age ${AGE}s)"
