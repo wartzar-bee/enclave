@@ -9,6 +9,8 @@ neutralized so this passes WITH OR WITHOUT a docker daemon running — CI == lap
 Hermetic — builds a temp fleet, points fleet.STACKS_ROOTS at it, monkeypatches the docker calls. Run:
     python3 test_fleet.py
 """
+import json
+import os
 import pathlib
 import sys
 import time
@@ -114,7 +116,35 @@ def main():
     check.eq("_state tick=idle (orphaned start older than the tick window)",
              fleet._state(home)["tick"], "idle")
     check.eq("_state no home -> defaults", fleet._state(None),
-             {"headline": "", "work_open": 0, "tick": "", "last_seen": 0})
+             {"headline": "", "work_open": 0, "tick": "", "last_seen": 0, "rollup_age_s": None})
+
+    # ---- headline + last_seen: both used to report stale values as if they were current ----
+    # `enclave init` seeds "(no ticks yet)" and agents append BELOW it, so the two most productive
+    # pods in the fleet both displayed that placeholder as their status.
+    check.eq("_headline skips the init placeholder",
+             fleet._headline("# t\n\n(no ticks yet)\n2026-07-20 did a thing\n"),
+             "2026-07-20 did a thing")
+    # Ordering is not a shared convention: some agents append, others prepend. Pick by DATE.
+    check.eq("_headline picks the newest date when the rollup APPENDS (oldest first)",
+             fleet._headline("2026-07-19 old\n2026-07-21 newest\n"), "2026-07-21 newest")
+    check.eq("_headline picks the newest date when the rollup PREPENDS (newest first)",
+             fleet._headline("2026-07-21 newest\n2026-07-19 old\n"), "2026-07-21 newest")
+    check.eq("_headline falls back to first line when no dates are present",
+             fleet._headline("# h\n\nplain line\nsecond\n"), "plain line")
+
+    h2 = rootp / "seenagent"
+    (h2 / "state").mkdir(parents=True)
+    (h2 / "state" / "rollup.md").write_text("2026-07-21 stale rollup\n")
+    os.utime(h2 / "state" / "rollup.md", (time.time() - 27 * 3600,) * 2)
+    tick_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 600))
+    (h2 / "state" / "tick-scorecard.jsonl").write_text(
+        json.dumps({"ts": tick_ts, "writes": {"product": 1}}) + "\n")
+    # last_seen must follow the TICK (10m), not the rollup's mtime (27h) — channel-lab displayed
+    # seen:27h while it had ticked ten minutes earlier and had 6 productive ticks in 2h.
+    check("_state last_seen comes from the tick record, not rollup mtime",
+             abs(fleet._state(h2)["last_seen"] - (time.time() - 600)) < 120)
+    check("_state still exposes rollup age so a stale headline can be labelled",
+             fleet._state(h2)["rollup_age_s"] > 24 * 3600)
 
     # ---------------------------------------------------------------- _scan_deployments (+ skip rules)
     # plant deployments that MUST be skipped: vcs/vendor dir, .hidden dir, backup dir

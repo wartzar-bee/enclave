@@ -228,18 +228,66 @@ def _loop_wait(home):
     return {"kind": "", "wait_s": None}
 
 
+SEED_HEADLINES = {"(no ticks yet)", "(no rollup yet)"}
+_DATE_RE = re.compile(r"20\d\d-\d\d-\d\d")
+
+
+def _headline(text):
+    """The NEWEST rollup line — never the first one, and never the seeding placeholder.
+
+    Two ways this lied. `enclave init` seeds rollup.md with "(no ticks yet)" and agents append
+    BELOW it, so the first non-# line stayed that placeholder forever: channel-lab and wartzar-bee,
+    the two most productive pods in the fleet, both displayed "(no ticks yet)". And rollup ordering
+    is not a convention agents share — channel-lab appends oldest-first, logan-cross prepends
+    newest-first — so "first line" is the newest entry for some pods and the oldest for others.
+    Pick by the date IN the line where there is one; only fall back to position when there is not."""
+    best, best_d, first = "", "", ""
+    for raw in text.splitlines():
+        l = raw.strip()
+        if not l or l.startswith("#") or l in SEED_HEADLINES:
+            continue
+        first = first or l
+        m = _DATE_RE.search(l)
+        if m and m.group(0) >= best_d:      # ISO dates sort lexicographically
+            best_d, best = m.group(0), l
+    return (best or first)[:80]
+
+
+def _last_tick(home):
+    """When the agent last actually TICKED, from the record ticks write — not a file's mtime.
+
+    last_seen used to be rollup.md's mtime, which is only "when the agent last chose to write a
+    rollup". channel-lab displayed seen:27h while it had ticked ten minutes earlier and had 6 ticks
+    of product in the last two hours — the row contradicted itself, and that number was reported to
+    the operator as fleet status."""
+    f = home / "state" / "tick-scorecard.jsonl"
+    try:
+        for line in reversed(f.read_text(errors="replace").splitlines()[-50:]):
+            try:
+                ts = _utc_epoch(json.loads(line).get("ts"))
+            except Exception:
+                continue
+            if ts:
+                return ts
+    except Exception:
+        pass
+    return 0
+
+
 def _state(home):
     """Cheap disk read of the agent's brain: headline + open work + tick liveness. mtime-gated reads."""
-    s = {"headline": "", "work_open": 0, "tick": "", "last_seen": 0}
+    s = {"headline": "", "work_open": 0, "tick": "", "last_seen": 0, "rollup_age_s": None}
     if not home:
         return s
     roll = home / "state" / "rollup.md"
     try:
-        s["last_seen"] = roll.stat().st_mtime
-        s["headline"] = next((l.strip() for l in roll.read_text(errors="ignore").splitlines()
-                              if l.strip() and not l.startswith("#")), "")[:80]
+        roll_mtime = roll.stat().st_mtime
+        s["headline"] = _headline(roll.read_text(errors="ignore"))
+        s["rollup_age_s"] = max(0, time.time() - roll_mtime)
     except Exception:
-        pass
+        roll_mtime = 0
+    # A tick is authoritative for liveness; the rollup only backs it up when no tick record exists.
+    s["last_seen"] = _last_tick(home) or roll_mtime
     try:
         wk = json.loads((home / "work.json").read_text())
         s["work_open"] = sum(1 for w in wk if isinstance(w, dict) and w.get("status") in ("todo", "doing"))
@@ -325,6 +373,7 @@ def snapshot():
             "manager": m.get("manager", ""),
             "tags": m.get("tags", []),
             "headline": st["headline"],
+            "rollup_age_s": st.get("rollup_age_s"),
             "work_open": st["work_open"],
             "tick": (st["tick"] or "idle") if running else "down",
             "last_seen": st["last_seen"],
@@ -351,7 +400,8 @@ def snapshot():
             "configfile": str(pathlib.Path(dep) / "docker-compose.yml"),
             "home": str(home) if home else "",
             "manager": m.get("manager", ""), "tags": m.get("tags", []),
-            "headline": st["headline"], "work_open": st["work_open"],
+            "headline": st["headline"],
+            "rollup_age_s": st.get("rollup_age_s"), "work_open": st["work_open"],
             "tick": "down", "last_seen": st["last_seen"],
         }
     # Auto-classify standalone vs fleet from the manager hierarchy (no config): an agent is part of a
@@ -562,9 +612,14 @@ def cmd_list(as_json=False):
         wait = lp.get("kind") or ""
         if wait == "backoff" and lp.get("wait_s"):
             wait = f"backoff:{lp['wait_s']}s"     # the loop has decided this pod is not worth paying for
+        # A headline from a rollup much older than the last tick is history, not status — say so
+        # rather than printing a stale sentence as if it were what the agent is doing now.
+        head, ra = a["headline"], a.get("rollup_age_s")
+        if ra is not None and a.get("last_seen") and ra > 3 * 3600 and ra > (time.time() - a["last_seen"]) * 2:
+            head = f"[rollup {_fmt_age(time.time() - ra)} old] {head}"
         print(f"  {indent}{d} {a['id']:<22} {a['brain']:<9} {a['model']:<20} :{a['port']:<5} "
               f"work:{a['work_open']:<2} {prod:<12} {wait:<13} seen:{_fmt_age(a['last_seen']):<4} "
-              f"{a['headline']}")
+              f"{head}")
     standalone = by_mgr.pop("", [])
     for mgr, subs in by_mgr.items():
         print(f"▸ {mgr} (manager)")
