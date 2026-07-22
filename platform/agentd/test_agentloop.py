@@ -130,6 +130,68 @@ def test_after_session_clear_drops_warm_session_id():
         assert not sid.exists()
 
 
+# ── unproductive-streak backoff: what a local zero is allowed to mean ───────
+def _scorecard(d, ticks, external=None):
+    st = pathlib.Path(d) / "state"
+    st.mkdir(parents=True, exist_ok=True)
+    (st / "tick-scorecard.jsonl").write_text(
+        "".join(json.dumps({"ts": "2026-07-22T09:00:00Z", "writes": w}) + "\n" for w in ticks))
+    if external is not None:
+        (st / "scorecard-config.json").write_text(json.dumps(
+            {"kpi_artifacts": ["content/**/*.md"], "product_measured_externally": external}))
+
+
+def test_streak_counts_consecutive_local_zeros():
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        _scorecard(d, [{"product": 1, "tooling": 0}] + [{"product": 0, "tooling": 0}] * 3)
+        assert lp._unproductive_streak() == 3
+
+
+def test_streak_resets_on_a_productive_tick():
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        _scorecard(d, [{"product": 0, "tooling": 0}, {"product": 0, "tooling": 1}])
+        assert lp._unproductive_streak() == 0
+
+
+def test_streak_stops_at_a_blind_tick():
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        _scorecard(d, [{"product": None}, {"product": 0, "tooling": 0}])
+        assert lp._unproductive_streak() == 1
+
+
+def test_streak_ignores_zeros_when_product_ships_externally():
+    """logan-cross publishes to Royal Road. Its config has said product_measured_externally since
+    2026-07-19 and the monitor honours it, but the loop did not: because the pod also configures
+    kpi_artifacts, the scorer returns integer 0 (not None) for a tick that published off-box, so
+    four successful external ticks read as unproductive and the cooldown doubled to 9600s against a
+    10800s cap. A local zero carries no information for these pods."""
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        _scorecard(d, [{"product": 0, "tooling": 0}] * 4, external=True)
+        assert lp._unproductive_streak() == 0
+
+
+def test_streak_still_applies_when_product_is_local():
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        _scorecard(d, [{"product": 0, "tooling": 0}] * 4, external=False)
+        assert lp._unproductive_streak() == 4
+
+
+def test_external_product_pod_is_not_backed_off():
+    """End to end through _after(): open work + silent ticks must NOT decay the cadence."""
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        (pathlib.Path(d) / "work.json").write_text(json.dumps([{"id": "t", "status": "todo"}]))
+        _scorecard(d, [{"product": 0, "tooling": 0}] * 4, external=True)
+        t = time.time()
+        lp._after(0)
+        assert lp.next_heartbeat <= t + lp.cont_cooldown + 2
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

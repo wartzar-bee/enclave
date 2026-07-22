@@ -403,7 +403,21 @@ class Loop:
             false-alarm class that produced two bogus zero_product pages already.
           * no scorecard at all -> return 0, i.e. behave exactly as before. A missing instrument
             must never silently change the cadence.
+          * the pod declares product_measured_externally -> a local integer 0 carries no
+            information about whether it produced, so it cannot decay the cadence either.
+
+        That last case was missing and it bit exactly the pod it was written for. logan-cross
+        publishes chapters and swap posts to Royal Road; its scorecard config has said
+        product_measured_externally: true since 2026-07-19, and the MONITOR honours that flag (it is
+        why zero_product does not page for it). The loop did not. Because the pod also configures
+        kpi_artifacts, the scorer returns a real integer 0 rather than None for a tick that
+        published off-box, so four consecutive successful external ticks read as four unproductive
+        ones and the cooldown doubled to 9600s against a 10800s cap — the loop had throttled a
+        working agent almost to a standstill, and its 41 open items sat still. Blind and
+        externally-measured are the same epistemic situation; treat them the same.
         """
+        if self._product_is_external():
+            return 0
         f = self.dir / "state" / "tick-scorecard.jsonl"
         try:
             lines = [l for l in f.read_text().splitlines() if l.strip()][-cap:]
@@ -423,6 +437,17 @@ class Loop:
             else:
                 break                      # a productive tick resets the decay
         return streak
+
+    def _product_is_external(self):
+        """Does this pod's product ship off-box (published to a platform, not written locally)?
+
+        Same flag the fleet monitor reads, so the two cannot disagree about whether a local zero
+        means anything for this agent."""
+        try:
+            cfg = json.loads((self.dir / "state" / "scorecard-config.json").read_text())
+        except Exception:
+            return False
+        return bool(cfg.get("product_measured_externally"))
 
     def _write_blocked_marker(self, now, why):
         """state/.blocked {since, waiting_on} — 'since' survives repeat blocked ticks so the console/
