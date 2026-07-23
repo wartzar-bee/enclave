@@ -24,6 +24,15 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import tests_fixtures as F
 
+# OPT-IN gate FIRST — this must precede every env requirement below. Without ENCLAVE_LIVE=1 the test is
+# a no-op (it mutates real docker + a real fleet dir), so CI and the default hermetic run_tests.sh skip
+# it cleanly with exit 0. Previously the ENCLAVE_STACKS_ROOTS requirement below raised SystemExit(1) at
+# IMPORT time when unset (as in CI), so an opt-in live test turned every push RED — the actual code
+# behaviour contradicted this file's own "self-skips (exit 0) unless ENCLAVE_LIVE=1" docstring.
+if os.environ.get("ENCLAVE_LIVE") != "1":
+    print("skip: set ENCLAVE_LIVE=1 to run the live lifecycle test (mutates real docker + fleet dir)")
+    raise SystemExit(0)
+
 BASE = os.environ.get("ENCLAVE_CONSOLE_URL", "http://127.0.0.1:8700")
 # No fallback to anyone's personal checkout: this test mutates a real fleet directory, so it must be
 # told which one rather than guessing into a path that happens to exist on the author's machine.
