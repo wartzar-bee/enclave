@@ -659,6 +659,13 @@ fi
 # (the agent's planned hard_usd, clamped to the CTX_COST_HARD_USD floor), KILLS the tick. The post-tick
 # block then clears the session → next tick resumes lean from the handoff. The guarantee, agent-independent.
 rm -f "$AGENT_DIR/state/.cost-cutoff"; CW_PID=""
+# chat-reply.md is a per-tick OUTBOUND file (web_chat.py routes it on change; telegram_relay.py clears it
+# after sending) — never an agent input. Left on disk across ticks, the agent's first Write to it hits the
+# Claude Read-before-Write guard EVERY tick (a wasted turn + a full re-read of the file's tokens on every
+# Claude pod, worst under WARM_SESSION=0 where each tick is a fresh session that never "read" it). Deleting
+# it (+ its cid sidecar) at tick start makes that Write a create, so it always lands first try. Safe: both
+# consumers act only on a NEW write, and the ~tick cadence is far longer than their poll interval.
+rm -f "$AGENT_DIR/state/chat-reply.md" "$AGENT_DIR/state/chat-reply.cid"
 # INJECT mode: graduated budget WARNINGS as injected user messages (the agent OBEYS them — proven) + a
 # kill backstop, both owned by tick_feeder.py (it writes the prompt via a FIFO as claude's stream-json
 # stdin). When on, it REPLACES the bash watchdog below (the feeder does the kill). Default on when the

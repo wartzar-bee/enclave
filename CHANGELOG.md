@@ -4,6 +4,22 @@ All notable changes to Enclave. Format: [Keep a Changelog](https://keepachangelo
 versioning is [SemVer](https://semver.org/). Pre-1.0 means the layout and env-var names can still
 move between minor versions — pin a tag if that matters to you.
 
+## [Unreleased]
+
+### Fixed
+- **Per-tick `chat-reply.md` Read-before-Write tax** — the runtime now deletes the outbound
+  `state/chat-reply.md` (and its `.cid` sidecar) at tick start. It is a per-tick OUTBOUND file, never
+  an agent input; left on disk it made the agent's first Write trip the brain's Read-before-Write
+  guard every tick (a wasted turn + a full re-read of the file). Deleting it makes that Write a clean
+  create. Safe: both consumers act only on a *new* write, and the tick cadence far exceeds their poll
+  interval.
+- **CI (`test_live_lifecycle.py`) went red on every push** — the opt-in live-lifecycle test now
+  self-skips (exit 0) whenever `ENCLAVE_LIVE!=1`. Its `ENCLAVE_STACKS_ROOTS` requirement previously
+  raised `SystemExit(1)` at import time, *before* the skip gate, so any un-opted-in run (CI, the
+  hermetic `run_tests.sh`) exited non-zero and failed the build — contradicting the file's own
+  "self-skips unless `ENCLAVE_LIVE=1`" docstring. The `ENCLAVE_LIVE` opt-in gate is now hoisted above
+  every env requirement. (Code shipped in `58f655d7`; CI run now COMPLETED SUCCESS.)
+
 ## [0.1.0] — 2026-07-23
 First public release. Apache-2.0. Previously developed as a team-private alpha; the history is
 retained rather than squashed, so the reasoning behind each behaviour stays readable.
