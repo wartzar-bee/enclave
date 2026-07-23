@@ -247,6 +247,17 @@ so an off-machine copy is ciphertext. The agent can't `git` (guard-blocked) — 
 
 See `SECURITY.md` for the threat model and `docs/` for design notes.
 
+## Part of the wartzar-bee toolkit
+The same cost discipline enclave applies internally (model-tier routing, manager→worker delegation)
+also ships as two standalone tools you can use in any project:
+
+- **[tokenscope](https://github.com/wartzar-bee/tokenscope)** (`npm i -g @wartzar-bee/tokenscope`) — a
+  CLI that measures the token cost of prompts, files, and diffs, so you can see what a change costs
+  *before* you pay for it.
+- **[ci-guardrail](https://github.com/wartzar-bee/ci-guardrail)** (`uses: wartzar-bee/ci-guardrail@v1`)
+  — a GitHub Action that predicts a pull request's token-cost delta, comments on the responsible files,
+  and can fail the build on a cost regression.
+
 ## Contributing
 The most useful contribution is a **bridge** — a host capability an agent can call through a narrow,
 audited surface. Start from `docs/BRIDGES.md` and `tools/bridge-template/`. Bug reports that include
