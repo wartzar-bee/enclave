@@ -164,6 +164,15 @@ post_tick_shared() {
   if [ -f "$SCORECARD" ]; then
     ( OUT="$(python3 "$SCORECARD" "$AGENT_DIR" --t0 "$NOW" 2>>"$LOG")" && [ -n "$OUT" ] && log "$OUT" ) || true
   fi
+  # Deterministic rollup headline (2026-07-25): the dashboard headline (fleet.py _headline) reads the
+  # newest DATED line of state/rollup.md, but writing that file is an agent convention agents drift on —
+  # so the headline goes stale ("[rollup 4d old]") while the pod still ticks. Derive one dated line from
+  # the newest state/decisions.jsonl entry (written every tick) and keep rollup.md fresh, off-agent.
+  # FULLY ISOLATED; a bug here never aborts the loop.
+  ROLLUP_REFRESH="$SCRIPT_DIR/rollup_refresh.py"; [ -f "$ROLLUP_REFRESH" ] || ROLLUP_REFRESH="${TOOLS_ROOT:-/workspace}/platform/agentd/rollup_refresh.py"
+  if [ -f "$ROLLUP_REFRESH" ]; then
+    ( python3 "$ROLLUP_REFRESH" "$AGENT_DIR" 2>>"$LOG" ) || true
+  fi
   # Housekeeping (continuous mode makes stores grow fast): rotate the runner log + usage.jsonl and
   # run the daily memory compaction. FULLY ISOLATED (subshell + || true) — can NEVER abort the loop.
   (
