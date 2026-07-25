@@ -511,7 +511,7 @@ class Memory:
         parts = []
         acts, _ = self._directive_state()
         if acts:
-            parts += [x["text"][:160] for x in acts]
+            parts += [str(x.get("text") or "")[:160] for x in acts]
         else:
             ib = self.base / "inbox.md"
             if ib.exists():
@@ -580,8 +580,8 @@ class Memory:
         directives = []; retracted = []
         acts, retr = self._directive_state()
         if acts:
-            directives = [f"**{x.get('id','?')}** — {x['text'].strip()}" for x in acts[:8]]
-            retracted = [f"{x.get('id','?')}: {x['text'].strip()[:200]}" for x in retr[:4]]
+            directives = [f"**{x.get('id','?')}** — {(x.get('text') or '').strip()}" for x in acts[:8]]
+            retracted = [f"{x.get('id','?')}: {(x.get('text') or '').strip()[:200]}" for x in retr[:4]]
         else:
             _seen = set()
             ib = self.base / "inbox.md"
@@ -627,7 +627,9 @@ class Memory:
         doing_items = [i for i in work if i.get("status") == "doing"]
         todo_items = [i for i in work if i.get("status") != "doing"]
         ordered = doing_items + todo_items
-        work_lines = [f"- #{i['id']} [{i['status']}] {i['text'][:140]}" for i in ordered[:WORK_CAP]]
+        # Defensive: a work item can be missing 'text' (or use a legacy key like 'title'/'task') — a bare
+        # i['text'] KeyError'd the whole digest, breaking every pod that had one such item. Fall back.
+        work_lines = [f"- #{i.get('id','?')} [{i.get('status','?')}] {str(i.get('text') or i.get('title') or i.get('task') or i.get('desc') or '').strip()[:140]}" for i in ordered[:WORK_CAP]]
         if len(ordered) > WORK_CAP:
             work_lines.append(f"- …+{len(ordered)-WORK_CAP} more open (run `memory.py work list` for the full queue)")
         out.append("## Open work (continue 'doing' before starting new)\n" +
@@ -636,8 +638,8 @@ class Memory:
                    ("\n".join(f"- {h}" for h in hits) if hits else "- (none yet)"))
         # query qmd on the single FOCUS task (top 'doing', else top item) — a focused vector matches
         # distilled lessons/knowledge better than a verbose directive or a diluted multi-task concat.
-        doing = [i for i in work if i["status"] == "doing"] or work
-        sem_q = (doing[0]["text"][:240]) if doing else q
+        doing = [i for i in work if i.get("status") == "doing"] or work
+        sem_q = (str(doing[0].get("text") or doing[0].get("title") or doing[0].get("task") or "")[:240]) if doing else q
         sem = self._qmd_query(sem_q) if sem_q else []           # passive SEMANTIC recall (qmd embeddings)
         if sem:
             out.append("\n## Relevant by MEANING (semantic — your memory + shared knowledge)\n" +
