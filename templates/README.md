@@ -25,6 +25,21 @@ Templates here:
   the operator sets, does it, records evidence, and updates memory — no human in the loop. Runs as a
   `daemon` on a short heartbeat (`INTERVAL_SECONDS=10800`); `SUPERVISE=auto` enables the in-container
   off-opus supervisor when `BRAIN=local`. Still guard-bounded (no git, scoped secrets).
+- `code-review/` — a read-only code reviewer: `inbox.md` names the review target (a repo path or diff);
+  it gathers the change with `git diff`, reads the surrounding code (fanning out per-dimension review
+  subagents — security/correctness/quality/performance), gates every finding to >80% confidence with an
+  exact `file:line`, and writes a `changes-requested`/`approve` verdict to `state/chat-reply.md`. It
+  **reports; it never edits.** Wires the `codegraph` MCP server for caller/definition tracing.
+- `research/` — a deep web-research agent: `inbox.md` names a research question; it fans out parallel
+  per-angle search subagents, fetches the PRIMARY source for every load-bearing claim, spawns an
+  adversarial verifier to refute each claim, and writes a cited, fact-checked report (answer-first, with
+  a Sources section) to `state/chat-reply.md`. **Reports; never acts on the world.** Web-source variant
+  of `analyst` (which targets private/cloud data); no cloud profile needed — read-only HTTP GET only.
+- `orchestrator/` — a manager agent: runs its own mission AND can graduate new sub-agents into their own
+  solo deployments by writing a `spec` to its graduation queue (a host watcher builds/starts them); it
+  never touches docker itself. Carries a `{MISSION}` placeholder.
+- `venture/` — a solo-venture operator: a self-driving agent that advances ONE venture tick after tick
+  toward a KPI without a human in the loop. Carries a `{MISSION}` placeholder.
 
 A template's `agent.env` may declare extra runtime knobs (e.g. the read-only cloud profile);
 `enclave init` merges those on top of the core config it generates.
