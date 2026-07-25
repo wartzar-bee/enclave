@@ -35,6 +35,13 @@ Templates here:
   adversarial verifier to refute each claim, and writes a cited, fact-checked report (answer-first, with
   a Sources section) to `state/chat-reply.md`. **Reports; never acts on the world.** Web-source variant
   of `analyst` (which targets private/cloud data); no cloud profile needed — read-only HTTP GET only.
+- `data-pipeline/` — a recurring ETL agent: `inbox.md` holds the pipeline spec (source, destination,
+  transform, quality targets); each tick it pulls incrementally from the last watermark, lands the raw
+  extract untouched, **validates at the boundary** (schema/nulls/dedup/freshness — quarantines a bad
+  batch rather than propagate it), transforms deterministically into `work/staged/`, then **stages** the
+  external load as a ready-to-fire artifact (`state/load-request.json`) — it never executes a destructive
+  cloud/DB write itself (PREPARE→FIRE). Local-first + idempotent; ships `GUARD_CLOUD_READONLY=1` to read
+  cloud sources.
 - `orchestrator/` — a manager agent: runs its own mission AND can graduate new sub-agents into their own
   solo deployments by writing a `spec` to its graduation queue (a host watcher builds/starts them); it
   never touches docker itself. Carries a `{MISSION}` placeholder.
