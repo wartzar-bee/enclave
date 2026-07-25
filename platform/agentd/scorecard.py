@@ -302,6 +302,12 @@ def collect(base, t0, now=None):
             # file added here takes effect immediately instead of on a lag nobody remembers.
             if p in BOOKKEEPING:
                 continue
+            # Same retroactive-exclusion logic for PRODUCT: a file just added to kpi_artifacts (e.g. a
+            # pod's prepared-write queue reclassified as product) still names itself in the prior 9
+            # records' churn, so without this the alarm stayed lit for another ~10 ticks after the
+            # reclassification. Excluding current-kpi paths from the history makes it take effect now.
+            if kpi and _match_any(base, p, kpi):
+                continue
             w10[p] = w10.get(p, 0) + n
     for p, n in churn_tick.items():
         w10[p] = w10.get(p, 0) + n
