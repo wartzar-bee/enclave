@@ -694,6 +694,12 @@ def cmd_init(args):
     # Carry any extra knobs the template ships in its agent.env (e.g. GUARD_CLOUD_READONLY=1 for analyst)
     # that the wizard didn't already set — so a template can declare its own profile.
     already = {ln.split("=", 1)[0] for ln in lines if "=" in ln}
+    # A non-Claude brain (api/local) runs on BRAIN_MODEL, not MODEL. A template's agent.env ships a
+    # stray MODEL=claude-… default; without this guard the carry-loop below leaks it into a no-Claude
+    # agent, misleading the dashboard into showing a Claude model for it (the same drift the spec path
+    # guards against at the BRAIN=api block above). optimize/claude legitimately set MODEL themselves.
+    if brain in ("api", "local"):
+        already.add("MODEL")
     tenv = tdir / "agent.env"
     if tenv.exists():
         for ln in tenv.read_text().splitlines():
@@ -702,8 +708,25 @@ def cmd_init(args):
                 lines.append(ln)
     _write(home / "agent.env", "\n".join(lines) + "\n")
 
-    # 3) runtime I/O files
-    _write(home / "inbox.md", f"# inbox — initialized {time.strftime('%Y-%m-%d')}\n\n")
+    # 3) runtime I/O files — seed a SAFE starter task so the first `enclave run` does
+    #    something real. A blank inbox is the classic time-to-first-run wall: every
+    #    template's tick.txt no-ops on an empty inbox, so a newcomer's first tick does
+    #    nothing AND never shows them what an inbox task looks like. A per-template
+    #    inbox.md overrides this universal default when present.
+    tinbox = tdir / "inbox.md"
+    if tinbox.exists():
+        _write(home / "inbox.md", tinbox.read_text().replace("{AGENT_NAME}", name))
+    else:
+        _write(home / "inbox.md",
+               f"# inbox — initialized {time.strftime('%Y-%m-%d')}\n\n"
+               "<!-- Your first task. Replace it with your own; delete this block to start\n"
+               "     fresh (the agent no-ops on an empty inbox). This starter is safe: it\n"
+               "     reads local files and writes a reply — it touches nothing external. -->\n\n"
+               "- [ ] STARTER (safe, report-only — proves your setup works end to end):\n"
+               "  Read your own `CLAUDE.md` and `tick.txt`, then write to `state/chat-reply.md`:\n"
+               "  (1) one line on who you are and the job this template is for,\n"
+               "  (2) the single first real task you would tackle, phrased as an inbox item,\n"
+               "  (3) confirm you could read the repo but did NOT act on the outside world.\n")
     _write(home / "work.json", "[]\n")          # BARE list — memory.py requires it (not {"items":[]})
     # bin/memory.py — shim so the brain's CLAUDE.md `python3 /agent/bin/memory.py …` resolves to the
     # framework memory.py baked in the image. runtime.sh already falls back; the BRAIN's literal command
