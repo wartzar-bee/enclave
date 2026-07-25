@@ -39,6 +39,8 @@ wiki), `secrets/` (your read-only credential), and `.env`. For `BRAIN=claude` th
 ./bin/enclave init --yes --name my-agent --brain claude --model claude-sonnet-4-6 --cred "$TOKEN"
 ./bin/enclave run --no-open
 ```
+New here? **[docs/QUICKSTART.md](docs/QUICKSTART.md)** walks you from clone to a running, purpose-built
+agent in 5 minutes — pick one of the 9 [templates](templates/README.md), give it a task, talk to it.
 
 ## Operating it day-to-day
 Everything runs through `./bin/enclave` from the deployment folder:
@@ -68,6 +70,8 @@ enclave brain api --model deepseek/deepseek-chat
 ```
 The `optimize` brain (Claude-first, cost-aware fallthrough to any OpenAI-compatible pool — xAI / OpenAI /
 Groq / OpenRouter / local) is configured in `home/policy.json`; full guide: **`docs/OPTIMIZE-BRAIN.md`**.
+Just want to run enclave on a **non-Claude model** (OpenRouter / NVIDIA / Groq / local Ollama) — one
+command, bring your own key? See **[docs/BRING-YOUR-OWN-MODEL.md](docs/BRING-YOUR-OWN-MODEL.md)**.
 
 **Update to the latest runtime** — the clone *is* the deployment, so pull and rebuild:
 ```bash
