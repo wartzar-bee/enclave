@@ -2,8 +2,8 @@
 
 The chat's voice features work **in the browser by default** (zero infra): dictation via the Web
 Speech API, spoken replies via `speechSynthesis`. That's portable, but in Chrome dictation audio is
-sent to the browser vendor's cloud STT. For security-sensitive deployments you can route voice
-through a **server-side service you control** (e.g. a local whisper/`mlx-whisper` transcriber and an
+sent to the browser vendor's cloud STT. For security-sensitive deployments, route voice through a
+**server-side service you control** (e.g. a local whisper/`mlx-whisper` transcriber and an
 `edge-tts`/VibeVoice speaker) by pointing two env vars at it.
 
 When `TRANSCRIBE_URL` / `TTS_URL` are set, `web_chat.py` proxies to them and the UI uses them; when

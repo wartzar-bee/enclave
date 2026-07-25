@@ -2,10 +2,10 @@
 
 Enclave runs an autonomous agent inside a Docker container with scoped credentials, a
 local web chat, and a guard that blocks writes/deploys/foreign secrets it wasn't given.
-This walks you from a fresh clone to a running, purpose-built agent you can talk to.
+From a fresh clone to a running, purpose-built agent you can talk to.
 
-> **Time-to-first-run is the point.** Every command below is real (`./bin/enclave <cmd> --help`).
-> The first `run` builds two small images (~5 min once); after that, start/stop is seconds.
+> Every command below is real (`./bin/enclave <cmd> --help`). The first `run` builds two small images
+> (~5 min once); after that, start/stop is seconds.
 
 ## 0. Prerequisites (30s)
 
@@ -21,7 +21,7 @@ cd enclave
 
 ## 1. Pick a template (30s)
 
-Don't start from a blank agent — start from one built for a job. Nine ship in-box:
+Start from one built for a job, not a blank agent. Nine ship in-box:
 
 | Template        | What it does                                                              | Put in `inbox.md` |
 |-----------------|--------------------------------------------------------------------------|-------------------|
@@ -84,9 +84,8 @@ The chat opens in your browser (claude.ai-style). You can also drive it from the
 ```
 
 The agent works its task, writes a reply to `state/chat-reply.md` (surfaced in the chat), and
-records durable learnings into its `home/` brain. A research agent, for example, returns an
-answer-first, cited report with a Sources section — and it only ever made read-only HTTP GETs;
-the guard blocks everything else.
+records durable learnings into its `home/` brain. A research agent returns an answer-first, cited
+report with a Sources section — and it only ever made read-only HTTP GETs; the guard blocks everything else.
 
 ## 5. Run more than one
 

@@ -1,18 +1,18 @@
 # Spawning sub-agents (manager → sub-agent)
 
-Enclave lets a **manager agent** create new sub-agents on its own, safely, without ever touching docker.
-The mechanism is a **file-based graduation queue** plus a host-side **spawn watcher** — and the
-authorization ("only the manager may spawn") is enforced by **mount topology**, not by a network ACL.
+A **manager agent** can create new sub-agents on its own, safely, without ever touching docker. The
+mechanism is a **file-based graduation queue** plus a host-side **spawn watcher**; authorization ("only
+the manager may spawn") is enforced by **mount topology**, not a network ACL.
 
 ## The pieces
 
 - **Queue dir** — `<queue>/{incoming,processed,failed}/`. The manager agent has this mounted **writable**
   (e.g. at `/graduation`); no other agent mounts it, so no other agent can enqueue.
 - **Spec** — a declarative agent definition (`<name>.yaml` or `.json`) the manager writes to
-  `incoming/`. See the format below (same one `enclave new --spec` consumes).
-- **Spawn watcher** — `enclave fleet watch <queue>` runs a host daemon that watches `incoming/`, and for
-  each spec runs `enclave new --image-only --spec` + `enclave run`, then moves the spec to `processed/`
-  (or `failed/` with a `.error`). It runs on the host, so it may use docker; the manager never does.
+  `incoming/`. Format below (same one `enclave new --spec` consumes).
+- **Spawn watcher** — `enclave fleet watch <queue>` runs a host daemon watching `incoming/`; for each spec
+  it runs `enclave new --image-only --spec` + `enclave run`, then moves the spec to `processed/` (or
+  `failed/` with a `.error`). It runs on the host, so it may use docker; the manager never does.
 
 ```
 manager agent                host                          new sub-agent
@@ -62,11 +62,11 @@ allow_git: false             # optional: let this agent `git push` (default fals
 
 ### `allow_git` — letting an agent push
 By default agents are guard-blocked from git (the operator owns commits). `allow_git: true` (or
-`enclave init --allow-git`) flips a per-agent opt-in: it sets `GUARD_ALLOW_GIT=1`, writes a `.gitconfig`
-+ credential helper, and creates `secrets/git.env`. The agent can then `git push`, authenticating through
+`enclave init --allow-git`) flips a per-agent opt-in: sets `GUARD_ALLOW_GIT=1`, writes a `.gitconfig` +
+credential helper, and creates `secrets/git.env`. The agent can then `git push`, authenticating through
 the helper — but `guard.py` keeps `.secrets/git.env` and the helper on its denylist, so the agent can't
 read or print the token. Fill `secrets/git.env` with a scoped, write-limited token. This is a real trust
-boundary: a prompt-injected agent with git can rewrite/force-push the repos it can reach — enable it only
+boundary: a prompt-injected agent with git can rewrite/force-push any repos it can reach — enable it only
 for agents you trust (e.g. an orchestrator that owns its own repos).
 
 ## Running the watcher

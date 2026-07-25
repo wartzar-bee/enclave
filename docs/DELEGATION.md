@@ -1,25 +1,23 @@
 # Delegation — manager coordinates, local workers do the labor
 
-**Status:** SHIPPED (built + live — `delegate.py`, `hooks/delegation_guard.py`, `local_agent.py`
-WORKER_MODE; header corrected 2026-07-04 — it stale-claimed "pre-build" long after the build).
-Originally distilled (not ported) from Hermes `delegate_tool` +
-`verification_stop`, NVIDIA NemoClaw's per-agent model-pinning + spawn-allowlist, OpenJarvis's
-router-policy. Adopts NONE of those repos — they failed our install-vetting bar; this is our own
-implementation of the convergent pattern.
+**Status:** SHIPPED (`delegate.py`, `hooks/delegation_guard.py`, `local_agent.py` WORKER_MODE).
+Distilled (not ported) from Hermes `delegate_tool` + `verification_stop`, NVIDIA NemoClaw's per-agent
+model-pinning + spawn-allowlist, OpenJarvis's router-policy. Adopts NONE of those repos — they failed
+our install-vetting bar; this is our own implementation of the convergent pattern.
 
 ## Problem
-With `BRAIN=claude`, the manager (Claude) is a capable model, so a *prompt* telling it to "offload bulk
-work to local LLMs" is ignored — it just does the work itself (proven: a forgepod tick ran on Opus,
-0 delegations, hand-wrote a whole math model). `route.mjs` only does **one-shot completions** (no tools,
-no file I/O), so it can draft text but cannot "implement this module" (which needs read→write→run→iterate).
-Result: no mechanical way to make "Claude manages, local does the labor" true.
+With `BRAIN=claude`, a *prompt* telling the manager to "offload bulk work to local LLMs" is ignored — it
+does the work itself (proven: a forgepod tick ran on Opus, 0 delegations, hand-wrote a whole math model).
+`route.mjs` only does **one-shot completions** (no tools, no file I/O), so it can draft text but cannot
+"implement this module" (needs read→write→run→iterate). No mechanical way to make "Claude manages, local
+does the labor" true.
 
 ## Goal
 A **delegation primitive** the manager invokes to hand a whole SUBTASK to an isolated **local worker**
 that does the labor with its own tools and returns **only a summary**. Plus a **guard** that *forces*
-the manager to delegate bulk work instead of doing it itself. Net: Claude spends tokens on planning +
-delegation prompts + review; local models do codegen/sims/drafts; a verify-gate keeps quality honest.
-The "only summary returns" rule also directly bounds manager token growth (our 136M-token-burn lesson).
+delegation of bulk work. Claude spends tokens on planning + delegation prompts + review; local models do
+codegen/sims/drafts; a verify-gate keeps quality honest. The "only summary returns" rule also bounds
+manager token growth (our 136M-token-burn lesson).
 
 ## Architecture (reuses what exists)
 ```
@@ -108,9 +106,9 @@ alongside build_guard). Makes delegation mechanical, not optional.
   No conflict; they share `local_agent.py`.
 
 ## Non-goals (v1)
-Parallel/async fan-out (Hermes `async_delegation` — add later), learned/trained routing (OpenJarvis SFT/GRPO),
+Parallel/async fan-out (Hermes `async_delegation`), learned/trained routing (OpenJarvis SFT/GRPO),
 declarative multi-worker manifest (NemoClaw `agents.yaml` — add when >1 worker type), mixture-of-agents.
-v1 = one synchronous delegate + verify + guard enforcement. Keep it lean.
+v1 = one synchronous delegate + verify + guard enforcement.
 
 ## Proof plan (how we verify it works — no claims without this)
 1. **Unit:** `delegate.py --task "write prime_list(n) to /tmp/p.py" --kind code --verify "python3 -c 'import sys;sys.path.insert(0,\"/tmp\");import p;assert p.prime_list(5)==[2,3,5,7,11]'"` → expect `status:ok`, file written by a LOCAL model, verify passed, manager (caller) tokens ≈ 0.

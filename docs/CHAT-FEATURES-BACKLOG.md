@@ -1,9 +1,9 @@
 # Enclave chat — feature backlog (distilled, 2026-06-17)
 
 Mined from the community Claude-Code web UIs (CloudCLI/`claudecodeui`, Claudeck, AI Hub, claude-code-webui)
-to avoid reinventing — **distilled, not adopted**. Those are full Node/React/Vue apps with npm deps; they
-violate Enclave's offline + zero-dep + single-baked-file + per-agent-isolation + must-vet model, so we
-cherry-pick *ideas* and build minimal vanilla versions (same rule that gave us our own comic/voice tooling).
+— **distilled, not adopted**. Those are full Node/React/Vue apps with npm deps; they violate Enclave's
+offline + zero-dep + single-baked-file + per-agent-isolation + must-vet model, so we cherry-pick *ideas*
+and build minimal vanilla versions (same rule that gave us our own comic/voice tooling).
 
 Sources: github.com/siteboon/claudecodeui · hamedfarag.dev/posts/claudeck · nimbalyst.com/blog/best-claude-code-gui-tools-2026
 

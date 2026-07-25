@@ -15,7 +15,7 @@ browser.
   `grep enforce home/state/egress-policy.log`.
 
 So: the container boundary is enforced by the kernel, the *network* boundary is enforced only when
-you turn it on. We would rather say that than let you find out from an audit.
+you turn it on.
 
 > Status: **public alpha**, Apache-2.0. Used daily by its authors to run a live agent fleet; the
 > API and layout still move. See "Known gaps" below.
@@ -32,8 +32,7 @@ git clone https://github.com/wartzar-bee/enclave.git enclave && cd enclave
 ./bin/enclave run                    # build + start, then opens the chat in your browser
 ```
 `init` populates `home/` (the agent's mounted `/agent`: mission, runtime config, work queue, knowledge
-wiki), `secrets/` (your read-only credential), and `.env`. For `BRAIN=claude` the wizard can run
-`claude setup-token` for you to mint a token. `run` brings up the stack and auto-opens
+wiki), `secrets/` (your read-only credential), and `.env`. `run` brings up the stack and auto-opens
 `http://127.0.0.1:8888/`. Non-interactive (CI):
 ```bash
 ./bin/enclave init --yes --name my-agent --brain claude --model claude-sonnet-4-6 --cred "$TOKEN"
@@ -129,7 +128,7 @@ linux/amd64,linux/arm64` (uses buildx + QEMU; the emulated arch is slow to build
 arch then `run --pull` cleanly).
 
 ## Where work is saved — home (brain) vs `/work` (project)
-Enclave answers "where does the agent's work go, and how does it stay searchable?" with two mounts:
+Two mounts hold the agent's work:
 - **`home/` → `/agent`** — the agent's **brain**: `CLAUDE.md`, `memory/`, `skills/`, `inbox.md`,
   `work.json`, `state/`. A scan-gated git vault (durable + secret-safe).
 - **`WORK_DIR` → `/work`** — the agent's **working folder**: the real project tree it operates on and

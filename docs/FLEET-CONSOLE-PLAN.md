@@ -2,33 +2,31 @@
 
 > **v2 supersedes v1 (below).** Three critiques (external GPT-5.5, internal adversarial-on-code,
 > operator) converged: v1 over-claimed reuse and under-weighted security, scale, and a missing
-> port-allocation layer. The reference dashboard is **NOT proven** (operator: untested/weak) — we reuse the
-> *working substrate* (comms bridge, web_chat JSON API, agentloop, state files) and **build the console
-> fresh**, NOT port the dashboard UI.
+> port-allocation layer. The reference dashboard is **NOT proven** — reuse the *working substrate*
+> (comms bridge, web_chat JSON API, agentloop, state files) and **build the console fresh**, NOT port
+> the dashboard UI.
 
 ## The ONE load-bearing decision (settle before any code)
 **A single background "fleet snapshot" thread is the ONLY reader of agent state.** It builds one cached
 dict from *direct disk reads* (per-agent state files + comms JSONL, mtime-gated, `since=` cursor) + TCP
 probe results + `docker compose ps` states + the port-allocation map. **Every** SSE/poll/CLI/rail read
-serves that cache — no request thread ever calls the old `fleet()`/`_comms_events` or touches a backend.
+serves that cache — no request thread calls the old `fleet()`/`_comms_events` or touches a backend.
 This fixes the O(N)-per-push collapse, homes port + probe state, removes the comms bridge as a hot path,
 and makes backpressure trivial (one producer, many cheap consumers).
 
 ## Blockers the critiques found (all real, all in v1's blind spots)
-- **B1 — SSE collapse at ~20–30 agents:** v1 said "reuse `fleet()` verbatim," but `_stream` calls
-  `fleet()` every 2s *per browser* with no cache, and each `_agent_state` does ~10 file reads **+ a
-  synchronous comms HTTP call returning the agent's ENTIRE event log** (`since=0`). 100 agents = ~100
-  blocking HTTP + ~1000 file reads every 2s per tab. → fixed by the snapshot thread above + `since=`
-  cursors + reading comms JSONL off disk.
+- **B1 — SSE collapse at ~20–30 agents:** `_stream` calls `fleet()` every 2s *per browser* with no
+  cache, and each `_agent_state` does ~10 file reads **+ a synchronous comms HTTP call returning the
+  agent's ENTIRE event log** (`since=0`). 100 agents = ~100 blocking HTTP + ~1000 file reads every 2s per
+  tab. → fixed by the snapshot thread + `since=` cursors + reading comms JSONL off disk.
 - **B2 — no port allocation exists:** every deployment defaults `WEB_CHAT_BIND=127.0.0.1:8888`; the
   proxy's "→ :port" premise assumes an allocation scheme **not in the codebase**. → console/`enclave
   fleet up`/init must own a port pool (e.g. 8900–9100) in `ports.json`, write `WEB_CHAT_BIND` before
   `up`, re-derive the map from `docker port` at load. **Net-new, P1.**
 - **B3 — the proxy is not a security boundary as drawn:** web_chat serves its HTML page with NO auth and
-  binds 0.0.0.0 with `127.0.0.1:<port>` published, so loopback bypasses the console; also it uses
+  binds 0.0.0.0 with `127.0.0.1:<port>` published, so loopback bypasses the console; it also uses
   `X-Chat-Token`, not `Authorization`. → either **unpublish per-agent ports** (internal network; console
-  is the ONLY path) or explicitly accept "loopback == trusted" and drop the boundary pretense. Inject the
-  correct `X-Chat-Token`. **Decide the trust boundary explicitly.**
+  is the ONLY path) or explicitly accept "loopback == trusted". Inject the correct `X-Chat-Token`.
 
 ## Other required changes
 - **Privilege split (external blocker):** running `docker compose` ≈ root. Split an *unprivileged web
@@ -47,9 +45,8 @@ and makes backpressure trivial (one producer, many cheap consumers).
   reachability only. Budget 3–5× containers.
 - **Don't proxy full UIs — proxy narrow JSON only:** reverse-proxy ONLY web_chat's `/api/*` JSON endpoints
   (correct `X-Chat-Token`, body-size + socket timeouts + per-agent & global concurrency caps, loopback
-  only); render the rail + chat in the console itself. **v1 chat = short-poll** (not proxied 600s
-  long-poll); **one console SSE for fleet status only**, with `: ping` heartbeats every ~15s + BrokenPipe
-  teardown.
+  only); render the rail + chat in the console itself. Chat = short-poll (not proxied 600s long-poll);
+  **one console SSE for fleet status only**, with `: ping` heartbeats every ~15s + BrokenPipe teardown.
 - **Comms bridge bounding (M3):** cursor reads (never `since=0`), retention cap (last ~500/agent) +
   JSONL compaction, console tails JSONL off disk for the rail, only `POST /send` through the bridge.
   Per-agent HMAC identity is the scale-correct hardening (P3 on a single trusted host, but flagged).
@@ -71,24 +68,15 @@ and makes backpressure trivial (one producer, many cheap consumers).
   identity, disk rotation, polish.**
 
 ## Operator decisions — RESOLVED (2026-06-18)
-1. **Trust boundary → NOT one door.** There's a **management hierarchy**: a *manager* agent (the
-   manager-agent pattern) steers a few sub-agents, so agents must be reachable by the human console AND their manager
-   agent. Keep the **comms bridge as the multi-party steering plane** (human + manager agents → agents;
-   agent↔agent); do NOT unpublish ports to force a single door. Console binds 127.0.0.1 (enforced),
-   loopback-trusted. The console must **represent the hierarchy** (manager → its sub-agents as a group/
-   tree), not just a flat fleet. → first-class concept: an agent's manifest entry may name a `manager`;
-   the rail groups sub-agents under their manager; a manager agent can be given authority to direct its
-   sub-agents over comms.
-2. **UX → rail + detail, NOT a table.** The old dashboard was a table that only ever grew rows/columns —
-   rejected as the model. Build the two-pane **agent rail (left) + tabbed detail (right)** from the start.
-
-## (old) Open decisions
-1. **Trust boundary (B3):** unpublish per-agent ports so the console is the only door (more secure, a
-   compose change to every deployment) — or accept "single trusted host, loopback = trusted" and treat
-   the console as convenience-not-perimeter? *(Recommend: loopback-trusted for now + bind-127.0.0.1
-   enforced; revisit unpublishing if we ever expose it.)*
-2. **What specifically annoyed you about the old dashboard** (layout/speed/what it showed) — so the fresh
-   build fixes it by design.
+1. **Trust boundary → NOT one door.** There's a **management hierarchy**: a *manager* agent steers a few
+   sub-agents, so agents must be reachable by the human console AND their manager. Keep the **comms bridge
+   as the multi-party steering plane** (human + managers → agents; agent↔agent); do NOT unpublish ports to
+   force a single door. Console binds 127.0.0.1 (enforced), loopback-trusted. The console must **represent
+   the hierarchy** (manager → its sub-agents as a tree), not a flat fleet: an agent's manifest entry may
+   name a `manager`; the rail groups sub-agents under their manager; a manager can be given authority to
+   direct its sub-agents over comms.
+2. **UX → rail + detail, NOT a table.** The old dashboard was an ever-growing table — rejected. Build the
+   two-pane **agent rail (left) + tabbed detail (right)** from the start.
 
 ---
 
@@ -96,15 +84,15 @@ and makes backpressure trivial (one producer, many cheap consumers).
 
 # Enclave Fleet Console — implementation plan (v1, 2026-06-18)
 
-**Goal:** one web console to manage 20–100 Enclave agents — a left rail of agents (Slack-style),
-click one to chat / give a directive; agents run autonomously toward their objectives otherwise;
-they can message each other. Start/stop/monitor from the same surface.
+**Goal:** one web console to manage 20–100 Enclave agents — a Slack-style left rail, click one to chat /
+give a directive; agents run autonomously toward their objectives otherwise and can message each other.
+Start/stop/monitor from the same surface.
 
 **Verdict from research (don't relitigate):** ~80–90% already exists. A reference dashboard prototype
-(pure stdlib `http.server`+SSE), the **comms bridge** (`:18193`:
-`/send /inbox /events /emit /roster`), the **agentloop** (event-driven drain+emit), and the per-agent
-**web_chat** plane all port to Enclave. **No framework** (D-052; ruflo/LangGraph already rejected). The
-net-new work is: discovery, the reverse-proxy aggregator, the rail UX, compose lifecycle, scale/auth.
+(stdlib `http.server`+SSE), the **comms bridge** (`:18193`: `/send /inbox /events /emit /roster`), the
+**agentloop** (event-driven drain+emit), and the per-agent **web_chat** plane all port to Enclave. **No
+framework** (D-052). Net-new: discovery, the reverse-proxy aggregator, the rail UX, compose lifecycle,
+scale/auth.
 
 ---
 
@@ -123,11 +111,11 @@ browser ──auth(session)──▶│  ThreadingHTTPServer, 127.0.0.1   │  l
 
 - **It aggregates, it does not replace.** Each agent already runs a full `web_chat` (sessions,
   memory-capture, export). The console reverse-proxies `/agent/<id>/api/*` → `127.0.0.1:<port>`,
-  reusing every agent's real chat plane. Browser auth terminates at the console; agent tokens never
-  reach the browser.
+  reusing every agent's chat plane. Browser auth terminates at the console; agent tokens never reach the
+  browser.
 - **Two messaging planes (both exist):** *chat* (real-time Q&A → `chat-inbox.jsonl` → chat_responder)
   for "talk to it"; *directive* (→ comms `/send`, wakes the autonomous tick; inbox.md fallback) for
-  "steer it." The rail's composer offers both: a chat box and a one-click "directive" send.
+  "steer it." The rail's composer offers both.
 - **Autonomous-otherwise** is already true for `autonomous`-template agents (tick toward `{MISSION}`,
   directive overrides). The console is just the steering surface.
 
@@ -151,13 +139,13 @@ browser ──auth(session)──▶│  ThreadingHTTPServer, 127.0.0.1   │  l
      fallback. *(Background stdlib loop, no LLM — does not violate the no-Opus-on-a-timer rule.)*
    - **Lifecycle:** `docker compose -p <id> up -d|stop|down` via `subprocess.run([...], timeout=)`,
      **argv list never `shell=True`**, validate `<id>` against `^[a-z0-9][a-z0-9_-]*$`. Slow ops async,
-     not inline in a handler. Soft-pause = the existing `state/paused` flag. **Never mount docker.sock.**
+     not inline. Soft-pause = the existing `state/paused` flag. **Never mount docker.sock.**
    - **Agent↔agent view:** project the comms JSONL (`{ts,from,to,text}`) into timeline / per-pair thread
      / force-graph (vasturiano/force-graph, MIT, canvas — recent-K-events projection, no graph DB).
    - **Auth:** loopback bind; `POST /auth` shared secret from `.secrets/console.env` →
      `secrets.token_urlsafe(32)` session in a process dict; `Set-Cookie HttpOnly; Secure; SameSite=Strict`;
-     `hmac.compare_digest`; Origin/Referer check + custom-header requirement on every state-changing POST;
-     append-only audit log of every action. **Reject** OAuth/RBAC/JWT/multi-tenant (one trusted operator).
+     `hmac.compare_digest`; Origin/Referer check + custom-header on every state-changing POST; append-only
+     audit log. **Reject** OAuth/RBAC/JWT/multi-tenant (one trusted operator).
 2. **`bin/enclave fleet`** (new CLI subcommand) — `fleet` (table: name/status/brain/model/chat-port/
    last-tick), `fleet up|down|restart|logs|open|send <name|--all>`. The scriptable control plane; the web
    console is the GUI over the same functions.
@@ -175,10 +163,10 @@ browser ──auth(session)──▶│  ThreadingHTTPServer, 127.0.0.1   │  l
 
 ## Monitoring views (implemented) — Overview + Graph
 
-The console is now a **3-view** app (top nav): **Overview** (default) · **Agents** (the original rail +
-chat/status/logs + directives) · **Graph** (fleet topology). A second, slower background loop
-(`_cost_loop`, ~45s — `CONSOLE_COST_SECS`) feeds the cost/monitoring data so the 4s agent snapshot stays
-hot and independent; the whole loop is fail-open.
+The console is a **3-view** app (top nav): **Overview** (default) · **Agents** (rail + chat/status/logs +
+directives) · **Graph** (fleet topology). A second, slower background loop (`_cost_loop`, ~45s —
+`CONSOLE_COST_SECS`) feeds cost/monitoring data so the 4s agent snapshot stays hot and independent; the
+whole loop is fail-open.
 
 - **Overview** — subscription **cap gauges** (5h + 7d %, color-coded at the guard thresholds 70/85/90,
   reset countdown, "credits OFF" badge); **fleet spend cards** (window $, tokens, ticks, daily burn +
@@ -206,44 +194,42 @@ offline (libs vendored under `platform/agentd/static/`). If the OAuth token is a
 
 ## Status model, auto-discovery & hierarchy (implemented 2026-06-25)
 
-A pass to make the console **self-identify the whole fleet** and present status **consistently** across
-every view (the rail, the overview strip + cost table, and the graph all read ONE model).
+The console **self-identifies the whole fleet** and presents status **consistently** across every view
+(rail, overview strip + cost table, graph all read ONE model).
 
 - **Canonical status (4 states, one source of truth — JS `STATUS`/`statusKey`).** Derived from the
   snapshot's `up` / `tick` / `reachable`, never re-implemented per view:
   - **Working** (green `--ok`) — up + mid-tick · **Idle** (amber `--idle`) — up + reachable, between
-    ticks · **Unreachable** (red `--err`) — up but the chat port isn't answering (needs attention) ·
-    **Offline** (grey `--off`) — not running (stopped/paused/exited).
-  - Offline is **grey** (was a brown that read as an error); the old brown is repurposed as the genuine
-    *Unreachable* state so red finally means "problem", not "stopped". Every dot carries a **text label**
-    in the same color (rail, detail bar, cost-table Status column, overview Fleet-status strip).
-  - The up-but-unreachable **alert** now matches this state (the old `up && tick=="down"` condition was
-    dead — `tick` is never `down` while running).
+    ticks · **Unreachable** (red `--err`) — up but the chat port isn't answering · **Offline** (grey
+    `--off`) — not running (stopped/paused/exited).
+  - Offline is **grey**; red is repurposed for the genuine *Unreachable* state so it means "problem", not
+    "stopped". Every dot carries a **text label** in the same color (rail, detail bar, cost-table Status
+    column, overview Fleet-status strip).
+  - The up-but-unreachable **alert** matches this state (the old `up && tick=="down"` condition was dead —
+    `tick` is never `down` while running).
 - **Auto-discovery (no per-dir config).** `docker compose ls --all` finds everything docker knows
   host-wide; `fleet._scan_deployments()` is the on-disk fallback for deployments docker doesn't track
-  (never-`up`'d, or project removed — e.g. a standalone agent). It is now **recursive (bounded depth 4),
-  marker-gated** (a dir counts as an enclave deployment only if its `.env` has `AGENT_ID` or its compose
-  references `enclave`), **skips** vcs/vendor/`*backup*` dirs, and is **TTL-cached (30s)** so the 4s
-  snapshot loop doesn't re-walk the tree. Default root is `~/Dev` (`ENCLAVE_STACKS_ROOTS`), so the
-  standard `enclave console` launch finds the fleet **and** independent standalone enclaves automatically.
-- **Standalone vs fleet (`kind`, auto-derived in `snapshot()`).** An agent is **fleet** if it has a
-  `manager` or *is* a manager of someone; otherwise **standalone** (its own independent enclave, not in
-  any master→sub-agents tree). No config — purely the manager hierarchy.
-- **Master/manager visualization.** The rail renders the fleet as a real **tree**: each master (a depth-0
-  manager) leads its group with a **♛ crown + `FLEET ·N` badge** and a highlighted row, its sub-agents
-  **indented with `└` connectors**; standalone agents sit in their own section. The graph marks managers
-  with a **♛ + dashed gold ring + accent label**; the cost table and the detail Status card show the
-  crown / "fleet master · manages N" / "managed by X" / "standalone". `isManager(id)` = manages ≥1 agent,
-  so it generalizes to deeper trees automatically.
+  (never-`up`'d, or project removed). **Recursive (bounded depth 4), marker-gated** (a dir counts only if
+  its `.env` has `AGENT_ID` or its compose references `enclave`), **skips** vcs/vendor/`*backup*` dirs,
+  **TTL-cached (30s)** so the 4s snapshot loop doesn't re-walk the tree. Default root is `~/Dev`
+  (`ENCLAVE_STACKS_ROOTS`), so `enclave console` finds the fleet **and** standalone enclaves automatically.
+- **Standalone vs fleet (`kind`, auto-derived in `snapshot()`).** **fleet** if it has a `manager` or *is*
+  a manager; otherwise **standalone**. No config — purely the manager hierarchy.
+- **Master/manager visualization.** The rail renders the fleet as a **tree**: each master (depth-0
+  manager) leads its group with a **♛ crown + `FLEET ·N` badge** + highlighted row, sub-agents **indented
+  with `└` connectors**; standalone agents sit in their own section. The graph marks managers with a **♛
+  + dashed gold ring + accent label**; the cost table and detail Status card show crown / "fleet master ·
+  manages N" / "managed by X" / "standalone". `isManager(id)` = manages ≥1 agent, generalizing to deeper
+  trees.
 - **Overview layout.** Leads with a **Fleet-status strip** (agents · Working/Idle/Unreachable/Offline
-  counts in the status colors · open-work total) before spend. The 5h/7d gauges stack with a compact
-  credits caption underneath (was a wide bordered pill), and the 4 spend cards are a fixed 4-column row
-  (2 columns < 720px) — they no longer wrap to two rows. **Gauge fix:** colors are resolved to hex via
-  `cssv()` — Chrome does not substitute `var()` inside SVG presentation attributes (`fill=`/`stroke=`).
-- **Deep-linking.** `?view=overview|agents|graph` selects the initial view (over the saved one).
+  counts in status colors · open-work total) before spend. 5h/7d gauges stack with a compact credits
+  caption; the 4 spend cards are a fixed 4-column row (2 columns < 720px). **Gauge fix:** colors resolved
+  to hex via `cssv()` — Chrome does not substitute `var()` inside SVG presentation attributes
+  (`fill=`/`stroke=`).
+- **Deep-linking.** `?view=overview|agents|graph` selects the initial view.
 
 These live entirely in the two host-side control-plane files (`console.py`, `fleet.py`); no agent-image
-rebuild is needed.
+rebuild needed.
 
 ## What reuses vs net-new
 | Reuse as-is | Net-new |

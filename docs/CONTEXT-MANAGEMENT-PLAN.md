@@ -11,14 +11,14 @@ ruflo `session-end`/`PreCompact`). Builds on the research in `CONTEXT-MANAGEMENT
 A Claude Code PostToolUse hook receives `{tool_name, tool_input, tool_response, transcript_path,
 session_id}` — **no token/usage data.** The accurate occupancy signal (`input + cache_read +
 cache_creation`) lives in the `stream-json` that `usage_capture.py` already parses.
-→ **Design consequence:** the *parser* measures and writes a tiny `state/.ctx-budget.json` per assistant
-message; the *hook* just reads that file (cheap) and decides whether to steer. Two processes, one file.
-Fallback if the parser can't emit per-turn (only at tick end): a **turn/tool-call counter** the hook
+→ **Consequence:** the *parser* measures and writes a tiny `state/.ctx-budget.json` per assistant
+message; the *hook* just reads that file and decides whether to steer. Two processes, one file.
+Fallback if the parser can only emit at tick end: a **turn/tool-call counter** the hook
 increments itself — coarser but reliable. Ship both; prefer the parser value, fall back to the counter.
 
 **C2. The threshold is a COST budget, NOT a % of the 1M window.**
-Our pain was **cost (cache_read), not hitting the limit.** At 700k context every turn re-reads 700k →
-expensive long before 1M. So clearing at "70% of 1M" is far too late.
+The pain was **cost (cache_read), not hitting the limit.** At 700k context every turn re-reads 700k →
+expensive long before 1M, so clearing at "70% of 1M" is far too late.
 → **Use an absolute cost budget ~200k soft / ~300k hard**, well below the 1M window. This caps per-turn
 cache_read → caps the dominant cost. (Window-limit safety is the *outer* backstop, not the trigger.)
 
@@ -38,7 +38,7 @@ No single layer is trusted.
 **C5. Clearing more often risks MORE re-grounding cost — so the handoff must be ONE lean, self-sufficient
 file.** forgepod's waste was re-reading the whole gap-list + `recall.md` + files every fresh tick, AND
 reconciling TWO copies of `release-gaps.md`.
-→ **One canonical lean handoff** (`state/handoff.md`) that is *everything* a fresh tick needs — so
+→ **One canonical lean handoff** (`state/handoff.md`) with *everything* a fresh tick needs — so
 re-grounding is "read one small file," not "re-derive my world." Distill-up discipline (OpenClaw two-tier).
 
 **C6. Don't clear mid-implementation.** (Our own `cost-aware-execution` skill + general wisdom.) A hard
@@ -51,9 +51,9 @@ model; in raw `claude -p` the agent IS Opus, so the handoff write costs Opus tok
 → **Keep the handoff SMALL (fixed template)** so the write is cheap. True cheap-model flush needs the
 **Agent SDK** (separate compaction model) — defer to Phase 2.
 
-**C8. Cover EVERY exit, not just token pressure.** OpenClaw's own open bug (#8185): `/reset` skips the
+**C8. Cover EVERY exit, not just token pressure.** OpenClaw's open bug (#8185): `/reset` skips the
 flush. A killed/MAX_TURNS/clean-finish tick must also leave a current handoff.
-→ **tick.txt mandates: refresh `handoff.md` before `finish`, every tick.** + continuous append-bank so a
+→ **tick.txt mandates: refresh `handoff.md` before `finish`, every tick** + continuous append-bank so a
 crash mid-tick still leaves a trail (ruflo "store after every step").
 
 **C9. Build-our-own vs step up to the Agent SDK / Messages API.** The SDK gives native `/compact` +
@@ -131,7 +131,7 @@ LAST TOOL RESULTS (verbatim, 1-2): <preserve the model's "rhythm">
 Payoff to validate on ONE supervised tick: capping context vs ballooning to 1–3.7M cache_read → est. **2–4×** cheaper ($112 run → ~$30–50) at equal quality.
 
 ## PART 7 — AGENT-PLANNED BUDGETED WORK-PACKAGES (the primary mechanism)
-The token threshold (PART 1–3) becomes the **safety net**, not the trigger. The trigger is the agent's own
+The token threshold (PART 1–3) is the **safety net**, not the trigger. The trigger is the agent's own
 plan. Flow:
 
 1. **Plan a coherent PACKAGE, not a task-hop.** At the start of a unit, the agent writes `state/plan.md`:

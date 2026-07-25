@@ -1,8 +1,8 @@
 # Testing the Enclave framework
 
 The suite is **dependency-free** — plain `python3` scripts, no pytest (the baked agent image ships
-python3 with no test deps). Every `test_*.py` exits non-zero on failure. One runner ties them together
-and CI runs the same thing.
+python3 with no test deps). Every `test_*.py` exits non-zero on failure. One runner ties them together;
+CI runs the same runner.
 
 ## Run everything
 
@@ -67,14 +67,13 @@ Design rules that keep the suite trustworthy:
 ## Bug found by live testing (fixed)
 
 `enclave fleet watch` was refactored to dispatch to `spawn_watcher.py` (create-specs) with a separate
-`control-watch` for lifecycle, but the host's `org.enclave.spawn` launchd daemon was still running the
+`control-watch` for lifecycle, but the host's `org.enclave.spawn` launchd daemon still ran the
 *pre-refactor* process (old `fleet.py watch`, control-watcher semantics). So **every dashboard
 agent-creation was silently rejected** (`unknown action ''`) and the spec moved to `failed/`. The
-hermetic suite can't catch this — it mocks the executor — which is exactly why `test_live_lifecycle.py`
-exists. Fix was operational: `launchctl kickstart -k gui/$UID/org.enclave.spawn` so the daemon reloads
-current code. **Lesson:** after changing `bin/enclave`/watcher code, restart the spawn + control launchd
-jobs (or they keep serving stale logic). Worth a healthcheck that asserts the running watcher is the
-current `spawn_watcher`.
+hermetic suite can't catch this — it mocks the executor — which is why `test_live_lifecycle.py` exists.
+Fix was operational: `launchctl kickstart -k gui/$UID/org.enclave.spawn` reloads current code.
+**Lesson:** after changing `bin/enclave`/watcher code, restart the spawn + control launchd jobs (else
+they serve stale logic). Worth a healthcheck asserting the running watcher is the current `spawn_watcher`.
 
 ## Known finding (not a bug)
 
@@ -88,8 +87,8 @@ producer would be executed. Single-point, not defense-in-depth; a second check i
 
 The hermetic suite + opt-in live test are a strong **smoke + regression net**, but two non-Claude
 reviewers (DeepSeek V4 Pro, Gemini 2.5 Pro) judged a green run **not sufficient alone to gate a deploy**
-— the docker boundary is mocked and the real-boundary test is opt-in. Done this round: no-500 assertions,
-real time-window fixtures + value assertions, fail-loud cost harness, `boot_console` state restore,
+— the docker boundary is mocked and the real-boundary test is opt-in. Done: no-500 assertions, real
+time-window fixtures + value assertions, fail-loud cost harness, `boot_console` state restore,
 poll-not-sleep + health checks in the live test. **Still open, by priority:**
 
 - [ ] **Failure-mode fixtures.** Add corrupt / missing / empty `usage.jsonl`, missing `home/`, truncated

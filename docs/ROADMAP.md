@@ -20,10 +20,9 @@ indexing; `docs/WORK-DIR.md`).
 > exfil. If a thing is too sprawling to fully review, author our own from the distilled idea instead.
 
 ## ✅ #2 — publish prebuilt images to ghcr  (DONE 2026-06-16)
-`enclave publish --registry ghcr.io/demopod` builds + pushes both images. The block was a
-token *type*: ghcr only accepts a **classic** PAT with `write:packages` (fine-grained PATs can't
-push packages at all). Operator minted a classic PAT (scopes `repo,
-write:packages`); stored at `.secrets/ghcr.env` (gitignored). Live:
+`enclave publish --registry ghcr.io/demopod` builds + pushes both images. The block was a token *type*:
+ghcr only accepts a **classic** PAT with `write:packages` (fine-grained PATs can't push packages at all).
+Classic PAT (scopes `repo, write:packages`) stored at `.secrets/ghcr.env` (gitignored). Live:
 - `ghcr.io/demopod/enclave-agent:latest` · `ghcr.io/demopod/enclave-chat:latest` (private).
 - Teammates: set `ENCLAVE_AGENT_IMAGE`/`ENCLAVE_CHAT_IMAGE` in `.env`, then `enclave run --pull`
   (needs `read:packages`, or flip the packages public on their GitHub pages).
@@ -96,7 +95,7 @@ deployment-policy override, decision-line parse, `init --yes` defaults. See `doc
 ## Open decisions / follow-ups
 - **Chat streaming** — replies still wait-then-dump (the `claude -p --output-format json` turn is
   non-streaming). True token streaming needs `--output-format stream-json` + incremental delivery (SSE) —
-  a real architecture change, deferred. A per-turn usage/cost line needs the same plumbing.
+  an architecture change, deferred. A per-turn usage/cost line needs the same plumbing.
 - **WASM runtime** (#7) — cleared to wire (`wasmtime==45.0.0`); the `run_sandboxed()` executor is the
   remaining ENGINEERING step (restricted exec surface; WASI can't run raw bash). Operator's call to start.
 - **Cognee engine** (#6) — stays gated; if graph memory is needed, build our own networkx+sqlite layer

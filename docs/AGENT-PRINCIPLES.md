@@ -7,7 +7,7 @@ plan-gate in its `tick.txt`). The backbone is one loop:
 
 Most agent failures — probe-storms, wrong structure, expensive thrash, whack-a-mole debugging — come from
 skipping the first three steps or the verify. *(Distilled from Cherny's AI-dev principles + garrytan/gstack's
-plan-review methodology; we author our own, we don't install gstack.)*
+plan-review methodology; we author our own, don't install gstack.)*
 
 ## 1. Plan first — always, for anything non-trivial
 Never build straight from the prompt. Write the **plan** first — short and concrete:
@@ -22,9 +22,9 @@ Headless tick → write it to `state/plan.md`. Interactive/chat → use Claude's
 approved before exiting. A good plan = a one-pass build.
 
 ## 2. Ground the plan — read code FIRST, cite file:line, never assume
-A plan invented in a vacuum is wrong. Before committing to it:
-- **codegraph / read the code** — what already exists, who calls what, what your change impacts. **Examine
-  actual codebase evidence before deciding *how*.** Reference real file paths + line numbers.
+Before committing to a plan:
+- **codegraph / read the code** — what exists, who calls what, what your change impacts. **Examine actual
+  codebase evidence before deciding *how*.** Reference real file paths + line numbers.
 - **qmd / memory** — prior decisions, lessons, the canon. **Search before you decide** — don't relitigate a
   settled decision or repeat a logged mistake.
 - A claim you can't tie to a specific `file:line` is **unverified** — label it so, never state it as fact.
@@ -54,9 +54,9 @@ timeout. Red flags: "quick fix for now," patching before tracing, every fix spaw
 
 ## 6. Verify before "done" — via a verifier SUBAGENT, item by item
 You are the CEO; you do **not** self-certify. Before marking anything done, **spawn a verifier subagent
-(Task tool)** to adversarially PROVE the work actually runs — run it / render / play / sim / read the real
-output — and report evidence. Launch as many subagents as the work needs. **"Done" requires a subagent's
-evidence, never the builder's say-so.** A claim with no subagent receipt is **NOT DONE**.
+(Task tool)** to adversarially PROVE the work runs — run it / render / play / sim / read the real output —
+and report evidence. Launch as many subagents as the work needs. **"Done" requires a subagent's evidence,
+never the builder's say-so.** A claim with no subagent receipt is **NOT DONE**.
 
 The verifier **audits each plan item against what actually shipped**: DONE / PARTIAL / NOT DONE / CHANGED /
 UNVERIFIABLE. **Done = implemented · validated · integrated · recorded · no immediate follow-up.** No

@@ -1,8 +1,7 @@
 # Contributing to Enclave
 
-Thanks for looking at Enclave. It's a **public alpha** (Apache-2.0) — the API and layout still move,
-so small, focused changes land fastest. This file tells you where to start, how to run the tests, and
-what a good report or PR looks like.
+Enclave is a **public alpha** (Apache-2.0) — the API and layout still move, so small, focused changes
+land fastest.
 
 ## Where to start
 

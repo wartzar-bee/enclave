@@ -7,7 +7,7 @@ or any template's `CLAUDE.md` / `tick.txt`.
 ## The hard reality: the API is stateless
 
 Claude does **not** keep your conversation server-side between ticks. Each `claude -p` tick is a fresh
-session. So:
+session:
 
 - There is **no free "warm context" to carry forward**. The model starts blank every tick.
 - `--resume` / `--continue` do NOT recover free context — they **replay the local transcript as input

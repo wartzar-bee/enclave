@@ -1,9 +1,9 @@
 # WASM tool sandbox (defense-in-depth) — scope + first increment
 
-Status: **scoped + flagged hook landed; the WASM runtime is gated.** This is roadmap item #7
-(inspired by ruflo's WASM tool isolation). We already shipped the cheap, high-value slice of that
-idea — the loader-hijack env denylist in `platform/agentd/hooks/guard.py`. This doc scopes the larger piece and
-records what landed now vs what stays gated.
+Status: **scoped + flagged hook landed; the WASM runtime is gated.** Roadmap item #7 (inspired by
+ruflo's WASM tool isolation). We already shipped the cheap, high-value slice — the loader-hijack env
+denylist in `platform/agentd/hooks/guard.py`. This doc scopes the larger piece and records what
+landed now vs what stays gated.
 
 ## Why (threat model)
 Enclave already isolates with **two layers**: a per-agent container (`cap_drop: ALL`,
@@ -11,11 +11,10 @@ Enclave already isolates with **two layers**: a per-agent container (`cap_drop: 
 fires even under `--dangerously-skip-permissions`). Both are coarse: the guard makes an allow/deny
 decision on a *whole* tool call, and the container is the blast radius for *everything* the agent
 runs. The residual risk is a tool call the guard *allows* but whose payload still does something
-unwanted **inside** the container — e.g. an agent-authored script that reaches the network, reads
-broadly across the workspace, or burns CPU. A WASM sandbox adds a **third, fine-grained layer**:
-run the risky tool classes inside a capability-scoped WASM runtime (explicit, per-call grants for
-filesystem preopens + no ambient network/syscalls), so even an allowed call executes with least
-privilege.
+unwanted **inside** the container — an agent-authored script that reaches the network, reads broadly
+across the workspace, or burns CPU. A WASM sandbox adds a **third, fine-grained layer**: run the risky
+tool classes inside a capability-scoped WASM runtime (explicit per-call grants for filesystem preopens
++ no ambient network/syscalls), so even an allowed call executes with least privilege.
 
 ## Which tool classes benefit (the scope)
 | Tool class | Sandbox value | Why |
@@ -38,8 +37,8 @@ covered by the existing container + guard + path checks; sandboxing them is lowe
   the routing decision for HIGH-class calls to `state/sandbox-routing.log` (observability — "what
   *would* be sandboxed") **without** changing allow/deny. Off by default → zero behavior change.
 
-This lets a deployment turn the flag on and *measure* what its agent would route to a sandbox
-before any runtime is wired — and gives the WASM executor a single, tested integration point.
+This lets a deployment turn the flag on and *measure* what its agent would route to a sandbox before
+any runtime is wired, and gives the WASM executor a single tested integration point.
 
 ## What stays gated (NOT wired)
 The WASM **runtime itself** (e.g. `wasmtime`/`wasmer` + a WASI shim, or ruflo's approach) is an

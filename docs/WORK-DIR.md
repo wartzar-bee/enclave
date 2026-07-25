@@ -1,7 +1,6 @@
 # Working folder (`WORK_DIR` → `/work`)
 
-Every Enclave deployment answers one question explicitly: **where does the agent's work actually get
-saved, and how does it stay searchable?** Two mounts, two jobs:
+**Where does the agent's work get saved, and how does it stay searchable?** Two mounts, two jobs:
 
 | Mount | In-container | Role |
 |-------|-------------|------|
@@ -42,8 +41,7 @@ Changing it later: edit `.env`, then `docker compose up -d` to recreate the agen
 
 ## Continuous indexing (fresh recall)
 
-Saved work is only useful if the agent can find it again. Index `/work` so new and changed files
-become searchable:
+Index `/work` so new and changed files become searchable:
 
 - **Host qmd gateway (this deployment's pattern):** the working tree is registered as one or more
   collections in `~/.config/qmd/index.yml`, and a launchd timer (`org.qmd.reembed`, every 15 min)
@@ -64,7 +62,7 @@ automatically.** No manual re-index step in the agent's loop.
 The runtime passes `--add-dir /work` to Claude Code, so the working folder is in scope for both file
 access *and* **skill discovery**: any `.claude/skills/<name>/SKILL.md` in the working tree (its root or
 nested dirs up to its repo root) is discovered automatically, on top of the agent's own base skills in
-`/agent/.claude/skills` (personal level). This gives a clean two-tier model:
+`/agent/.claude/skills` (personal level). A two-tier model:
 
 - **Base skills** → `/agent/.claude/skills` — the agent's built-in capabilities (travel with the image/home).
 - **Project skills** → `/work/.claude/skills` — the working tree's own skills, owned and versioned by

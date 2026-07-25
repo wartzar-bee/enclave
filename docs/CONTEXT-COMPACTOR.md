@@ -1,11 +1,10 @@
 # Within-tick context compactor — scope
 
 **Status:** Tier-1 SHIPPED (`hooks/compactor.py` PreToolUse deny+steer, `COMPACT_ENFORCE`
-report/enforce, `hooks/test_compactor.py`); Tier-2 (rtk rules engine, `policies/compact.toml`) was
-never built — treat §A as backlog. (Header corrected 2026-07-04 — it stale-claimed "not built".)
-Sibling to [`CONTEXT-AND-TICKS.md`](CONTEXT-AND-TICKS.md) (which covers
-*between-tick* fixed cost) — this covers the gap that doc leaves open: **within-tick bloat**, the #1
-live cost driver on forgepod today.
+report/enforce, `hooks/test_compactor.py`); Tier-2 (rtk rules engine, `policies/compact.toml`) never
+built — treat §A as backlog. Sibling to [`CONTEXT-AND-TICKS.md`](CONTEXT-AND-TICKS.md) (which covers
+*between-tick* fixed cost); this covers the gap that doc leaves open: **within-tick bloat**, the #1 live
+cost driver on forgepod today.
 
 ## The problem (measured)
 
@@ -42,20 +41,20 @@ hot tool, ticks of 40–90 mostly-tiny `python3 -c`/`grep`/`ls`/`cat` probes.
 ### Why a NEW mechanism (prompt discipline already failed)
 
 forgepod's `tick.txt` **already** carries a strong efficiency directive — one-shot inspect, pipe big
-output to a file + grep, codegraph-not-grep, delegate bulk work, don't grind past 3 failures. The
-research confirms a "Context Rules" system-prompt block is worth ~15–25% — but **we already have it and
-ticks still hit 76 turns / 5.6M.** *Requesting* discipline isn't holding; the lever is **enforcement**
-(a hook that gates/rewrites the call) and a **hard structural cap** (fewer turns). That's this doc.
+output to a file + grep, codegraph-not-grep, delegate bulk work, don't grind past 3 failures. Research
+values a "Context Rules" system-prompt block at ~15–25% — but **we have it and ticks still hit 76 turns /
+5.6M.** *Requesting* discipline isn't holding; the lever is **enforcement** (a hook that gates/rewrites
+the call) plus a **hard structural cap** (fewer turns).
 
 ## The two levers
 
-This is a two-part fix. They compound; ship both.
+Two-part fix; they compound, ship both.
 
-1. **Shrink each tool output at the boundary** (this doc, §A) — deterministic, $0, no LLM. Distilled
-   from rtk-ai/rtk (vetted 2026-06-26, LEARN-FROM verdict — we author our own; see
-   `knowledge/external-tools.md`). rtk proves ~89% noise removal on shell output with pure rules.
+1. **Shrink each tool output at the boundary** (§A) — deterministic, $0, no LLM. Distilled from
+   rtk-ai/rtk (vetted 2026-06-26, LEARN-FROM — we author our own; `knowledge/external-tools.md`). rtk
+   proves ~89% noise removal on shell output with pure rules.
 2. **Let Claude self-manage within the tick** (§B) — smaller ticks, mid-tick compaction if available,
-   and prompt discipline. Grounded by the headless-context research (`reports/` companion).
+   prompt discipline. Grounded by the headless-context research (`reports/` companion).
 
 ---
 
@@ -85,9 +84,9 @@ spill = true             # write full output to state/.compact/<hash>.txt and re
 
 ### A.2 Integration mechanism — RESOLVED
 
-**`PostToolUse` cannot rewrite a tool result** (Claude Code docs: it observes + can add
-`additionalContext`, but does not replace the result that already entered context). So a "universal
-output filter" is **not** available. The compactor is a **`PreToolUse` shaper**, in two tiers:
+**`PostToolUse` cannot rewrite a tool result** (it observes + can add `additionalContext`, but does not
+replace the result that already entered context). So a "universal output filter" is **not** available.
+The compactor is a **`PreToolUse` shaper**, in two tiers:
 
 - **Tier 1 — context-guard (guaranteed; same mechanism as `delegation_guard`/`build_guard`):** a
   `PreToolUse` hook that **denies + steers** context-bombing calls. PreToolUse deny-with-reason is a
@@ -102,9 +101,9 @@ output filter" is **not** available. The compactor is a **`PreToolUse` shaper**,
   `offset`/`head_limit`, but blunt auto-truncation risks cutting needed content — prefer Tier-1 gating
   + the prompt discipline already in `tick.txt` for those.
 
-Net: **Bash is the big win** (it's the hot tool — `Bash×9`/tick) and gets true compaction; Read/Grep
-get gated + disciplined. Verify `updatedInput` support on our pinned Claude Code version during build;
-if absent, Tier-1 (deny+steer) + the `sf-compact` wrapper still delivers most of the saving.
+Net: **Bash is the big win** (the hot tool — `Bash×9`/tick) and gets true compaction; Read/Grep get
+gated + disciplined. Verify `updatedInput` support on our pinned Claude Code version during build; if
+absent, Tier-1 (deny+steer) + the `sf-compact` wrapper still delivers most of the saving.
 
 ### A.3 Where it lives
 
@@ -131,20 +130,18 @@ if absent, Tier-1 (deny+steer) + the `sf-compact` wrapper still delivers most of
 
 ## §B. Claude self-management within a tick
 
-Findings from the headless-context research (official Anthropic docs; sources at bottom). What's real
-for our `claude -p` path vs what's interactive/SDK-only:
+Findings from the headless-context research (Anthropic docs; sources at bottom). What's real for our
+`claude -p` path vs interactive/SDK-only:
 
 ### B1. Auto-compaction — already protecting us (no action)
 `claude -p` **does** auto-compact headless (default; fires when the window crosses ~83.5%, reserving
 ~33K). This is **why no single tick's window blows past ~200K** even though `cache_read` sums to 5.6M —
 it caps the *window*, not the *per-turn re-read*. Env `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (1–100) only
-shifts *when* it fires within the fixed buffer — **minor, skip.** Auto-compaction doesn't solve our
-cost (turns × window); it just stops the window from being unbounded.
+shifts *when* it fires within the fixed buffer — **minor, skip.**
 
 ### B2. `/clear` + `/compact` — interactive-only; we already get the effect
-No headless equivalent. But **each tick is already a fresh `claude -p` session** = a structural
-`/clear` between ticks. Confirmed correct by the research; nothing to add. The within-tick lever is NOT
-`/clear` — it's §A (smaller window) + B3 (fewer turns).
+No headless equivalent. But **each tick is already a fresh `claude -p` session** = a structural `/clear`
+between ticks. The within-tick lever is NOT `/clear` — it's §A (smaller window) + B3 (fewer turns).
 
 ### B3. Smaller ticks (`MAX_TURNS`) — a real lever, higher-leverage than generic advice credits
 Cost ∝ turns (table above), so a hard turn cap directly bounds the worst-case tick. forgepod=80; the
@@ -156,30 +153,29 @@ Reversible knob in `agent.env`.
 ### B4. Mid-tick tool-result clearing — the "right" tool, but NOT on our path
 The Anthropic **API** has context-editing (`clear_tool_uses_20250919`: drop old tool results, keep last
 N) and the **Agent SDK** has configurable `compaction_control` (threshold + keep-count + custom summary
-prompt; a cookbook shows 204K→82K, −58%). **Neither is exposed by the `claude -p` CLI** — both are
-API/SDK-only. Our compactor (§A) is the **CLI-layer equivalent** (shrink at the boundary instead of
-clearing after the fact). Moving the runtime to the SDK to get real `clear_tool_uses` is a **large
-architectural change** against the deliberate "no SDK, no broker" design in `CONTEXT-AND-TICKS.md` —
-**note as a future option, do not pursue now.**
+prompt; a cookbook shows 204K→82K, −58%). **Neither is exposed by the `claude -p` CLI.** Our compactor
+(§A) is the **CLI-layer equivalent** (shrink at the boundary instead of clearing after the fact). Moving
+the runtime to the SDK for real `clear_tool_uses` is a **large architectural change** against the
+deliberate "no SDK, no broker" design in `CONTEXT-AND-TICKS.md` — **future option, do not pursue now.**
 
 ### B5. `--resume`/`--continue` — stays BANNED (unchanged)
 Helps within a live session but re-bills a growing transcript across ticks (the 136M-token burn).
-`CONTEXT-AND-TICKS.md` already forbids it; the research independently confirms fresh ticks are optimal.
+`CONTEXT-AND-TICKS.md` already forbids it; research confirms fresh ticks are optimal.
 
 ### B6. Prompt discipline — already deployed; tune, don't re-add
 The evidence-based wins (don't re-read; pipe >1KB to a file + grep; batch independent calls; targeted
-offset/limit reads; codegraph-not-grep; delegate bulk) are **already in `tick.txt`.** The research
-values a Context-Rules block at ~15–25% — but since ours is present and ticks still bloat, the marginal
-gain from *more* prompt text is low. Keep it lean; rely on §A enforcement instead. One cheap tweak: a
-crisp 4-line "CONTEXT RULES" block near the TOP of `tick.txt` (it's currently mid-file) so it's read first.
+offset/limit reads; codegraph-not-grep; delegate bulk) are **already in `tick.txt`.** Since it's present
+and ticks still bloat, the marginal gain from *more* prompt text is low — keep it lean, rely on §A
+enforcement. One cheap tweak: move a crisp 4-line "CONTEXT RULES" block to the TOP of `tick.txt` (it's
+currently mid-file) so it's read first.
 
 ### B7. Skills / plugins / MCP — none worth adopting; two free wins
-- **No pre-built context-compaction skill/plugin exists** — the research is clear. Our §A compactor is
-  the move (and rtk confirmed LEARN-FROM, not adopt).
+- **No pre-built context-compaction skill/plugin exists.** Our §A compactor is the move (rtk = LEARN-FROM,
+  not adopt).
 - **MCP tool-search is already deferred** (schemas load on use) — free, on, nothing to do.
 - **Subagents get a fresh isolated window** — heavy sub-work delegated to a subagent (or our off-Opus
-  worker via `route.mjs`, already mandated) keeps its output OUT of the main tick's transcript. This is
-  the same lever as our delegation layer; reinforces "delegate bulk labor."
+  worker via `route.mjs`, already mandated) keeps its output OUT of the main tick's transcript. Same lever
+  as our delegation layer.
 - **Disable unused skills' model-invocation** (`disable-model-invocation: true` in SKILL.md) so their
   descriptions don't sit in context — a small, free trim worth a pass.
 

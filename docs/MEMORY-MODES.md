@@ -21,10 +21,10 @@ memory:
 
 ### `MEMORY=embedded` (standalone)
 qmd runs **inside the agent's container** (or a companion in its compose), indexing **only that agent's own mounted knowledge**.
-- Self-contained, air-gappable, portable — the knowledge ships in the box (`docker compose up`). No host, no network.
+- Self-contained, air-gappable, portable — knowledge ships in the box (`docker compose up`). No host, no network.
 - **No allowlist needed** — physical isolation: the index only holds this agent's data.
 - Runs **CPU-only** in-container (no Metal). Fine for a focused KB: models are tiny (embeddinggemma-300M + Qwen3-reranker-0.6B). Metal only matters at large-corpus scale / frequent re-embed.
-- This is the mode that makes Enclave **shippable** — a customer gets one box: own brain + own memory.
+- The mode that makes Enclave **shippable** — a customer gets one box: own brain + own memory.
 
 ### `MEMORY=shared` (networked)
 Agent connects to an external qmd engine through the **scoped MCP gateway** (below), which enforces a per-agent collection allowlist server-side.
@@ -38,9 +38,9 @@ Agent connects to an external qmd engine through the **scoped MCP gateway** (bel
 
 qmd's `collections` query parameter is **advisory** — omit it and the server defaults to *all* collections, and `status`/instructions advertise every collection name. Relying on it = trusting the model.
 
-Config-scoping (pointing the server at a YAML listing fewer collections) **does not work on a shared index**: the `index.sqlite` is *self-contained* (carries its own `store_collections` table), and `search`/`get` resolve a requested collection **by name against the DB**, not the YAML. An explicit `collections:['security']` resolves straight out of the DB → leak.
+Config-scoping (pointing the server at a YAML listing fewer collections) **does not work on a shared index**: `index.sqlite` is *self-contained* (carries its own `store_collections` table), and `search`/`get` resolve a requested collection **by name against the DB**, not the YAML. An explicit `collections:['security']` resolves straight out of the DB → leak.
 
-→ On a shared index, **the only real control is code-level enforcement in the MCP server**. We do it without forking qmd: a thin wrapper that imports qmd's public `createStore()` API and registers the same tools with the allowlist applied. qmd stays pinned + unmodified.
+→ On a shared index, **the only real control is code-level enforcement in the MCP server**. We do it without forking qmd: a thin wrapper imports qmd's public `createStore()` API and registers the same tools with the allowlist applied. qmd stays pinned + unmodified.
 
 ## The gateway — `platform/agentd/qmd_gateway.mjs`
 
@@ -87,8 +87,8 @@ competence (the Hermes `hermes-agent` "learn-from-success" pattern, adapted to o
   2. *shape* — must read as how-to (numbered/bulleted steps or several lines), not a bare fact;
   3. *dedup* — a local-LLM ($0, off-cap) pass rejects near-duplicates, pointing you to re-learn the
      existing slug instead (which re-versions it). **Fail-open**: if the router is unavailable the skill
-     is admitted but stamped `gated: unverified` — same report-only philosophy as the egress guard;
-     a missing local model never blocks learning. A clean verdict stamps `gated: verified`.
+     is admitted but stamped `gated: unverified` (a missing local model never blocks learning); a clean
+     verdict stamps `gated: verified`.
   Without `--gate`, `learn` is unchanged (back-compat).
 - **RELOAD.** The pre-tick `digest` (→ `state/recall.md`) now surfaces a **Learned skills** section —
   the skills most relevant to the current focus — so a procedure learned earlier comes *back* when it's

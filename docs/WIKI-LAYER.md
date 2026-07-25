@@ -40,18 +40,18 @@ Pages link with `[[page-stem]]`.
 `wiki.py` is baked into the image at `/workspace/platform/agentd/wiki.py` (stdlib + pyyaml, cross-platform).
 
 ## One linked vault — knowledge + operational memory are ONE graph
-The wiki is not a separate silo from the agent's operational memory. Durable knowledge lives in two
-complementary substrates under the home, **both** markdown, **both** linked by `[[wikilinks]]`:
+Durable knowledge lives in two complementary substrates under the home, **both** markdown, **both**
+linked by `[[wikilinks]]`:
 - **`knowledge/`** — the curated wiki (concepts/entities/sources/syntheses): the "encyclopedia."
 - **`memory/`** + **`skills/`** (via `memory.py`) — operational/episodic memory (facts, decisions,
   lessons) and learned procedures: the "working memory + playbook."
 
 They are **one graph**, not two piles. `memory.py remember … --related <page-stem>` (and `memory.py
 link <mem> <page-stem>`) write `related: [[…]]` so a lesson/decision is a **first-class graph node**
-that links into `knowledge/`. `wiki.py graph --brain` then traverses **wiki + memory + skills** as a
+linking into `knowledge/`. `wiki.py graph --brain` traverses **wiki + memory + skills** as a
 single vault — `backlinks` finds every memory that cites a concept, `khop` pulls a topic's whole
 neighborhood across both, `stats` surfaces orphaned memories to link. This makes the brain navigable
-as a graph (not just qmd-searchable), and keeps the "index points, the markdown stores, the accelerator
+as a graph (not just qmd-searchable), keeping the "index points, markdown stores, accelerator
 is disposable" discipline across the *whole* memory, not just the wiki half.
 
 ## Durability — secret-safe by design
@@ -79,8 +79,8 @@ lesson or that landed in `inbox.md`, and **git history is forever** — so durab
   upgrades when installed: `age` / `git-crypt` for transparent per-file at-rest encryption.)
 
 The scan-gate and the encryption share one implementation — `platform/agentd/vault_snapshot.py` — so
-the secret patterns have a single source of truth across the CLI and the runtime. Net: memory is saved
-by default, a leaked secret can never reach history, and the off-machine copy can be ciphertext.
+the secret patterns have a single source of truth across CLI and runtime. Net: memory is saved by
+default, a leaked secret can never reach history, and the off-machine copy can be ciphertext.
 
 ## How an agent uses it
 The agent's `CLAUDE.md` points it at `knowledge/` and the workflow. On a new source: `wiki.py new …`,

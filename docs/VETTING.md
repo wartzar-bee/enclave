@@ -54,8 +54,8 @@ maintained — legit, but the verdict stands and strengthens. Verdict unchanged:
 idea"):** do NOT install Cognee as an accelerator. The wiki already covers memory; the cognee stub
 holds the contract slot. If graph traversal is genuinely needed, **author our own minimal graph
 layer** (stdlib + `networkx` + sqlite — each individually reviewable) behind the same contract,
-matching the comic-creator precedent. If someone still insists on Cognee, it must run **isolated in
-its own container** with `TELEMETRY_DISABLED=1`, `ENV=dev`, a pinned local LLM endpoint, and egress
+matching the comic-creator precedent. If Cognee is insisted on, it must run **isolated in its own
+container** with `TELEMETRY_DISABLED=1`, `ENV=dev`, a pinned local LLM endpoint, and egress
 firewalled — a heavy lift for an opt-in the wiki already replaces.
 
 ## `wasmtime` (wasmtime-py, #7 WASM runtime) — 45.0.0 — VERDICT: PROCEED WITH CONDITIONS (2026-06-16, re-verified 2026-06-18)

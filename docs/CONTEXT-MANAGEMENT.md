@@ -3,7 +3,7 @@
 How other frameworks solve "the agent's context fills up → cost explodes / it degrades", and the design
 we'll adopt. Grounds the cost lesson from the forgepod run ($112/8h, 64.3M cache_read = 99% of the bill).
 
-## The field has converged (we're not reinventing the wheel)
+## The field has converged
 Detection / trigger / action / who-decides, across Cline, Roo, OpenHands, Aider, LangChain, Manus,
 Cognition/Devin, Claude Code itself:
 
@@ -34,33 +34,32 @@ TRIGGER + ENFORCEMENT in the harness and make the handoff a **deterministic temp
   `compact_20260112` with an explicit `trigger`. → for true in-session compaction we'd move to the SDK/API.
 - True window: 200k standard, **1M for `[1m]` models** (statusline hardcodes 200k — bug; don't trust it).
 
-## ⭐ The agent must PREPARE its own handoff before the clear (operator's point — and the standard)
-My token-ceiling backstop was WRONG: it `rm`s the session blind, with no chance for the agent to prepare.
-The correct flow is "prep to resume → write the status file → THEN clear" — and both OpenClaw and ruflo
-implement exactly this:
+## ⭐ The agent must PREPARE its own handoff before the clear
+A blind token-ceiling backstop that `rm`s the session gives the agent no chance to prepare. Correct flow:
+"prep to resume → write the status file → THEN clear". Both OpenClaw and ruflo implement this:
 
 - **OpenClaw "memory flush"** (`/concepts/compaction`, `/reference/session-management-compaction`) — THE
   reference implementation. A **SOFT threshold fires BELOW the hard compaction limit**
   (`contextTokens > (window − reserveTokens) − softThresholdTokens`; soft ≈ 4k). When it trips, OpenClaw
-  runs a **silent agentic turn** that tells the AGENT to "save important context to memory files" — **the
-  agent itself decides what's durable and writes it** to `MEMORY.md` / `memory/<date>.md` BEFORE any
+  runs a **silent agentic turn** telling the AGENT to "save important context to memory files" — **the
+  agent decides what's durable and writes it** to `MEMORY.md` / `memory/<date>.md` BEFORE any
   summarization. THEN the harness does the mechanical thread-summary. Hybrid: **agent authors the durable
-  handoff; harness does the lossy summary.** Runs the housekeeping turn on a **cheap/local model override**;
-  replies `NO_REPLY` so it's suppressed; idempotent (one flush/cycle). Memory is 2-tier: curated always-
-  loaded `MEMORY.md` + raw dated working logs, with a "distill up" habit.
+  handoff; harness does the lossy summary.** The housekeeping turn runs on a **cheap/local model override**,
+  replies `NO_REPLY` (suppressed), idempotent (one flush/cycle). Memory is 2-tier: curated always-loaded
+  `MEMORY.md` + raw dated working logs, with a "distill up" habit.
   - ⚠ Two failure modes to copy-proof against: (a) the flush only covers compaction, **not `/reset`/end**
-    (their open bug #8185) → so **write a handoff on EVERY exit**, not just under token pressure; (b) it's
+    (their open bug #8185) → **write a handoff on EVERY exit**, not just under token pressure; (b) it's
     best-effort — one huge turn can leap past the soft threshold → keep a buffer + periodic save points.
 - **ruflo / claude-flow** — `hooks session-end --generate-summary` makes the agent write its own handoff +
   a **`nextSession` "exact next action" pointer** as its last act; the native **`PreCompact` hook** writes
-  state to disk before in-session compaction; and a **"store decisions after every step"** discipline means
-  the handoff is continuously current, never reconstructed from soon-to-be-lost context. Memory lives in an
+  state to disk before in-session compaction; a **"store decisions after every step"** discipline keeps the
+  handoff continuously current, never reconstructed from soon-to-be-lost context. Memory lives in an
   external store split by **namespace** (decisions/patterns/tasks/blockers) so a resuming run fetches only
-  the relevant slice, not the whole history.
+  the relevant slice.
 
 **Conclusion:** never clear blind. The harness **SIGNALS** at a soft threshold → the agent **PREPARES** its
-own handoff (free-form, self-selected, like a human "prep to resume" / our NOW.md) → **then** clear/reseed.
-The agent authors the durable part; the harness only enforces the timing + the hard floor.
+own handoff (free-form, self-selected, like our NOW.md) → **then** clear/reseed. The agent authors the
+durable part; the harness enforces only the timing + the hard floor.
 
 ## The design we'll adopt (fits our headless + file-handoff topology)
 Best fit = **Manus file-offload + Cline `new_task` fresh-session handoff**, harness-driven, agent-aware:
@@ -87,9 +86,9 @@ Best fit = **Manus file-offload + Cline `new_task` fresh-session handoff**, harn
    compact a live `-p` session" limit entirely. Bigger change; revisit if the hook approach isn't enough.
 
 ## Net
-The earlier "just use short ticks" was a crude proxy. The real control = **agent-aware budget warning
+"Just use short ticks" was a crude proxy. The real control = **agent-aware budget warning
 (harness-measured) → deterministic bank → fresh-session handoff**, with file-offload to stretch runway.
-Ticks can be as long as they're productive; the budget signal (not a fixed turn cap) is the brake.
+Ticks can run as long as they're productive; the budget signal (not a fixed turn cap) is the brake.
 
 ## Sources
 Comparative table: wasnotwas.com/writing/context-compaction · Manus: manus.im/blog/Context-Engineering-for-AI-Agents

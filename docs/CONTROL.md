@@ -5,9 +5,9 @@ controlling starts/stops/restarts/kicks one that already exists. Same trust mode
 plus a host-side **control watcher**, with authorization ("only the manager may control") enforced by
 **mount topology**, not a network ACL.
 
-Why it exists: without it, only the operator can start/stop/restart a pod. So when a manager finds a
-sub-agent wedged (a broken hook, a crash loop, a stale tick), it has to escalate and *wait*. With the
-control queue, the manager drops a one-line spec and the host acts in seconds — no operator round-trip.
+Why it exists: otherwise only the operator can start/stop/restart a pod, so a manager finding a sub-agent
+wedged (broken hook, crash loop, stale tick) must escalate and *wait*. With the control queue the manager
+drops a one-line spec and the host acts in seconds — no operator round-trip.
 
 ## The pieces
 
@@ -16,9 +16,8 @@ control queue, the manager drops a one-line spec and the host acts in seconds �
 - **Control spec** — a tiny YAML/JSON file the manager writes to `incoming/` naming a target agent and an
   action. Format below.
 - **Control watcher** — `enclave fleet control-watch <fleet>/_control` runs a host daemon that watches
-  `incoming/`, and for each spec runs the requested verb via `enclave fleet <verb> <id>`, then moves the
-  spec to `processed/` (or `failed/` with a `.error`). It runs on the host, so it may use docker; the
-  manager never does.
+  `incoming/`, runs each spec's verb via `enclave fleet <verb> <id>`, then moves the spec to `processed/`
+  (or `failed/` with a `.error`). It runs on the host, so it may use docker; the manager never does.
 
 ```
 manager agent                 host                                 target sub-agent

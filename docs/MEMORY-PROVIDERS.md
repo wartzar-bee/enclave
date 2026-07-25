@@ -1,8 +1,8 @@
 # Pluggable memory providers
 
-Memory in Enclave is a **stack of complementary layers behind one interface**, not a single tool.
-The wiki is the always-on source of truth; everything else is an opt-in accelerator that *indexes
-into* the wiki (never replaces it as the source of truth).
+Memory in Enclave is a **stack of complementary layers behind one interface**. The wiki is the
+always-on source of truth; everything else is an opt-in accelerator that *indexes into* the wiki,
+never replacing it as the source of truth.
 
 ## The three axes (complementary, not interchangeable)
 | Layer | Question it answers | Default | Opt-in options |
@@ -19,9 +19,9 @@ into* the wiki (never replaces it as the source of truth).
 > don't reinvent). **Cognee was evaluated and REJECTED** (see `docs/VETTING.md`: 127 deps + telemetry
 > on by default); a generic graph engine isn't needed when these two focused layers cover the real needs.
 
-Cross-session user/preference modeling (Mem0/Honcho) is a further opt-in, **lower priority** — and
-flagged: Mem0 has a broken telemetry opt-out, Honcho is AGPL + needs Postgres. Both default to cloud
-LLM/embedding egress; only adopt pinned to a local endpoint, after a security review.
+Cross-session user/preference modeling (Mem0/Honcho) is a further opt-in, **lower priority**: Mem0 has
+a broken telemetry opt-out, Honcho is AGPL + needs Postgres. Both default to cloud LLM/embedding
+egress; only adopt pinned to a local endpoint, after a security review.
 
 ## The interface (one contract, swappable backends)
 Providers are exposed to the agent through the **scoped MCP gateway** (`platform/agentd/qmd_gateway.mjs`
@@ -64,9 +64,9 @@ Rules:
   default cloud LLM egress, and **telemetry ON BY DEFAULT** (machine-level persistent ID + API-key
   tracking hash, opt-out via `TELEMETRY_DISABLED`). Per the hard rule, if graph memory is genuinely
   needed, author our OWN minimal graph layer (stdlib + networkx + sqlite) behind this same contract.
-  `query` returns wiki keyword hits as a floor plus a "graph not provisioned" notice until enabled. The interface
-  does not change when the engine is enabled — only the `query` backend does (that is the point of
-  the contract). Plug-point: `python3 cognee_provider.py --http <port>` → `.mcp.json`.
+  `query` returns wiki keyword hits as a floor plus a "graph not provisioned" notice until enabled;
+  enabling the engine swaps only the `query` backend, not the interface. Plug-point:
+  `python3 cognee_provider.py --http <port>` → `.mcp.json`.
 
 See `MEMORY-MODES.md` for embedded-vs-shared deployment (where each provider physically runs) and
 `WIKI-LAYER.md` for the default store.
