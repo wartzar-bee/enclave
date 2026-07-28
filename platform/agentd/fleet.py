@@ -547,6 +547,8 @@ def _compose(a, *verb, timeout=180):
     # Passing an explicit `-f` disables Compose's automatic merge of docker-compose.override.yml, so
     # include it ourselves when present (standard Compose convention) — otherwise a CLI/dashboard
     # up/restart silently drops override-only mounts (e.g. studio host-mounted tools/knowledge).
+    if verb and verb[0] in ("up", "restart"):
+        _sync_framework()      # boot on LATEST: ff the bind-mounted clone to origin/main (fail-safe)
     cmd = ["docker", "compose", "-f", cfg]
     override = pathlib.Path(cfg).with_name("docker-compose.override.yml")
     if override.is_file():
@@ -554,6 +556,30 @@ def _compose(a, *verb, timeout=180):
     cmd += ["--project-directory", a["dir"], *verb]
     _audit(verb[0], a["id"], " ".join(verb[1:]))
     return subprocess.run(cmd, timeout=timeout)
+
+
+def _sync_framework():
+    """Fast-forward the enclave clone the fleet bind-mounts to origin/main, so every pod boots on the
+    LATEST framework. FF-ONLY + clean-tree-only: never rewrites divergent history, never clobbers local
+    edits — fails safe (logs a reason and leaves the clone untouched). Runs before every up/restart.
+    Disable with ENCLAVE_AUTO_SYNC=off; branch via ENCLAVE_SYNC_BRANCH (default main)."""
+    if os.environ.get("ENCLAVE_AUTO_SYNC", "on").lower() == "off":
+        return
+    root = pathlib.Path(__file__).resolve().parents[2]     # the enclave repo root
+    if not (root / ".git").is_dir():
+        return
+    def _git(*a):
+        return subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True)
+    if _git("status", "--porcelain").stdout.strip():
+        print("  ⟳ framework sync skipped: local edits in the clone (leaving as-is)"); return
+    branch = os.environ.get("ENCLAVE_SYNC_BRANCH", "main")
+    if _git("fetch", "origin", branch).returncode != 0:
+        print("  ⟳ framework sync skipped: fetch failed"); return
+    before = _git("rev-parse", "--short", "HEAD").stdout.strip()
+    if _git("merge", "--ff-only", f"origin/{branch}").returncode != 0:
+        print(f"  ⟳ framework sync skipped: {before} diverged from origin/{branch} (not fast-forwardable)"); return
+    after = _git("rev-parse", "--short", "HEAD").stdout.strip()
+    print(f"  ⟳ framework {'already latest' if before == after else before + ' → ' + after} (origin/{branch})")
 
 
 def cmd_up(aid):
