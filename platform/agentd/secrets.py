@@ -45,10 +45,14 @@ _FORMAT_RE = [(re.compile(p), name) for p, name in FORMATS]
 LABEL_VALUE = (
     # `\b` cannot fire after an underscore, so a plain \b(password) never matched RR_PASSWORD= —
     # the exact leak class the write-blocker was built for.
-    r"(?i)[A-Za-z0-9_]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|client[_-]?secret|bearer)"
+    r"(?i)[A-Za-z0-9_]*(?:password|passwd|secret|api[_-]?key|access[_-]?token|client[_-]?secret|bearer"
+    r"|seed(?:[_-]hex)?|priv(?:ate)?[_-]?key|signing[_-]?key)"
     r"\s*[:=]\s*['\"]?(?P<val>[A-Za-z0-9_\-./+=]{12,})",
-    # env-assignment: an uppercase credential name takes any non-space value (passwords carry punctuation)
-    r"[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|CREDENTIALS?)"
+    # env-assignment: an uppercase credential name takes any non-space value (passwords carry punctuation).
+    # SEED/PRIV_KEY/SIGNING_KEY joined 2026-07-29: channel-lab catted MCP_ED25519_SEED_HEX=<64 hex> into
+    # its transcript and NOTHING here matched — pure hex also slips looks_random (no uppercase), so a
+    # key-material label family is the only net that catches it without flagging every git SHA in prose.
+    r"[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|CREDENTIALS?|SEED(?:_HEX)?|PRIV(?:ATE)?_KEY|SIGNING_KEY)"
     r"\s*[:=]\s*['\"]?(?P<val>\S{8,})",
     # Authorization header / curl -H form (opaque token, no prefix, no key name)
     r"(?i)authorization\s*[:=]\s*['\"]?(?:bearer|basic|token)\s+(?P<val>\S{12,})",
@@ -162,7 +166,7 @@ def scan_text(text, with_kind=False):
 # Both quote characters, on purpose. Written with only `"` this missed `password='...'` — the very
 # same single-quote blind spot that made the orchestrator's shell hook useless on macOS.
 _RED_KV = re.compile(
-    r"\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY)[A-Z0-9_]*)"
+    r"\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|SEED(?:[_-]HEX)?|SIGNING[_-]?KEY)[A-Z0-9_]*)"
     r"(\\?['\"]?\s*[=:]\s*)(?P<val>\\?['\"]?[^\s\"']{6,}\\?['\"]?)", re.I)
 _RED_AUTH = re.compile(r"((?:authorization|proxy-authorization)\s*:\s*)(bearer|basic|token)(\s+)"
                        r"([^\s\"'\\]{8,})", re.I)
@@ -235,6 +239,9 @@ def selftest():
     ck("rr-password", scan_text(fx("RR_PASSWORD=", "Sw0rdfish!longenough")) is not None)
     ck("auth-header", scan_text(fx("Authorization: Bearer ", "eyJhbGciOiJIUzI1NiJ9", ".abcdefghij")) is not None)
     ck("bsky-app-pw", scan_text("App password: " + fx("3r2s-e726", "-ct5d-y4ee")) is not None)
+    ck("seed-hex", scan_text(fx("MCP_ED25519_SEED_HEX=", "66a9dc160bf29a6952" + "ab" * 23)) is not None)
+    ck("seed-redacts", "66a9dc16" not in redact(fx("MCP_ED25519_SEED_HEX=", "66a9dc160bf29a6952" + "ab" * 23)))
+    ck("git-sha-prose-ok", scan_text("released as commit " + "66a9dc160bf29a6952aabbccddee001122334455") is None)
     # reference, not credential
     ck("recipe-ref", scan_text("imap_code{secret:google-scribepod.env,x:1}") is None)
     ck("env-ref", scan_text("password: $RR_PASSWORD") is None)
