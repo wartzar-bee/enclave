@@ -196,14 +196,22 @@ def cfg_persistence(env):
 
 
 def cfg_warm_session(env):
-    """A continuous (daemon) pod that resumes a warm session each tick bloats context + carries stale
-    cross-tick beliefs (the acceptEdits-carryover). The proven default for continuous agents is
-    WARM_SESSION=0; a daemon without it is a WARN (not error — some pods legitimately want warm)."""
+    """A continuous (daemon) pod that resumes a warm session UNBOUNDED bloats context + carries stale
+    cross-tick beliefs (the acceptEdits-carryover). Two sanctioned configs: WARM_SESSION=0 (cold each
+    tick) or WARM_SESSION=auto with context epochs (EPOCH_TICKS>=1 — tick_feeder bounds the session
+    deterministically at the context/wall limit, adaptive-ticks 2026-07-28). Only an unbounded warm
+    resume is a WARN (not error — some pods legitimately want warm)."""
     if env.get("RUNTIME_MODE", "").lower() != "daemon":
         return None
-    if env.get("WARM_SESSION", "1") != "0":
-        return ("warn", "continuous (daemon) pod without WARM_SESSION=0 — warm resume bloats context and "
-                        "carries stale cross-tick state. Set WARM_SESSION=0 (durable files carry continuity).")
+    warm = env.get("WARM_SESSION", "1")
+    if warm == "0":
+        return None
+    if warm == "auto" and env.get("EPOCH_TICKS", "0") not in ("", "0"):
+        return None                                          # epoch-bounded warm session — sanctioned
+    if warm != "0":
+        return ("warn", "continuous (daemon) pod with an UNBOUNDED warm session — bloats context and "
+                        "carries stale cross-tick state. Set WARM_SESSION=0, or WARM_SESSION=auto with "
+                        "EPOCH_TICKS>=1 (epoch-bounded).")
     return None
 
 
@@ -330,6 +338,8 @@ def _selftest():
     ck("warm fires: daemon + warm", cfg_warm_session({"RUNTIME_MODE":"daemon","WARM_SESSION":"1"}) and cfg_warm_session({"RUNTIME_MODE":"daemon","WARM_SESSION":"1"})[0]=="warn")
     ck("warm silent: daemon + WARM_SESSION=0", cfg_warm_session({"RUNTIME_MODE":"daemon","WARM_SESSION":"0"}) is None)
     ck("warm silent: non-daemon", cfg_warm_session({"RUNTIME_MODE":"oneshot","WARM_SESSION":"1"}) is None)
+    ck("warm silent: daemon + auto + epochs", cfg_warm_session({"RUNTIME_MODE":"daemon","WARM_SESSION":"auto","EPOCH_TICKS":"1"}) is None)
+    ck("warm fires: daemon + auto NO epochs", cfg_warm_session({"RUNTIME_MODE":"daemon","WARM_SESSION":"auto","EPOCH_TICKS":"0"}) and cfg_warm_session({"RUNTIME_MODE":"daemon","WARM_SESSION":"auto"})[0]=="warn")
     # delivery: a FRESH heartbeat over an EMPTY source glob is the failure that looks like health —
     # the daemon runs, the timestamp is current, and nothing is flowing because the agent writes
     # somewhere else (scoutpod, 2026-07-22).
