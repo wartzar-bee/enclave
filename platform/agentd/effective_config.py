@@ -112,9 +112,9 @@ def collect(agent_dir):
     m("spend_cap", cap not in ("", "0"), f"weekly cap ${cap}" if cap not in ("", "0") else "cap DISABLED (0)",
       weekly_usd=cap)
 
-    m("decision_capture", brain in ("api", "local"),
+    m("decision_capture", True,
       "finish-contract (runtime-written decisions.jsonl)" if brain in ("api", "local")
-      else "claude path: convention only (no structural capture yet)")
+      else "capture-hook: state/decisions.jsonl from the transcript every tick (explicit DECISION:/WHY: verbatim, else one implicit record)")
 
     m("warm_session", env.get("WARM_SESSION", "1") != "0",
       "session persists across ticks" if env.get("WARM_SESSION", "1") != "0" else "WARM_SESSION=0 (fresh each tick)")
