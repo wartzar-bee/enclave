@@ -46,3 +46,17 @@ context is wiped between ticks, and the next tick re-derives the world from scra
   seeded is a skill nobody has tested.
 The harness counts these as the `memory` write-class every tick — it is measured, and a long run of
 zero is a finding against the pod.
+
+## 4. Hand off what you can't do yourself — `state/outbox/` (typed envelope)
+You can't `git push`, write to another pod, or fire an operator-gated action — you PREPARE, a studio
+actor FIRES. Hand it off as ONE typed envelope, never a bespoke filename the studio has to know about:
+
+    python3 platform/agentd/handoff.py emit --to <pod|studio|operator> --type <type> \
+        --title "one-line summary" --payload '{...}'   # or --payload-file <f>
+
+Writes `state/outbox/<utc>-<type>.json`. The off-Opus handoff-broker dispatches on `type`:
+- **routing** types (`distribution-help`) auto-deliver to `to`'s inbox; the recipe returns to you.
+- **judgment/operator** types (`maintainer-queue`, `board-request`, `glama-claim`, `operator-fire`,
+  `release`, `cursor-correction`, `vision-captcha`) are surfaced for a studio session to fire.
+An unknown `type` is surfaced, never dropped. This is the parsed handoff protocol — do NOT invent new
+`state/*-queue.md` / `*-request*` filenames; emit an envelope so nothing you prepare rots unseen.
