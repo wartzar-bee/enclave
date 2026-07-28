@@ -47,6 +47,8 @@ VAULT_GITIGNORE = (
     "uploads/\n"
     "*.log\n"
     "*.enc\n"           # encrypted vault archives live outside git
+    "__pycache__/\n"    # compiled python caches: recompiled every tick, re-staged each snapshot,
+    "*.pyc\n"           # and their format-literals (e.g. `TOKEN=`) false-trip the secret gate
     ".DS_Store\n"
 )
 

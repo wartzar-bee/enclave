@@ -107,6 +107,12 @@ def is_reference(val):
     # capture is what matters; a literal credential never begins with `{name}`.
     if re.match(r"^\{[A-Za-z_]\w*\}", raw) or re.match(r"^\{\{[A-Za-z_]", raw):
         return True
+    # A doc/template placeholder in ANGLE BRACKETS: `Authorization: token <GITEA_TOKEN>`,
+    # `<trunk-token>`, `<your-api-key>` — the universal "fill this in" convention in the HTTP-header
+    # examples an account-provisioning pod writes constantly. A real credential never begins with a
+    # literal `<identifier>`; blocking these false-froze channel-lab's brain backup (2026-07-25).
+    if re.match(r"^<[A-Za-z_][\w\- ]*>", raw):
+        return True
     # $VAR, $(cmd), ${A:-$B}, re.compile(...), os.environ[...]
     if v[0] == "$" or v.lstrip("-:").startswith("$") or "(" in v or "[" in v:
         return True
