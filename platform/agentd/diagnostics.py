@@ -168,6 +168,22 @@ def _anomalies(records, now, window):
     prior = records[:-1]
     recent_n = prior[-10:] if len(prior) >= 3 else prior  # rolling baseline excluding latest
 
+    # Epoch-aware gate (adaptive ticks, 2026-07-29): under context epochs the per-turn context is
+    # DESIGNED to climb toward the epoch boundary (CTX_EPOCH_TOKENS, default 140k) before the feeder
+    # finalizes the session — an increment near the boundary is the mechanism working, not bloat
+    # (five false ESCALATEs in the first post-flip hour). Usage rows carry `inc` only on the epoch
+    # path, so its presence identifies the mode. Real bloat under epochs = per-turn context ABOVE
+    # the boundary (+25% headroom): the feeder failed to cut the session.
+    epoch_cap = None
+    if latest.get("inc") is not None:
+        try:
+            epoch_cap = 1.25 * float(os.environ.get("CTX_EPOCH_TOKENS") or 140_000)
+        except (TypeError, ValueError):
+            epoch_cap = 1.25 * 140_000
+
+    def _epoch_ok(per_turn_val):
+        return epoch_cap is not None and per_turn_val <= epoch_cap
+
     def add(sev, key, title, evidence, confidence, cause=None, fix=None):
         out.append({"severity": sev, "key": key, "title": title, "evidence": evidence,
                     "confidence": confidence, "cause": cause, "fix": fix})
@@ -177,7 +193,7 @@ def _anomalies(records, now, window):
     # Compare PER-TURN, not per-tick (see _ctx_per_turn): a 30-turn tick is not an explosion.
     pt_now = _ctx_per_turn(latest)
     ctx_base = _avg([_ctx_per_turn(r) for r in recent_n]) or 0
-    if ctx_base > 0 and pt_now >= 2.0 * ctx_base and pt_now > 60_000:
+    if ctx_base > 0 and pt_now >= 2.0 * ctx_base and pt_now > 60_000 and not _epoch_ok(pt_now):
         ratio = pt_now / ctx_base
         # monotonic climb over the tail ⇒ high confidence it's a real growth trend, not one spike
         tail = [_ctx_per_turn(r) for r in records[-5:]]
@@ -210,7 +226,7 @@ def _anomalies(records, now, window):
     turns_l = int(latest.get("turns") or 0) or int(rt_l.get("tool_calls") or 0) + 1
     per_turn = ctx_now / max(1, turns_l)
     if not any(a["key"] == "context_explosion" for a in out) and ctx_now > 500_000 \
-            and per_turn >= 80_000 and (big or (grew or 0) >= 150):
+            and per_turn >= 80_000 and (big or (grew or 0) >= 150) and not _epoch_ok(per_turn):
         sev = "high" if (ctx_now > 2_000_000 and (grew or 0) >= 150) else "med"
         ev = f"~{_human(ctx_now)} tokens this tick (~{_human(per_turn)}/turn over {turns_l} turns)" + (
             f", {'up' if grew >= 0 else 'down'} {abs(grew):.0f}% vs {'last week' if win == 'week' else 'earlier'}"
@@ -236,7 +252,7 @@ def _anomalies(records, now, window):
     tail = [_context(r) for r in records[-6:]]
     if len(tail) >= 5:
         incs = sum(1 for a, b in zip(tail, tail[1:]) if b > a)
-        if incs >= len(tail) - 1 and tail[-1] > 1.4 * (tail[0] or 1):
+        if incs >= len(tail) - 1 and tail[-1] > 1.4 * (tail[0] or 1) and not _epoch_ok(pt_now):
             add("med", "prompt_creep", "Prompt size grows on nearly every tick",
                 f"context climbed {_human(tail[0])} → {_human(tail[-1])} over {len(tail)} ticks",
                 "high", cause="monotonic context growth",

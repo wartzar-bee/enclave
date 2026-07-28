@@ -169,3 +169,31 @@ def test_context_bloat_is_per_turn():
 
 
 test_context_bloat_is_per_turn()
+
+
+def test_epoch_bounded_context_is_not_bloat():
+    """Adaptive ticks: per-turn context climbing toward CTX_EPOCH_TOKENS (default 140k) inside an
+    epoch is the feeder's designed boundary, not bloat — only ABOVE the cap (+25% headroom) may
+    context_explosion fire for records carrying `inc`. Legacy rows (no `inc`) keep the old rule."""
+    import time as _t
+    now = _t.time()
+
+    def erec(i, ctx, turns, inc=1):
+        r = _ctxrec(now, i, ctx, turns)
+        if inc is not None:
+            r["inc"] = inc
+        return r
+
+    designed = [erec(i, 400_000, 8) for i in range(8)] + [erec(8, 1_100_000, 9)]  # ~122k/turn
+    keys = {a["key"] for a in D.compute(designed, now)["anomalies"]}
+    assert "context_explosion" not in keys, "epoch increment under the boundary must NOT alarm"
+    runaway = [erec(i, 400_000, 8) for i in range(8)] + [erec(8, 2_000_000, 10)]  # 200k/turn
+    assert any(a["key"] == "context_explosion" for a in D.compute(runaway, now)["anomalies"]), \
+        "per-turn context ABOVE the epoch cap MUST still alarm (feeder failed to cut)"
+    legacy = [erec(i, 200_000, 8, inc=None) for i in range(8)] + [erec(8, 1_400_000, 10, inc=None)]
+    assert any(a["key"] == "context_explosion" for a in D.compute(legacy, now)["anomalies"]), \
+        "legacy (non-epoch) rows keep the old per-turn rule"
+    print("ok: epoch-bounded context not flagged; runaway + legacy still caught")
+
+
+test_epoch_bounded_context_is_not_bloat()
