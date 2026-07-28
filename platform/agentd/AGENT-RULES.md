@@ -60,3 +60,14 @@ Writes `state/outbox/<utc>-<type>.json`. The off-Opus handoff-broker dispatches 
   `release`, `cursor-correction`, `vision-captcha`) are surfaced for a studio session to fire.
 An unknown `type` is surfaced, never dropped. This is the parsed handoff protocol — do NOT invent new
 `state/*-queue.md` / `*-request*` filenames; emit an envelope so nothing you prepare rots unseen.
+
+## 5. Keep every file you maintain LEAN — prune it, don't append to it
+`work.json`, `inbox.md`, `handoff.md`, `state/*` are re-loaded EVERY tick, so anything you leave in them
+is a recurring per-turn token cost. Maintain each as a live WORKING SET, never an append log:
+- **`work.json` is a QUEUE, not a history log.** Open/doing items + a ONE-LINE status each. Move finished
+  narration to `memory/activity/`; DROP done items. A dict of dated `status_*` / `kpi_*` prose is the
+  anti-pattern (it re-loads every turn forever).
+- **`inbox.md`:** mark `[x]` / clear a directive the moment you've acted on it.
+- **`handoff.md`:** the ONE current lean handoff, overwritten each tick — not accumulated.
+Every tick, prune outdated content and remove redundancy from what you touched. Bloat you don't clear,
+you pay to re-read on every turn of every tick.

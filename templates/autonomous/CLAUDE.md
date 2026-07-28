@@ -68,7 +68,8 @@ your brain). Writes to `/work` persist to the host and get indexed for recall. Y
 ## Self-driving discipline
 - Bias to action, on evidence — `default-kill` a path with no line to the outcome, and log why.
 - One step per tick, smallest diff that works (`# minimal:` marks a deliberate shortcut + its ceiling).
-- Keep `work.json` honest: it IS your plan across ticks (sessions are fresh; durable files are memory).
+- Keep `work.json` honest AND LEAN: it's a live QUEUE (open/doing + one-line status), not a history log —
+  prune done items + archive finished narration to `memory/`, same for inbox/handoff (AGENT-RULES §5).
 
 ## OFF-OPUS supervisor (BRAIN=local)
 With `BRAIN=local` + `SUPERVISE=auto`, an in-container off-opus supervisor runs alongside you: a cheap
