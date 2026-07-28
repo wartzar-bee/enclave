@@ -30,6 +30,13 @@ cd "$AGENT_DIR" || exit 1
 # EPHEMERAL and wiped on restart — an agent that builds product there loses it (demopod lost a
 # whole CI-guardrail build this way). Guarantee a persistent work dir and tell the agent to use it.
 mkdir -p "$AGENT_DIR/work" 2>/dev/null; export WORK_PERSIST="$AGENT_DIR/work"
+# Re-sync the co-located hooks from the mounted framework at boot. They are copied into /agent once at
+# init; without this, a framework hook fix ships publicly but every existing pod keeps executing its
+# stale /agent/.claude/hooks copy forever (capture.py redaction gap stayed dead in-fleet this way).
+HOOKS_SRC="${TOOLS_ROOT:-/workspace}/platform/agentd/hooks"
+if [ -d "$HOOKS_SRC" ] && [ -d "$AGENT_DIR/.claude/hooks" ]; then
+  cp "$HOOKS_SRC"/*.py "$AGENT_DIR/.claude/hooks/" 2>/dev/null || true
+fi
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
 LOG="$AGENT_DIR/logs/runner.log"
