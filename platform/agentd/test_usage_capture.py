@@ -125,6 +125,57 @@ def test_stream_pipeline_unknown_model_ratio_1():
         assert cal["fresh-model"]["n"] == 1                      # learned from the first tick
 
 
+def test_stream_multi_result_epoch_records_deltas():
+    """CONTEXT EPOCHS (2026-07-26): one process, one result PER INCREMENT. total_cost_usd is
+    session-CUMULATIVE (probe-verified), so records must carry the per-increment DELTA in cost_usd
+    — summing usage.jsonl must equal the real session bill, not double-count it — plus the
+    cumulative in cost_epoch_usd and an inc counter. The sentinel is (re)written at every result."""
+    with tempfile.TemporaryDirectory() as d:
+        sd = pathlib.Path(d) / "state"
+        sd.mkdir()
+        stream = "\n".join([
+            _assistant("m", 100, 100000, 90000, 500),
+            _result(0.50),                                   # increment 1: $0.50 cumulative
+            _assistant("m", 100, 190000, 400, 500),
+            _result(0.80, turns=3),                          # increment 2: cumulative $0.80 → delta $0.30
+        ]) + "\n"
+        out = sd / "usage.jsonl"
+        p = subprocess.run([sys.executable, str(HERE / "usage_capture.py"),
+                            "--agent", "t", "--reason", "heartbeat", "--out", str(out)],
+                           input=stream, capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+        recs = [json.loads(l) for l in out.read_text().splitlines()]
+        assert len(recs) == 2, recs                          # one per increment, no phantom tail record
+        assert recs[0]["inc"] == 1 and recs[1]["inc"] == 2
+        assert abs(recs[0]["cost_usd"] - 0.50) < 1e-6
+        assert abs(recs[1]["cost_usd"] - 0.30) < 1e-6, recs[1]     # DELTA, not cumulative
+        assert abs(recs[1]["cost_epoch_usd"] - 0.80) < 1e-6
+        assert sum(r["cost_usd"] for r in recs) - 0.80 < 1e-6     # ledger sums to the session bill
+        assert (sd / ".tick-result").exists()
+
+
+def test_stream_partial_tail_increment_still_recorded():
+    """A kill mid-increment-2 must not lose increment 2's tokens: completed increments have records;
+    the tail work since the last result lands as a no_result record."""
+    with tempfile.TemporaryDirectory() as d:
+        sd = pathlib.Path(d) / "state"
+        sd.mkdir()
+        stream = "\n".join([
+            _assistant("m", 100, 100000, 90000, 500),
+            _result(0.50),
+            _assistant("m", 100, 190000, 400, 700),          # tail work, then the process dies
+        ]) + "\n"
+        out = sd / "usage.jsonl"
+        p = subprocess.run([sys.executable, str(HERE / "usage_capture.py"),
+                            "--agent", "t", "--reason", "heartbeat", "--out", str(out)],
+                           input=stream, capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+        recs = [json.loads(l) for l in out.read_text().splitlines()]
+        assert len(recs) == 2, recs
+        assert recs[1]["subtype"] == "no_result" and recs[1]["inc"] == 2
+        assert recs[1]["output"] == 700, recs[1]             # per-increment stats were reset at inc 1
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

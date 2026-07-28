@@ -49,6 +49,25 @@ def due(now, next_heartbeat, inbox_changed, comms_pending, defer_until):
     return None
 
 
+def wake_gate(has_work, blocked, last_fire_age, max_staleness):
+    """PURE heartbeat gate (unit-tested, 2026-07-26 adaptive ticks): should a HEARTBEAT wake spend a
+    paid model boot? Directive wakes (inbox/comms/startup) are never gated — only the timer is.
+
+    Before this, the heartbeat fired a full tick unconditionally: an idle pod on a 30-min INTERVAL
+    burned ~$1.7 every 30 min narrating an empty queue, and a blocked pod re-checked a dead
+    dependency at the same price. Fire when there is actionable open work; otherwise skip until the
+    staleness ceiling, which guarantees a periodic real self-check (blocker re-check, maintenance)
+    no matter what the files claim — a wrong skip self-heals there. Skips cost zero tokens, and
+    inbox/comms still wake the pod within seconds."""
+    if last_fire_age >= max_staleness:
+        return True, f"staleness ceiling ({max_staleness}s since last tick)"
+    if blocked:
+        return False, "blocked on a named dependency (ceiling re-check pending)"
+    if has_work:
+        return True, "open work"
+    return False, "empty queue"
+
+
 def _mtime(p):
     try: return p.stat().st_mtime
     except OSError: return None
@@ -100,6 +119,20 @@ class Loop:
         self.cont_cooldown = int(os.environ.get("CONTINUOUS_COOLDOWN", "900"))  # 'continue'/backlog → next tick (15m)
         self.min_cooldown = int(os.environ.get("MIN_COOLDOWN", "300"))          # hard floor (no hot spin) — 5m
         self.default_pace = int(os.environ.get("DEFAULT_PACE", "600"))          # tick wrote no status
+        # Adaptive ticks (2026-07-26): heartbeat wake gate + warm re-fire. The gate makes the timer
+        # conditional (see wake_gate); the ceiling guarantees a real tick at least this often.
+        self.wake_gate_on = os.environ.get("WAKE_GATE", "on") != "off"
+        self.max_staleness = int(os.environ.get("WAKE_MAX_STALENESS_SEC", "21600"))
+        # Warm re-fire: when the epoch ended LEAN with a live session id (wall/increment cap, not
+        # occupancy), the next tick can resume that session almost free — but ONLY if it lands inside
+        # the prompt-cache TTL. A sub-TTL cooldown here is what makes WARM_SESSION=auto in runtime.sh
+        # actually resume; MIN_COOLDOWN would push the resume past the TTL and re-pay the whole
+        # thread at write rates (the 136M-burn shape). Safe vs the 2026-06-13 hot-spin rule: it only
+        # applies with a live lean session (bounded by the epoch $ caps), and the scorer override
+        # below still decays unproductive pods regardless.
+        self.warm_refire = int(os.environ.get("WARM_REFIRE_SEC", "60"))
+        self.epoch_tokens = int(os.environ.get("CTX_EPOCH_TOKENS", "140000"))
+        self._last_fire = time.time()
         # Co-located OFF-OPUS supervisor (self-contained pod, 2026-06-13): a BRAIN=local worker needs a
         # supervisor (cheap external planner + deterministic verify-gate) to plan bounded tasks, keep the
         # queue full, and escalate stuck items. It steers the worker purely through shared agent-dir files
@@ -257,10 +290,25 @@ class Loop:
 
     def tick_cycle(self, reason):
         """One full cycle: drain bridge directives → run the cap-guarded turn → emit the result."""
+        self._last_fire = time.time()
         self.drain_comms()
         rc = self.run_tick(reason)
         self.emit_tick(reason, rc)
         self._after(rc)
+
+    def _gate_heartbeat(self, now):
+        """Apply wake_gate to a due heartbeat. True = fire. On skip: push the heartbeat one INTERVAL
+        (the gate re-evaluates then; the ceiling inside wake_gate bounds total skipping) and log."""
+        if not self.wake_gate_on:
+            return True
+        blocked = (self.dir / "state" / ".blocked").exists()
+        fire, why = wake_gate(self._has_open_work(), blocked, now - self._last_fire, self.max_staleness)
+        if fire:
+            return True
+        self.next_heartbeat = now + self.interval
+        self.log(f"wake gate: heartbeat skipped ({why}) — zero tokens; re-checks in {self.interval}s, "
+                 f"wakes instantly on inbox/comms, real tick at the {self.max_staleness}s ceiling")
+        return False
 
     def run(self):
         self.log(f"start (interval={self.interval}s poll={self.poll}s comms={'on' if self.comms_url else 'off'})")
@@ -284,6 +332,8 @@ class Loop:
             ibm = _mtime(self.inbox)
             inbox_changed = (ibm is not None and self.inbox_baseline is not None and ibm > self.inbox_baseline)
             reason = due(now, self.next_heartbeat, inbox_changed, self.comms_pending(), self.defer_until)
+            if reason == "heartbeat" and not self._gate_heartbeat(now):
+                continue
             if reason:
                 self.tick_cycle(reason)
 
@@ -295,7 +345,9 @@ class Loop:
         reason is already known one layer down; surface it instead of flattening it.
         """
         try:
-            if (pathlib.Path(self.agent_dir) / "state" / "paused").exists():
+            # was self.agent_dir — an attribute that never existed; the AttributeError was swallowed
+            # and every paused pod kept logging "cap/lock" (the exact flattening this method fixes).
+            if (self.dir / "state" / "paused").exists():
                 return "paused"
         except Exception:
             pass
@@ -357,6 +409,12 @@ class Loop:
         elif st.get("status") == "continue":
             self._clear_blocked_marker()
             cd = max(self.min_cooldown, int(st.get("cooldown_s") or self.cont_cooldown))
+            if self._warm_refire_ok():
+                # Lean live session: re-fire inside the prompt-cache TTL so runtime.sh's
+                # WARM_SESSION=auto resumes it nearly free (see __init__ comment for why this
+                # doesn't violate the no-hot-spin rule; the scorer override below still applies).
+                cd = max(self.warm_refire, int(st.get("cooldown_s") or self.warm_refire))
+                self.log(f"lean live work session → warm re-fire in {cd}s (inside the cache TTL)")
             # A SELF-DECLARED `continue` MUST NOT OUTRANK THE EXTERNAL SCORER (2026-07-22).
             # The backoff below the `else` branch only ever protected the SILENT case, so any brief
             # that hardcodes `Write state/tick-status.json {"status":"continue"}` — several do, it
@@ -411,6 +469,19 @@ class Loop:
                 self.next_heartbeat = now + self.interval
                 self.log("no tick-status + empty queue → idle heartbeat (wakes on events)")
         self.defer_until = 0.0
+
+    def _warm_refire_ok(self):
+        """A live pinned work session whose last-known context occupancy is lean — the only state
+        in which a fast re-fire is a cache HIT rather than a hot spin. WARM_SESSION=0 disables."""
+        if os.environ.get("WARM_SESSION", "auto") == "0":
+            return False
+        if not (self.dir / "state" / "work-session.id").exists():
+            return False
+        try:
+            ctx = int(json.loads((self.dir / "state" / ".ctx-budget.json").read_text()).get("ctx_tokens", 0) or 0)
+        except Exception:
+            return False
+        return 0 < ctx < self.epoch_tokens
 
     def _has_open_work(self):
         """True if the agent's work.json has any open/doing item — used to keep the loop continuous

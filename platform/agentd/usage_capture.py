@@ -140,6 +140,16 @@ def main():
     seen_model = args.model or None
     result_written = False
     started = time.time()
+    # CONTEXT EPOCHS (2026-07-26): with the feeder holding stdin open, ONE process emits ONE result
+    # event PER INCREMENT (probe-verified). Each result's usage/duration/num_turns is per-cycle, but
+    # total_cost_usd is SESSION-CUMULATIVE — so records carry the per-increment DELTA in cost_usd
+    # (sums over usage.jsonl stay honest) plus the cumulative in cost_epoch_usd. Per-increment
+    # runtime stats reset after each record; _cum stays cumulative (it feeds the epoch-level
+    # budget signal + calibration, both of which want session totals).
+    _inc = 0
+    _prev_cost = 0.0
+    _turns_since_result = 0
+    inc_started = started
 
     # Phase C runtime instrumentation — derived from the SAME stream, no extra cost. Latency is the
     # wall gap between a tool_use and its matching tool_result (≈ tool execution time). Back-compatible:
@@ -194,6 +204,7 @@ def main():
                 # live budget signal: current occupancy (this turn's prompt size; cache_read dominates +
                 # is reliable) + a running $ estimate from the SUMMED tokens. Read by the hook + dashboard.
                 _turn += 1
+                _turns_since_result += 1
                 _ti = u.get("input_tokens", 0) or 0; _tr = u.get("cache_read_input_tokens", 0) or 0
                 _tw = u.get("cache_creation_input_tokens", 0) or 0
                 _cum["input"] += _ti; _cum["output"] += u.get("output_tokens", 0) or 0
@@ -255,6 +266,11 @@ def main():
 
         if etype == "result":
             usage = ev.get("usage") or {}
+            _inc += 1
+            total_cost = ev.get("total_cost_usd")
+            delta_cost = None if total_cost is None else round(max(0.0, total_cost - _prev_cost), 6)
+            if total_cost is not None:
+                _prev_cost = total_cost
             rec = {
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "agent": args.agent,
@@ -264,7 +280,9 @@ def main():
                 "output": usage.get("output_tokens", seen_usage["output"]) or 0,
                 "cache_read": usage.get("cache_read_input_tokens", seen_usage["cache_read"]) or 0,
                 "cache_write": usage.get("cache_creation_input_tokens", seen_usage["cache_write"]) or 0,
-                "cost_usd": ev.get("total_cost_usd"),
+                "cost_usd": delta_cost,               # per-increment delta — usage.jsonl sums stay honest
+                "cost_epoch_usd": total_cost,         # session-cumulative (what claude reported)
+                "inc": _inc,
                 "duration_s": round((ev.get("duration_ms") or 0) / 1000.0, 1),
                 "turns": ev.get("num_turns"),
                 "rc": 1 if ev.get("is_error") else 0,
@@ -273,6 +291,12 @@ def main():
             }
             _append_record(args.out, rec)
             result_written = True
+            _turns_since_result = 0
+            inc_started = time.time()
+            # per-increment stats reset (records must not double-count across an epoch)
+            seen_usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+            rt = {"tool_calls": 0, "tool_failures": 0, "files_modified": 0, "delegations": 0,
+                  "compactions": 0, "tools": {}, "skills": {}, "models": {}}
             # Calibration loop (fix #4): fold the authoritative cost into the per-model ratio, and
             # close the budget-calibration ledger with a REAL actual (it used to record the
             # circular "see tick cost_est").
@@ -294,17 +318,19 @@ def main():
             except Exception:
                 pass
             _emit_text(
-                f"── result: {rec['subtype'] or '?'} · {rec['turns']} turns · {rec['duration_s']}s · "
-                f"in={rec['input']} out={rec['output']} cache_r={rec['cache_read']} "
+                f"── result: {rec['subtype'] or '?'} · inc #{_inc} · {rec['turns']} turns · {rec['duration_s']}s · "
+                f"in={rec['input']} out={rec['output']} cache_r={rec['cache_read']} cache_w={rec['cache_write']} "
                 f"cost={'$%.4f' % rec['cost_usd'] if rec['cost_usd'] is not None else '?'}"
+                f"{' (epoch $%.4f)' % total_cost if total_cost is not None and _inc > 1 else ''}"
             )
             continue
 
         # Unknown event type — ignore (forward-compatible with new stream-json events).
 
-    # No result event (crash / timeout-kill / closed pipe): still record the tick,
-    # cost unknown, with whatever tokens we saw → dashboard shows "unknown", not a gap.
-    if not result_written:
+    # No result event for the tail work (crash / timeout-kill / closed pipe): still record it,
+    # cost unknown, with whatever tokens we saw → dashboard shows "unknown", not a gap. In an epoch,
+    # completed increments already have records; this covers ONLY a partial tail increment.
+    if not result_written or _turns_since_result > 0:
         rec = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "agent": args.agent,
@@ -315,7 +341,9 @@ def main():
             "cache_read": seen_usage["cache_read"],
             "cache_write": seen_usage["cache_write"],
             "cost_usd": None,
-            "duration_s": round(time.time() - started, 1),
+            "cost_epoch_usd": _prev_cost or None,
+            "inc": _inc + 1,
+            "duration_s": round(time.time() - inc_started, 1),
             "turns": None,
             "rc": None,
             "subtype": "no_result",

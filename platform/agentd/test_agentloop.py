@@ -8,7 +8,7 @@ Run: python3 test_agentloop.py
 import json, os, pathlib, sys, tempfile, time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from agentloop import Loop, due
+from agentloop import Loop, due, wake_gate
 
 
 # ── due(): the pure wake decision ───────────────────────────────────────────
@@ -21,6 +21,79 @@ def test_due_priority_comms_then_inbox_then_heartbeat():
     assert due(100, 0, True, False, 0) == "inbox"
     assert due(100, 50, False, False, 0) == "heartbeat"
     assert due(100, 200, False, False, 0) is None
+
+
+# ── wake_gate(): the heartbeat must not spend a paid boot without a reason ──
+def test_gate_fires_on_open_work():
+    fire, why = wake_gate(has_work=True, blocked=False, last_fire_age=100, max_staleness=21600)
+    assert fire and why == "open work"
+
+
+def test_gate_skips_empty_queue():
+    fire, why = wake_gate(False, False, 100, 21600)
+    assert not fire and "empty" in why
+
+
+def test_gate_skips_blocked_even_with_open_work():
+    """A blocked pod's open items are not actionable — inbox/comms wake it the moment the
+    dependency answers; the ceiling covers the periodic self-check."""
+    fire, why = wake_gate(True, True, 100, 21600)
+    assert not fire and "blocked" in why
+
+
+def test_gate_staleness_ceiling_always_fires():
+    assert wake_gate(False, False, 21600, 21600)[0]
+    assert wake_gate(False, True, 21600, 21600)[0]     # blocked pods re-check at the ceiling too
+
+
+def test_gate_integration_skip_extends_heartbeat_and_costs_nothing():
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        lp._last_fire = time.time()
+        t = time.time()
+        assert lp._gate_heartbeat(t) is False              # empty queue → skip
+        assert lp.next_heartbeat >= t + lp.interval - 2
+
+
+def test_gate_integration_fires_with_open_work():
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        lp._last_fire = time.time()
+        (pathlib.Path(d) / "work.json").write_text(json.dumps([{"id": "t", "status": "doing"}]))
+        assert lp._gate_heartbeat(time.time()) is True
+
+
+def test_gate_off_switch():
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        lp.wake_gate_on = False
+        assert lp._gate_heartbeat(time.time()) is True     # gate disabled → legacy always-fire
+
+
+# ── warm re-fire: a lean live session may re-fire inside the cache TTL ──────
+def test_warm_refire_needs_live_session_and_lean_ctx():
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        st = pathlib.Path(d) / "state"; st.mkdir(parents=True, exist_ok=True)
+        assert lp._warm_refire_ok() is False               # no session id
+        (st / "work-session.id").write_text("abc")
+        assert lp._warm_refire_ok() is False               # no occupancy signal → not provably lean
+        (st / ".ctx-budget.json").write_text(json.dumps({"ctx_tokens": 60000}))
+        assert lp._warm_refire_ok() is True
+        (st / ".ctx-budget.json").write_text(json.dumps({"ctx_tokens": 200000}))
+        assert lp._warm_refire_ok() is False               # fat context → cold-start from handoff
+
+
+def test_warm_refire_paces_below_min_cooldown():
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        st = pathlib.Path(d) / "state"; st.mkdir(parents=True, exist_ok=True)
+        (st / "work-session.id").write_text("abc")
+        (st / ".ctx-budget.json").write_text(json.dumps({"ctx_tokens": 60000}))
+        write_status(d, {"status": "continue"})
+        t = time.time()
+        lp._after(0)
+        assert lp.next_heartbeat <= t + lp.warm_refire + 2, (lp.next_heartbeat - t)
 
 
 # ── _after(): post-tick pacing ──────────────────────────────────────────────

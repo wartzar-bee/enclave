@@ -49,7 +49,7 @@ MIN_CAP_REMAINING="${STUDIO_MIN_CAP_REMAINING:-35}"
 if [ -n "${STUDIO_SESSION_LIMIT_PCT_FLOOR:-}" ] && [ "${STUDIO_SESSION_LIMIT_PCT_FLOOR:-0}" -gt 0 ] 2>/dev/null; then
   MIN_CAP_REMAINING=$(( 100 - STUDIO_SESSION_LIMIT_PCT_FLOOR ))
 fi
-STALE_LOCK_SECS="${AGENT_STALE_LOCK_SECS:-2700}"     # 45m > any real tick
+STALE_LOCK_SECS="${AGENT_STALE_LOCK_SECS:-7200}"     # > any real epoch (context epochs run to ~EPOCH_WALL_SEC+grace; PID-liveness is the primary reclaim)
 log(){ echo "$(date -u +%FT%TZ) — [$AGENT_ID] $*" >> "$LOG"; }
 # GNU form FIRST, then BSD. Order is load-bearing: the agent runs on Linux, where `stat -f %m` does
 # NOT fail — `-f` means "filesystem status" there, so it prints a multi-line block about the overlayfs
@@ -591,11 +591,50 @@ SET=()
 # `timeout: command not found` (exit 127) every tick — that's why nothing ran.
 TO="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
 
-# Warm-session continuity (WARM_SESSION, default ON for BRAIN=claude): a tick RESUMES the same
+# ── CONTEXT EPOCHS (2026-07-26, adaptive ticks) ────────────────────────────────────────────────
+# With the INJECT feeder, one tick = one SESSION that works increment-after-increment while context
+# stays lean; the feeder (tick_feeder.py) ends the epoch on occupancy/$/wall/cap — the pause/resume
+# boundary is the CONTEXT WINDOW, not the clock. Budget floors scale up (one epoch replaces ~4-6
+# one-increment ticks) and are EXPORTED so the ctx_budget hook, the feeder, and the session nets all
+# gate on the SAME numbers. EPOCH_TICKS=0 restores one-increment ticks (legacy floors).
+INJECT=""
+if [ "${INJECT_BUDGET:-1}" != "0" ] && [ -f "$FEEDER" ] && [ -f "$CAP" ]; then INJECT=1; fi
+EPOCH=""
+if [ -n "$INJECT" ] && [ "${EPOCH_TICKS:-1}" != "0" ]; then
+  EPOCH=1
+  export CTX_EPOCH_TOKENS="${CTX_EPOCH_TOKENS:-140000}"
+  export EPOCH_MAX_INCREMENTS="${EPOCH_MAX_INCREMENTS:-8}"
+  export EPOCH_WALL_SEC="${EPOCH_WALL_SEC:-5400}"
+  export CTX_COST_SOFT_USD="${CTX_COST_SOFT_USD:-6.0}"
+  export CTX_COST_HARD_USD="${CTX_COST_HARD_USD:-9.0}"
+  export CTX_COST_HARD_MAX="${CTX_COST_HARD_MAX:-12.0}"
+  # the hang backstop must outlast a full epoch + wrap-up grace (it kills a HUNG process, not a long one)
+  TICK_TIMEOUT="${TICK_TIMEOUT:-$(( EPOCH_WALL_SEC + 600 ))}"
+fi
+
+# Warm-session continuity (WARM_SESSION, default AUTO for BRAIN=claude): a tick RESUMES the same
 # conversation instead of cold-starting, so the agent KEEPS its working memory across ticks — a tick
 # becomes pause+resume, not a wipe. Pinned per-agent id (separate from chat_responder's own --resume
 # sessions). Validated: --resume carries full context. Mechanism mirrors chat_responder.py.
 WORK_SID_FILE="$AGENT_DIR/state/work-session.id"
+# WARM_SESSION=auto (2026-07-26): resume ONLY when it is cheap AND safe — the previous tick ended
+# moments ago (prompt cache still warm; a resume across a cold cache re-reads the WHOLE thread at
+# write rates — the 136M-burn shape and the context_bloat that forced pods to WARM_SESSION=0) and
+# the session's last-known occupancy is lean. Everything else cold-starts from handoff.md. The rule
+# is deterministic and logged every tick. WARM_SESSION=1 = legacy always-resume; 0 = never.
+WARM_MODE="${WARM_SESSION:-auto}"
+if [ "$WARM_MODE" = "auto" ] && [ -s "$WORK_SID_FILE" ]; then
+  LAST_END="$(_mtime "$AGENT_DIR/state/.last-tick-end")"   # stamped at claude exit each tick
+  case "$LAST_END" in (''|*[!0-9]*) LAST_END=0 ;; esac
+  WGAP=$(( NOW - LAST_END ))
+  CTX_LAST="$(python3 -c "import json;print(int(json.load(open('$AGENT_DIR/state/.ctx-budget.json')).get('ctx_tokens',0) or 0))" 2>/dev/null || echo 0)"
+  if [ "$LAST_END" -eq 0 ] || [ "$WGAP" -gt "${WARM_MAX_GAP_SEC:-300}" ] || [ "${CTX_LAST:-0}" -ge "${CTX_EPOCH_TOKENS:-140000}" ]; then
+    log "warm auto → FRESH session (gap ${WGAP}s vs ${WARM_MAX_GAP_SEC:-300}s TTL, ctx ${CTX_LAST:-0} vs ${CTX_EPOCH_TOKENS:-140000}) — cold-start from handoff"
+    rm -f "$WORK_SID_FILE"
+  else
+    log "warm auto → RESUME (gap ${WGAP}s inside TTL, ctx ${CTX_LAST:-0} lean)"
+  fi
+fi
 # Agent-driven session lifecycle (ECC file-handoff + /clear): the agent runs WARM within a unit of work,
 # but when it finishes a coherent unit and has banked state to durable files, it CLEARS its context so the
 # session can't grow forever — it decides when, not a timer. It signals by writing {"session":"clear"}
@@ -655,7 +694,7 @@ if [ -f "$WORK_SID_FILE" ] && [ -f "$INBOX_F" ] \
 fi
 [ -f "$INBOX_F" ] && touch "$ACK_F" 2>/dev/null || true
 SESS=()
-if [ "${BRAIN:-claude}" = "claude" ] && [ "${WARM_SESSION:-1}" != "0" ]; then
+if [ "${BRAIN:-claude}" = "claude" ] && [ "$WARM_MODE" != "0" ]; then
   if [ -s "$WORK_SID_FILE" ]; then
     SESS=(--resume "$(cat "$WORK_SID_FILE")")
   else
@@ -679,8 +718,7 @@ rm -f "$AGENT_DIR/state/chat-reply.md" "$AGENT_DIR/state/chat-reply.cid"
 # kill backstop, both owned by tick_feeder.py (it writes the prompt via a FIFO as claude's stream-json
 # stdin). When on, it REPLACES the bash watchdog below (the feeder does the kill). Default on when the
 # feeder + capture parser are present; INJECT_BUDGET=0 falls back to positional-prompt + bash watchdog.
-INJECT=""
-if [ "${INJECT_BUDGET:-1}" != "0" ] && [ -f "$FEEDER" ] && [ -f "$CAP" ]; then INJECT=1; fi
+# ($INJECT itself is computed ABOVE the session block now — the epoch config needs it early.)
 if [ -z "$INJECT" ] && [ "${COST_CUTOFF:-1}" != "0" ] && [ -f "$CAP" ]; then
   ( while sleep 8; do
       if python3 -c "
@@ -703,7 +741,7 @@ sys.exit(0 if cost>=hard else 1)
       fi
     done ) & CW_PID=$!
 fi
-log "tick start (model=$MODEL_EFF, perm=$PERMISSION, mcp=${MCP:+qmd}, guard=${SET:+on}, timeout=${TO:+on}, usage=${CAP:+on}, session=${SESS:+warm}, cutoff=${CW_PID:+on}${INJECT:+, inject=on})"
+log "tick start (model=$MODEL_EFF, perm=$PERMISSION, mcp=${MCP:+qmd}, guard=${SET:+on}, timeout=${TO:+on}, usage=${CAP:+on}, session=${SESS:+warm}, cutoff=${CW_PID:+on}${INJECT:+, inject=on}${EPOCH:+, epoch=on})"
 FEED_PID=""
 if [ -n "$INJECT" ]; then
   # INJECT path: prompt is delivered as a stream-json user message via a FIFO by tick_feeder.py, which
@@ -780,6 +818,9 @@ if [ -f "$WORK_SID_FILE" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
    && tail -60 "$LOG" 2>/dev/null | grep -qiE "context.{0,12}(length|window).{0,12}(exceed|too|limit)|request_too_large|prompt is too long|conversation is too long|maximum context"; then
   log "context overflow detected — clearing session (fresh + lean next tick)"; rm -f "$WORK_SID_FILE"
 fi
+# Stamp the moment claude exited — the WARM_SESSION=auto gap check measures the prompt-cache TTL
+# from HERE (post-tick pushes/snapshots below can take a while and don't keep the cache warm).
+date +%s > "$AGENT_DIR/state/.last-tick-end" 2>/dev/null || true
 log "tick end"
 
 # Post-tick housekeeping + work-repo push + vault snapshot (shared with every brain path).
