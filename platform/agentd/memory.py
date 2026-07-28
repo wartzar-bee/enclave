@@ -350,8 +350,65 @@ class Memory:
 
     def compact(self, keep_days=14, month_cap=30000):
         """Daily housekeeping: (1) roll old activity captures into monthly archives, (2) CONSOLIDATE
-        lessons (dedup + supersede). Always runs both. Safe: archives, never silently drops content."""
-        return "compact: " + self._roll_activity(keep_days, month_cap) + "; " + self._consolidate()
+        lessons (dedup + supersede), (3) SIZE-guard the always-loaded work.json/inbox.md. Always runs
+        all three. Safe: archives, never silently drops content."""
+        sg = self._size_guard()
+        return ("compact: " + self._roll_activity(keep_days, month_cap) + "; " + self._consolidate()
+                + ("; " + sg if sg else ""))
+
+    def _size_guard(self, work_cap=40000, inbox_cap=40000):
+        """Compact by SIZE, not just age. work.json + inbox.md are re-loaded EVERY tick, so an oversized
+        one is a recurring per-turn token cost — and a runaway work.json full of historical `status_*`
+        prose slips right past the 14d activity roll (that only touches memory/activity). When a file
+        exceeds its cap, ARCHIVE the finished/historical content and slim the live file — never drop,
+        same archive-first rule as _roll_activity. Fully isolated: any error is swallowed."""
+        notes, arc = [], self.mem / "_archive"
+        # work.json — shape-agnostic (a proper LIST-of-items queue OR the non-conforming DICT some agents
+        # write): recursively archive any oversized HISTORICAL string value (dated/`status_*`/`kpi_*`/
+        # `notes`), replacing it with a short pointer. Preserves every key + the queue's live fields.
+        def _slim(obj, af, cnt):
+            if isinstance(obj, dict):
+                out = {}
+                for k, v in obj.items():
+                    if (isinstance(v, str) and len(v) > 600
+                            and (k.startswith("status") or k.startswith("kpi") or k in ("notes", "desc", "note")
+                                 or "20" in k)):
+                        af.write(json.dumps({"key": k, "value": v}) + "\n")
+                        out[k] = v[:120] + f" …[archived {len(v)}B → _archive/work-history.jsonl]"
+                        cnt[0] += 1
+                    else:
+                        out[k] = _slim(v, af, cnt)
+                return out
+            if isinstance(obj, list):
+                return [_slim(x, af, cnt) for x in obj]
+            return obj
+        try:
+            wf = self._workf()
+            if wf.exists() and wf.stat().st_size > work_cap:
+                data = json.loads(wf.read_text())
+                arc.mkdir(parents=True, exist_ok=True)
+                cnt = [0]
+                with (arc / "work-history.jsonl").open("a") as af:
+                    slimmed = _slim(data, af, cnt)
+                if cnt[0]:
+                    before = wf.stat().st_size
+                    wf.write_text(json.dumps(slimmed, indent=2))
+                    notes.append(f"work.json {before}B→{wf.stat().st_size}B: archived {cnt[0]} history value(s) → _archive/work-history.jsonl")
+        except Exception as e:
+            notes.append(f"work.json size-guard skipped ({e})")
+        # inbox.md — freeform markdown, risky to auto-edit; WARN loudly so the agent/studio trims it.
+        try:
+            ib = self.base / "inbox.md"
+            if ib.exists() and ib.stat().st_size > inbox_cap:
+                done = sum(1 for l in ib.read_text().splitlines() if l.startswith("- [x]"))
+                notes.append(f"inbox.md {ib.stat().st_size}B OVERSIZED (~{done} done items) — mark completed "
+                             f"directives [x] and trim; it re-loads every tick")
+        except Exception as e:
+            notes.append(f"inbox size-guard skipped ({e})")
+        return "; ".join(notes)
+
+    # ── WORK QUEUE (continuity across ticks — the "what am I in the middle of") ──
+    def _workf(self): return self.base / "work.json"
 
     def _roll_activity(self, keep_days, month_cap):
         actdir = self.mem / "activity"
