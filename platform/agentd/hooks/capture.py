@@ -26,6 +26,22 @@ Fails OPEN (any error → exit 0, never wedge the tick). Fast + deterministic (n
 """
 import sys, os, json, re, datetime, pathlib
 
+# Everything this hook writes lands in git-committed, qmd-recalled memory — run it ALL through the
+# framework's one redactor (same definition the secret_scan gate + vault scan use). Without this,
+# a token inlined in a Bash command is transcribed verbatim into memory/activity/ (channel-lab
+# leaked TELEGRAPH_TOKEN exactly this way, 2026-07-28) and the vault gate then blocks all backups.
+sys.path.insert(0, os.environ.get("ENCLAVE_AGENTD", "/workspace/platform/agentd"))
+try:
+    import secrets as _sec
+except Exception as _e:                                    # pragma: no cover
+    _sec = None
+    sys.stderr.write(f"[capture] DEGRADED: shared secrets module unreachable ({_e}); "
+                     "activity summaries are NOT being redacted\n")
+
+
+def _redact(text):
+    return _sec.redact(text) if (_sec and text) else text
+
 # Tools worth recording (the real actions); read-only noise (Read/Grep/Glob/LS) is skipped.
 MEANINGFUL = ("Bash", "Write", "Edit", "NotebookEdit")
 
@@ -73,9 +89,9 @@ def extract(transcript_path, all_text=False):
                 if b.get("type") == "tool_use":
                     nm = b.get("name", "")
                     if nm in MEANINGFUL or nm.startswith("mcp__"):
-                        actions.append(summarize_tool(nm, b.get("input")))
+                        actions.append(_redact(summarize_tool(nm, b.get("input"))))
                 elif b.get("type") == "text" and b.get("text", "").strip():
-                    final = b["text"].strip()
+                    final = _redact(b["text"].strip())
                     chunks.append(final)
     except OSError:
         pass
@@ -181,7 +197,7 @@ def main():
     try:
         body = [l for l in (d / "state" / "rollup.md").read_text().splitlines()
                 if l.strip() and not l.strip().startswith("#")]
-        rollup = body[0] if body else ""
+        rollup = _redact(body[0]) if body else ""
     except OSError:
         pass
     if not actions and not rollup and not final:
