@@ -171,6 +171,36 @@ _context_bloat = Playbook(
 
 # (4) container_down — ran then exited unexpectedly (distinct from an operator stop / never-started).
 
+def _wake_gate_parked(home, now, within=3900):
+    """True if the pod's loop is ALIVE and deliberately parked on the wake gate (adaptive ticks).
+
+    A wake-gated pod (EPOCH_TICKS>=1) that is blocked/idle logs `loop: wake gate: heartbeat skipped
+    … zero tokens` every recheck interval INSTEAD of a tick boundary, and only forces a real tick at
+    the staleness ceiling (default 6h). Its last real tick therefore legitimately ages to ~6h — which
+    is exactly the stall threshold, so `_stalled` fires (and, safe_to_autofix, would RESTART a healthy
+    pod) right as the ceiling is about to force a tick. A wedged pod is different: its newest log line
+    is old (dead loop) or a mid-tick tool with no skip. So: a RECENT wake-gate skip as the newest
+    activity ⇒ alive + idle-by-design, not stalled. `within` > the 1800s recheck + grace.
+    """
+    if not home:
+        return False
+    try:
+        lines = (pathlib.Path(home) / "logs" / "runner.log").read_text(errors="ignore").splitlines()[-200:]
+    except Exception:
+        return False
+    for ln in reversed(lines):
+        if "wake gate" not in ln and "tick start" not in ln and "tick end" not in ln:
+            continue
+        if "wake gate" not in ln:
+            return False                       # newest tick/gate line is a real tick, not a skip
+        try:
+            age = now - calendar.timegm(time.strptime(ln[:19], "%Y-%m-%dT%H:%M:%S"))
+        except Exception:
+            return False
+        return 0 <= age <= within
+    return False
+
+
 def _last_tick_age(home, now):
     """Seconds since the newest `tick start`/`tick end` line in runner.log, or None.
 
@@ -266,6 +296,11 @@ def _stalled_match(diag, home, snap, ctx):
     except Exception:
         pass
     now = ctx.get("now", 0)
+    # A wake-gated pod parking by design (adaptive ticks) reaches ~6h since its last real tick on
+    # purpose; its loop is alive (recent wake-gate skip) and the ceiling forces a tick. That is not a
+    # stall — and this playbook is safe_to_autofix=restart, so flagging it would RESTART a healthy pod.
+    if _wake_gate_parked(home, now):
+        return False
     age = _last_tick_age(home, now)
     if age is not None:                    # authoritative: the tick log
         return age > ctx.get("no_tick_seconds", 6 * 3600)

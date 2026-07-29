@@ -394,3 +394,36 @@ def test_offdir_external_product():
 
 test_offdir_external_product()
 
+
+
+def test_stalled_spares_wake_gate_parked():
+    """Adaptive ticks: a pod deliberately parked on the wake gate reaches ~6h since its last real
+    tick by design and its loop is alive (recent 'wake gate: heartbeat skipped'). The _stalled
+    playbook is safe_to_autofix=restart, so it must NOT fire on such a pod — but a genuinely wedged
+    pod (dead loop / mid-tick with no recent skip) MUST still fire."""
+    import calendar as _c, time as _tm, tempfile as _tf, pathlib as _pl
+    _stall = playbooks._stalled_match
+    now = _c.timegm(_tm.gmtime())
+    stamp = lambda ago: _tm.strftime("%Y-%m-%dT%H:%M:%S", _tm.gmtime(now - ago))
+
+    def home(lines):
+        d = _pl.Path(_tf.mkdtemp()); (d / "logs").mkdir(); (d / "state").mkdir()
+        (d / "logs" / "runner.log").write_text("\n".join(lines) + "\n")
+        (d / "agent.env").write_text("SUPERVISE=auto\n")
+        return str(d)
+
+    snap = {"up": True, "tick": "running", "last_seen": now - 21700}
+    ctx = {"now": now, "no_tick_seconds": 6 * 3600}
+    parked = home([f"{stamp(21700)} — [x] tick end",
+                   f"{stamp(120)} — [x] loop: wake gate: heartbeat skipped … zero tokens"])
+    wedged = home([f"{stamp(21700)} — [x] tick start"])
+    deadgate = home([f"{stamp(30000)} — [x] tick end",
+                     f"{stamp(7000)} — [x] loop: wake gate: heartbeat skipped … zero tokens"])
+
+    assert not _stall(None, parked, snap, ctx), "wake-gate-parked pod must NOT be flagged stalled"
+    assert _stall(None, wedged, snap, ctx), "genuinely wedged pod MUST still flag"
+    assert _stall(None, deadgate, snap, ctx), "dead-loop (stale skip) pod MUST still flag"
+    print("ok: stalled playbook spares wake-gate-parked pods, still catches wedged/dead loops")
+
+
+test_stalled_spares_wake_gate_parked()
