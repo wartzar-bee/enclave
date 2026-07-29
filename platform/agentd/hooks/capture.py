@@ -30,12 +30,30 @@ import sys, os, json, re, datetime, pathlib
 # framework's one redactor (same definition the secret_scan gate + vault scan use). Without this,
 # a token inlined in a Bash command is transcribed verbatim into memory/activity/ (channel-lab
 # leaked TELEGRAPH_TOKEN exactly this way, 2026-07-28) and the vault gate then blocks all backups.
-sys.path.insert(0, os.environ.get("ENCLAVE_AGENTD", "/workspace/platform/agentd"))
-try:
-    import secrets as _sec
-except Exception as _e:                                    # pragma: no cover
-    _sec = None
-    sys.stderr.write(f"[capture] DEGRADED: shared secrets module unreachable ({_e}); "
+# Load the framework's secrets.py BY FILE PATH — its module name (`secrets`) collides with Python's
+# stdlib, and a plain `import secrets` on a bad/missing path silently binds the stdlib module (no
+# .redact), which then crashes at first use. Explicit file-path load avoids the name collision entirely.
+# It sits one dir up from this hook (platform/agentd/secrets.py); env/legacy paths are fallbacks.
+_sec = None
+for _dir in (str(pathlib.Path(__file__).resolve().parent.parent),
+             os.environ.get("ENCLAVE_AGENTD"), "/workspace/platform/agentd"):
+    if not _dir:
+        continue
+    _f = pathlib.Path(_dir) / "secrets.py"
+    if not _f.exists():
+        continue
+    try:
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location("enclave_secrets", str(_f))
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        if hasattr(_mod, "redact"):
+            _sec = _mod
+            break
+    except Exception:                                      # pragma: no cover
+        pass
+if _sec is None:
+    sys.stderr.write("[capture] DEGRADED: shared secrets module unreachable; "
                      "activity summaries are NOT being redacted\n")
 
 
