@@ -1535,10 +1535,66 @@ async function loadActivity(){const b=document.getElementById("auditbody");if(!b
     b.innerHTML=es.length?es.map(e=>{const t=(e.ts||"").replace("T"," ").replace("Z","");
       return `<tr><td class="mono" style="text-align:left">${esc(t)}</td><td style="text-align:left">${esc(e.who||"")}</td><td style="text-align:left"><b>${esc(e.action||"")}</b></td><td style="text-align:left">${esc(e.agent||"")}</td><td class="s" style="text-align:left">${esc(e.detail||e.result||"")}</td></tr>`;}).join(""):'<tr><td colspan=5 class="s">no actions logged yet</td></tr>';
   }catch(e){b.innerHTML='<tr><td colspan=5 class="s" style="color:var(--err)">audit log unavailable</td></tr>';}}
+/* ---------- Models tab: the EDITABLE catalog (models/providers/presets — nothing hardcoded) + eval recs ---------- */
+async function catAct(payload){const r=await postR("/api/catalog",payload);
+  if(!r||r.error){alert("catalog: "+((r&&r.error)||"request failed"));return;}
+  loadModels();}
+function catAdd(pool){const el=document.getElementById("catadd-"+pool);const v=(el&&el.value||"").trim();
+  if(!v)return;catAct({action:"add_model",pool,model:v});}
+function catAddProvider(){const n=(document.getElementById("catp-name").value||"").trim().toLowerCase();
+  const base=(document.getElementById("catp-base").value||"").trim();
+  const key=(document.getElementById("catp-key").value||"").trim();
+  if(!n||!base||!key){alert("provider needs name + base URL + key env var");return;}
+  catAct({action:"upsert_provider",name:n,spec:{base,key_env:key,label:n,secret:n+".env"}});}
+function catAddPreset(){const n=(document.getElementById("catps-name").value||"").trim();
+  let d;try{d=JSON.parse(document.getElementById("catps-def").value||"{}");}catch(e){alert("preset def must be valid JSON {\"KEY\":\"value\"}");return;}
+  if(!n){alert("preset needs a name");return;}
+  catAct({action:"upsert_preset",name:n,"def":d});}
+function chipList(pool,list,removable){return (list||[]).map(m=>`<span class="mono" style="display:inline-flex;align-items:center;gap:5px;background:var(--hover);border:1px solid var(--bd);border-radius:7px;padding:3px 8px;margin:2px;font-size:12px">${esc(m)}${removable?`<span style="cursor:pointer;color:var(--mut)" title="remove from catalog" onclick='catAct({action:"remove_model",pool:"${pool}",model:"${m}"})'>✕</span>`:""}</span>`).join("")||'<span class="s" style="color:var(--mut)">none</span>';}
+function renderCatalog(cat,path,evalIds){
+  const POOL_HELP={claude:"Bare CLI ids (claude-opus-4-8) — used by BRAIN=claude dropdowns. NEVER provider/model slugs here.",
+    api:"Extra provider/model slugs merged into the api-brain list alongside the eval recs.",
+    local:"Your local model server ids (machine-specific)."};
+  let h=`<div class="sectit">Model catalog <span class="s" style="font-weight:400">— the editable source for every model/provider/preset dropdown · stored at <span class="mono">${esc(path||"")}</span></span>${ic("Everything the console offers in dropdowns lives HERE, not in code. Add/remove takes effect immediately (dropdowns re-read on open). Model-id format is validated per pool: claude = bare ids, api pools = provider/model slugs — mixing them breaks agents (the 2026-07-30 chat outage).")}</div>`;
+  for(const pool of Object.keys(cat.models||{})){
+    h+=`<div class="card" style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div class="k" style="font-size:13px;min-width:60px">${esc(pool)}${ic(POOL_HELP[pool]||"")}</div>
+      <div style="flex:1">${chipList(pool,cat.models[pool],true)}</div>
+      <input id="catadd-${pool}" placeholder="${pool==='claude'?'claude-…':'provider/model'}" style="width:200px" onkeydown="if(event.key==='Enter')catAdd('${esc(pool)}')">
+      <button class="btn" onclick="catAdd('${esc(pool)}')">+ add</button></div></div>`;}
+  h+=`<div class="sectit" style="margin-top:14px">Providers <span class="s" style="font-weight:400">— BRAIN=api endpoints (base URL + key env + per-provider models)</span></div>`;
+  for(const pn of Object.keys(cat.providers||{})){const pv=cat.providers[pn];
+    h+=`<div class="card" style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div class="k" style="font-size:13px;min-width:90px">${esc(pv.label||pn)}</div>
+      <span class="s mono">${esc(pv.base||"")}</span><span class="s">key: <span class="mono">${esc(pv.key_env||"")}</span></span>
+      <span style="flex:1"></span>
+      <button class="btn" title="remove provider + its model list" onclick='if(confirm("Remove provider ${esc(pn)}?"))catAct({action:"remove_provider",name:"${esc(pn)}"})'>remove</button></div>
+      <div style="margin-top:7px">${chipList(pn,(cat.provider_models||{})[pn],true)}
+      ${pn==="openrouter"&&evalIds&&evalIds.length?`<div class="s" style="color:var(--mut);margin-top:4px">+ ${evalIds.length} ids from the eval-recs file (read-only — re-run the eval to change)</div>`:""}</div>
+      <div style="display:flex;gap:8px;margin-top:7px"><input id="catadd-${pn}" placeholder="provider/model" style="width:240px" onkeydown="if(event.key==='Enter')catAdd('${esc(pn)}')"><button class="btn" onclick="catAdd('${esc(pn)}')">+ add model</button></div></div>`;}
+  h+=`<div class="card" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="s">new provider:</span>
+    <input id="catp-name" placeholder="name" style="width:110px"><input id="catp-base" placeholder="https://…/v1" style="width:230px"><input id="catp-key" placeholder="KEY_ENV_VAR" style="width:160px">
+    <button class="btn" onclick="catAddProvider()">+ add provider</button></div>`;
+  h+=`<div class="sectit" style="margin-top:14px">Presets <span class="s" style="font-weight:400">— one-click config profiles (applied from an agent's Config tab)</span></div>`;
+  for(const ps of Object.keys(cat.presets||{})){
+    h+=`<div class="card" style="margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div class="k" style="font-size:13px">${esc(ps)}</div>
+      <span class="s mono" style="flex:1">${esc(Object.entries(cat.presets[ps]).map(([k,v])=>k+"="+v).join("  "))}</span>
+      <button class="btn" onclick='if(confirm("Remove preset ${esc(ps)}?"))catAct({action:"remove_preset",name:"${esc(ps)}"})'>remove</button></div>`;}
+  h+=`<div class="card" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="s">new/edit preset:</span>
+    <input id="catps-name" placeholder="name" style="width:150px"><input id="catps-def" placeholder='{"BRAIN":"claude","MODEL":"claude-opus-4-8"}' style="flex:1;min-width:260px">
+    <button class="btn" onclick="catAddPreset()">save preset</button></div>`;
+  return h;}
 async function loadModels(){const b=document.getElementById("modelsbox");if(!b)return;b.innerHTML='<div class="sectit">loading…</div>';
+  let c={};try{c=await(await fetch(qs("/api/catalog"))).json();}catch(e){}
   let d={};try{d=await(await fetch(qs("/api/models"))).json();}catch(e){}
+  let evalIds=[];for(const info of Object.values(d.archetypes||{}))for(const r of (info.ranked||[]))if(!evalIds.includes(r.model))evalIds.push(r.model);
+  let pre="";
+  if(c.catalog)pre=renderCatalog(c.catalog,c.path,evalIds);
+  else pre=`<div class="sectit">Model catalog</div><div class="card"><div class="s" style="color:var(--err)">catalog unavailable</div></div>`;
   const arch=d.archetypes||{};
-  if(!Object.keys(arch).length){b.innerHTML=`<div class="sectit">Model recommendations</div><div class="card"><div class="s">${esc(d.note||d.error||"no recommendations available")}</div></div>`;return;}
+  if(!Object.keys(arch).length){b.innerHTML=pre+`<div class="sectit" style="margin-top:14px">Model recommendations</div><div class="card"><div class="s">${esc(d.note||d.error||"no recommendations available")}</div></div>`;return;}
+  b.dataset.pre=pre;
   const ROLE_HELP={orchestrator:"The agent BRAIN / manager — needs routing, planning, decisions and multi-step instruction-following (what local pods failed at).",coder:"A worker that writes code — graded by actually running its output against tests.",fast:"Cheap high-throughput labor — classify / extract / format. Latency matters most."};
   let h=`<div class="sectit">Model recommendations <span class="s" style="font-weight:400">— ${esc(d.pool||"")} pool · ${d.candidates||0} evaluated${d.excluded&&d.excluded.length?" · "+d.excluded.length+" excluded (throttled-on-free)":""} · pick one in an agent's Config tab</span>${ic("Best model per agent archetype from the capability eval. This page is a decision aid only — set the model in an agent's Config tab.")}</div>`;
   for(const role of Object.keys(arch)){const info=arch[role];
@@ -1548,7 +1604,7 @@ async function loadModels(){const b=document.getElementById("modelsbox");if(!b)r
       <table class="cost" style="margin-top:8px"><thead><tr><th style="text-align:left">model</th><th>score${ic("Weighted capability score for this archetype (0-100), blending the relevant test categories.")}</th><th>p50${ic("Median response latency in seconds — lower is faster.")}</th><th style="text-align:left">categories</th></tr></thead><tbody>`+
       (info.ranked||[]).map(s=>`<tr><td style="text-align:left" class="mono">${esc(s.model)}${s.model===info.recommend?' <span style="color:var(--ok)">★</span>':""}</td><td>${s.score}</td><td>${s.p50}s</td><td style="text-align:left" class="s">${Object.keys(s.cats||{}).map(c=>c+":"+Math.round(s.cats[c])).join("  ")}</td></tr>`).join("")+
       `</tbody></table></div>`;}
-  b.innerHTML=h;}
+  b.innerHTML=pre+h;}
 /* ---------- Monitor view (D2a: the Agent SRE — daemon liveness, live findings, mode control) ---------- */
 const MONSEV={high:"--err",med:"--idle",low:"--mut"};
 const MONMODES=["off","observe","alert","suggest","autofix"];
@@ -2198,11 +2254,11 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, "application/json", json.dumps({"error": (r.stderr or r.stdout)[-300:]}))
             return self._send(200, "application/json", r.stdout or "{}")
         if p == "/api/presets":   # the named one-click profiles (+ their key/value defs) for the UI
-            import fleet_config
-            # known model ids per brain, so the Config model field can be a dropdown (no typos).
-            # claude tier is the product's supported set; api/optimize models come from the eval
-            # recs file (ENCLAVE_MODEL_RECS) when configured; local is unknown -> current+custom only.
-            claude_tier = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+            import fleet_config, catalog
+            # EVERYTHING here (model lists, providers, presets) comes from the editable console
+            # catalog (catalog.py store, CRUD via /api/catalog + the Models tab) — nothing hardcoded.
+            # api/optimize models additionally merge the eval-recs file (ENCLAVE_MODEL_RECS).
+            cat = catalog.load()
             eval_models = []
             recs_path = os.environ.get("ENCLAVE_MODEL_RECS", "")
             if recs_path and os.path.isfile(recs_path):
@@ -2215,33 +2271,27 @@ class H(BaseHTTPRequestHandler):
                     eval_models = sorted(s)
                 except Exception:
                     pass
+            claude_tier = cat["models"].get("claude", [])
+            api_models = sorted(set(eval_models) | set(cat["models"].get("api", [])))
             models_by_brain = {"claude": claude_tier, "optimize": claude_tier,
-                               "api": eval_models, "local": []}
-            # BRAIN=api providers (no-Claude path): provider → endpoint base + key-env (mirrors
-            # bin/enclave PROVIDERS, used by the New-Agent modal to expand a provider choice).
-            providers = {
-                "nvidia":     {"label": "NVIDIA (free)", "base": "https://integrate.api.nvidia.com/v1",
-                               "key_env": "NVIDIA_API_KEY", "secret": "nvidia.env"},
-                "openrouter": {"label": "OpenRouter", "base": "https://openrouter.ai/api/v1",
-                               "key_env": "OPENROUTER_API_KEY", "secret": "openrouter.env"},
-            }
-            # Curated, verified-viable model ids per provider for the model dropdowns (NVIDIA = on the
-            # free tier + not rate-throttled; ordered driver→escalation→fast). OpenRouter falls back to
-            # the eval-recs list (models_by_brain["api"]).
-            provider_models = {
-                "nvidia": ["qwen/qwen3-next-80b-a3b-instruct", "minimaxai/minimax-m3",
-                           "openai/gpt-oss-120b", "openai/gpt-oss-20b",
-                           "meta/llama-4-maverick-17b-128e-instruct",
-                           "nvidia/llama-3.3-nemotron-super-49b-v1.5"],
-                "openrouter": eval_models,
-            }
-            # Combined list for the Config tab's BRAIN_MODEL / ESCALATION_MODEL dropdowns (provider unknown
-            # there) = curated NVIDIA + the eval-recs ids; "✏️ custom…" is always available too.
-            models_by_brain["api_all"] = sorted(set(eval_models) | set(provider_models["nvidia"]))
+                               "api": api_models, "local": cat["models"].get("local", [])}
+            providers = cat["providers"]
+            provider_models = dict(cat["provider_models"])
+            # OpenRouter dropdown = catalog extras + the eval-recs ids
+            provider_models["openrouter"] = sorted(set(provider_models.get("openrouter", [])) | set(eval_models))
+            # Combined list for the Config tab's BRAIN_MODEL / ESCALATION_MODEL dropdowns (provider
+            # unknown there) = every api-pool id; "✏️ custom…" is always available too.
+            allsets = [set(v) for v in provider_models.values()] + [set(api_models)]
+            models_by_brain["api_all"] = sorted(set().union(*allsets)) if allsets else []
             return self._send(200, "application/json", json.dumps({
-                "presets": sorted(fleet_config.PRESETS), "defs": fleet_config.PRESETS,
+                "presets": sorted(cat["presets"]), "defs": cat["presets"],
                 "brains": sorted(fleet_config.BRAINS), "modes": sorted(fleet_config.MODES),
-                "models": models_by_brain, "providers": providers, "provider_models": provider_models}))
+                "models": models_by_brain, "providers": providers, "provider_models": provider_models,
+                "catalog_path": str(catalog.store_path())}))
+        if p == "/api/catalog":   # the editable catalog itself (Models tab CRUD source)
+            import catalog
+            return self._send(200, "application/json", json.dumps(
+                {"catalog": catalog.load(), "path": str(catalog.store_path())}))
         if p == "/api/models":   # P4: model-eval recommendations (from an external recs file, if configured)
             recs_path = os.environ.get("ENCLAVE_MODEL_RECS", "")
             if recs_path and os.path.isfile(recs_path):
@@ -2746,6 +2796,31 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, "application/json", json.dumps({"ok": r.returncode == 0, "out": (r.stdout or r.stderr)[-400:]}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))
+        if p == "/api/catalog":   # CRUD on the editable catalog (models/providers/presets) — audited
+            import catalog
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
+            except Exception:
+                return self._send(400, "application/json", '{"error":"bad json"}')
+            act = d.get("action", "")
+            try:
+                if act == "add_model":
+                    r = catalog.add_model(d.get("pool", ""), d.get("model", ""))
+                elif act == "remove_model":
+                    r = catalog.remove_model(d.get("pool", ""), d.get("model", ""))
+                elif act == "upsert_provider":
+                    r = catalog.upsert_provider(d.get("name", ""), d.get("spec") or {})
+                elif act == "remove_provider":
+                    r = catalog.remove_provider(d.get("name", ""))
+                elif act == "upsert_preset":
+                    r = catalog.upsert_preset(d.get("name", ""), d.get("def") or {})
+                elif act == "remove_preset":
+                    r = catalog.remove_preset(d.get("name", ""))
+                else:
+                    r = {"error": f"unknown action {act!r}"}
+            except Exception as e:
+                r = {"error": str(e)}
+            return self._send(200 if r.get("ok") else 400, "application/json", json.dumps(r))
         if p == "/api/config":   # apply a config change, then restart (P0 writable-config plane)
             try:
                 d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")

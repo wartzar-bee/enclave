@@ -96,14 +96,27 @@ PROVIDERS = {
 
 # Known-good Claude model ids (the chat picker's allowlist). A typo here = a silently dead chat
 # ("couldn't generate a reply"), so init/brain reject an unknown one unless --allow-unknown-model.
-KNOWN_CLAUDE_MODELS = {"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"}
+# SEED only — the live list is the editable console catalog (platform/agentd/catalog.py store,
+# managed from the dashboard's Models tab), so a newly released model never needs a code edit here.
+KNOWN_CLAUDE_MODELS = {"claude-opus-4-8", "claude-fable-5", "claude-sonnet-5",
+                       "claude-sonnet-4-6", "claude-haiku-4-5", "claude-haiku-4-5-20251001"}
+
+def _known_claude_models():
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "platform" / "agentd"))
+        import catalog
+        ids = set(catalog.load().get("models", {}).get("claude") or [])
+        return ids | KNOWN_CLAUDE_MODELS if ids else KNOWN_CLAUDE_MODELS
+    except Exception:
+        return KNOWN_CLAUDE_MODELS
 
 def _check_claude_model(model, allow):
     """For brains that run on Claude, reject a model id that isn't known-good (catches typos at config
     time). Forward-compat escape hatch: --allow-unknown-model. No-op for non-Claude models."""
-    if allow or not (model or "").startswith("claude-") or model in KNOWN_CLAUDE_MODELS:
+    known = _known_claude_models()
+    if allow or not (model or "").startswith("claude-") or model in known:
         return
-    sys.exit(f"Unknown Claude model '{model}'. Valid: {', '.join(sorted(KNOWN_CLAUDE_MODELS))}.\n"
+    sys.exit(f"Unknown Claude model '{model}'. Valid: {', '.join(sorted(known))}.\n"
              f"  (this is the typo that silently kills the chat — pass --allow-unknown-model to "
              f"use a model not in this list, e.g. one released after this build.)")
 

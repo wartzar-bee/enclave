@@ -228,8 +228,15 @@ def set_mode(home, mode, interval=None, agent="?"):
 
 
 def apply_preset(home, name, agent="?"):
-    if name not in PRESETS:
-        raise ValueError(f"unknown preset '{name}' (have: {sorted(PRESETS)})")
-    diff = patch_agent_env(home, dict(PRESETS[name]), agent)
+    # Preset defs live in the editable console catalog (catalog.py store); the PRESETS dict above is
+    # only its seed. Lazy import avoids a cycle (catalog imports this module for the audit path).
+    try:
+        import catalog
+        defs = catalog.presets() or PRESETS
+    except Exception:
+        defs = PRESETS
+    if name not in defs:
+        raise ValueError(f"unknown preset '{name}' (have: {sorted(defs)})")
+    diff = patch_agent_env(home, dict(defs[name]), agent)
     _audit("preset", agent, name)
     return diff
