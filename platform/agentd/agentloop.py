@@ -306,6 +306,13 @@ class Loop:
         if fire:
             return True
         self.next_heartbeat = now + self.interval
+        # Bump .heartbeat: a gated skip PROVES the loop is alive (it just chose to spend zero tokens).
+        # Overdue = hb_age > 2×interval must mean "loop wedged/dead", not "alive but correctly idle".
+        # Real-work staleness stays governed by _last_fire / max_staleness (the ceiling forces a tick).
+        try:
+            (self.dir / "state" / ".heartbeat").write_text(str(int(now)))
+        except OSError:
+            pass
         self.log(f"wake gate: heartbeat skipped ({why}) — zero tokens; re-checks in {self.interval}s, "
                  f"wakes instantly on inbox/comms, real tick at the {self.max_staleness}s ceiling")
         return False

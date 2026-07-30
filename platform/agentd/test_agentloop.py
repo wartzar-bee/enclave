@@ -55,6 +55,19 @@ def test_gate_integration_skip_extends_heartbeat_and_costs_nothing():
         assert lp.next_heartbeat >= t + lp.interval - 2
 
 
+def test_gate_skip_bumps_heartbeat_so_alive_idle_is_not_overdue():
+    # A gated skip proves the loop is alive; it must bump .heartbeat so the dashboard's
+    # overdue (hb_age > 2×interval) means "loop wedged/dead", not "alive but correctly idle".
+    with tempfile.TemporaryDirectory() as d:
+        st = pathlib.Path(d) / "state"; st.mkdir(parents=True, exist_ok=True)
+        lp = make_loop(d)
+        lp._last_fire = time.time()
+        t = time.time()
+        assert lp._gate_heartbeat(t) is False              # empty queue → skip
+        hb = st / ".heartbeat"
+        assert hb.exists() and int(hb.read_text()) == int(t)
+
+
 def test_gate_integration_fires_with_open_work():
     with tempfile.TemporaryDirectory() as d:
         lp = make_loop(d)
