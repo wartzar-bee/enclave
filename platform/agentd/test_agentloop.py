@@ -76,6 +76,24 @@ def test_gate_integration_fires_with_open_work():
         assert lp._gate_heartbeat(time.time()) is True
 
 
+def test_has_open_work_both_shapes():
+    # Regression: wartzar-bee's work.json is a {updated,note,items:[...]} DICT, not a bare list.
+    # _has_open_work() iterated the dict's keys → .get() threw → 'no work' on a full backlog → the
+    # wake-gate starved the pod. It must read open items from BOTH shapes.
+    with tempfile.TemporaryDirectory() as d:
+        lp = make_loop(d)
+        wj = pathlib.Path(d) / "work.json"
+        wj.write_text(json.dumps({"updated": "x", "note": "y",
+                                  "items": [{"id": "a", "status": "todo"}]}))
+        assert lp._has_open_work() is True                       # dict shape, open item
+        wj.write_text(json.dumps({"items": [{"id": "a", "status": "done"}]}))
+        assert lp._has_open_work() is False                      # dict shape, all done
+        wj.write_text(json.dumps([{"id": "a", "status": "doing"}]))
+        assert lp._has_open_work() is True                       # bare list, open item
+        wj.write_text(json.dumps({"updated": "x", "note": "y", "items": []}))
+        assert lp._has_open_work() is False                      # dict shape, empty backlog
+
+
 def test_gate_off_switch():
     with tempfile.TemporaryDirectory() as d:
         lp = make_loop(d)

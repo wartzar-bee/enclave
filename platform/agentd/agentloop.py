@@ -492,10 +492,17 @@ class Loop:
 
     def _has_open_work(self):
         """True if the agent's work.json has any open/doing item — used to keep the loop continuous
-        by default while there's a backlog."""
+        by default while there's a backlog.
+
+        Handles BOTH shapes the fleet uses: a bare list of items, and the
+        {"updated","note","items":[...]} dict some pods write. Iterating the dict directly walked its
+        KEYS (strings) → i.get() raised AttributeError → the except reported 'no work' on a full
+        backlog, silently starving the wake-gate so the pod idled with open items + a live Mission-#3
+        ecosystem backlog. Normalise to the item list before scanning."""
         try:
             w = json.loads((self.dir / "work.json").read_text())
-            return any(i.get("status") not in ("done", "dropped") for i in w)
+            items = w if isinstance(w, list) else (w.get("items") or w.get("tasks") or [])
+            return any(i.get("status") not in ("done", "dropped") for i in items)
         except Exception:
             return False
 
