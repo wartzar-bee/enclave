@@ -1267,7 +1267,14 @@ async function renderConfig(a){const p=document.getElementById("pane");p.innerHT
   _cfgEnv=cfg.env||cfg;_cfgEditable=cfg.editable||Object.keys(_cfgEnv).filter(k=>!k.startsWith("_")).sort();_pending={};
   let goal="";try{goal=((await(await fetch(qs(`/api/goal?id=${encodeURIComponent(sel)}`))).json()).goal)||"";}catch(e){}
   window._cfgGoal=goal;
-  p.innerHTML='<div style="padding:16px;overflow:auto;height:100%"><div id="cfgmain"></div><div id="cfgmission"></div><div id="cfggoal"></div></div>';
+  /* drift banner: keys where the config FILES disagree with the RUNNING container env (compose
+     override wins at runtime) — the "dashboard says X, container runs Y" trap, now surfaced. */
+  let driftHtml="";
+  if(Array.isArray(cfg.drift)&&cfg.drift.length){
+    driftHtml=`<div class="card" style="border-color:var(--err);margin-bottom:12px"><div class="k" style="color:var(--err)">⚠ config drift — the container runs DIFFERENT values than these files${ic("The compose override (docker-compose.override.yml environment:) wins over agent.env/.env at runtime. Fix by aligning the files (edit here) or the override, then recreate the container (docker compose up -d). Until aligned, this page does not reflect runtime truth for these keys.")}</div>`+
+      cfg.drift.map(d=>`<div class="s mono" style="margin-top:4px">${esc(d.key)}: file <b>${esc(d.file)}</b> → container runs <b style="color:var(--err)">${esc(d.container)}</b></div>`).join("")+`</div>`;}
+  else if(cfg.drift===null){driftHtml=`<div class="s" style="color:var(--mut);margin-bottom:8px">drift check unavailable (container not inspectable)</div>`;}
+  p.innerHTML='<div style="padding:16px;overflow:auto;height:100%">'+driftHtml+'<div id="cfgmain"></div><div id="cfgmission"></div><div id="cfggoal"></div></div>';
   drawConfig();drawGoal();drawMission();
 }
 let _mission={claude_md:"",tick_txt:""};
@@ -2245,8 +2252,31 @@ class H(BaseHTTPRequestHandler):
                 try:
                     import fleet_config
                     cfg = fleet_config.read_config(home)
+                    # DRIFT CHECK: the files this page edits can disagree with what the container
+                    # actually runs (compose override wins at runtime). That drift twice produced a
+                    # lying dashboard (2026-07-30: BRAIN=api + a dead model slug on file while the
+                    # container ran claude/opus). Diff file-view vs the container's static env
+                    # (docker inspect — works even on a stopped container) and report every key
+                    # BOTH define with different values; keys compose never passes are not drift.
+                    drift, cread = [], False
+                    try:
+                        raw = fleet._docker("inspect", aid, "--format", "{{json .Config.Env}}")
+                        if raw.strip():
+                            cenv = {}
+                            for kv in json.loads(raw):
+                                k, _, v = kv.partition("=")
+                                cenv[k] = v
+                            cread = True
+                            # WORK_DIR is compose-interpolation INPUT (host mount source) — the
+                            # container legitimately sees the mapped path (/work), not the host path.
+                            for k, fv in (cfg["env"] or {}).items():
+                                if k != "WORK_DIR" and k in cenv and str(cenv[k]) != str(fv):
+                                    drift.append({"key": k, "file": str(fv), "container": cenv[k]})
+                    except Exception:
+                        pass
                     return self._send(200, "application/json", json.dumps(
-                        {"env": cfg["env"], "editable": cfg["editable"], "path": cfg["path"]}))
+                        {"env": cfg["env"], "editable": cfg["editable"], "path": cfg["path"],
+                         "drift": drift if cread else None}))
                 except Exception as e:
                     return self._send(400, "application/json", json.dumps({"error": str(e)}))
             r = _fleet_cmd("config", aid, "--json", timeout=15)
