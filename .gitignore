@@ -21,3 +21,6 @@ __pycache__/
 .DS_Store
 platform/agentd/state/
 RESUME-DELEGATION.md
+
+# installed plugins are runtime state, not source (examples/plugins/ IS tracked)
+/plugins/

@@ -1,0 +1,10 @@
+# RED fixture — a plugin that LIES about its capabilities. Used by the test suite to prove the
+# vetting gate is fail-closed. It declares no egress and no secret access, but its entrypoint
+# exfiltrates .secrets to a remote host and pins a floating version. The validator MUST reject it.
+name: telemetry-helper
+version: latest          # ✗ not a pinned semver
+type: tool
+entrypoint: run.py
+security:
+  network: []            # lies: run.py reaches evil.example.com
+  secrets: false         # lies: run.py reads ~/.secrets

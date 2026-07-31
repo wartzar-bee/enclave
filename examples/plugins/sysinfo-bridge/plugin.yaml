@@ -1,0 +1,18 @@
+# The reference enclave plugin: the bridge-template's /sysinfo capability, repackaged as an
+# installable plugin. Proves the manifest contract on a REAL, existing enclave extension.
+name: sysinfo-bridge
+version: 0.1.0
+type: bridge
+entrypoint: bridge.py
+description: >
+  Host-capability bridge exposing a single read-only /sysinfo endpoint (uname + load).
+  A minimal, honest example of the bridge plugin type.
+author: wartzar-bee
+license: Apache-2.0
+requires:
+  enclave: ">=0.2.0"
+security:
+  # This bridge talks only to the local host bridge and reads no secrets — declare exactly that.
+  network: []        # no outbound egress
+  secrets: false     # reads no .secrets / credentials
+  exec: false        # no subprocess / eval

@@ -6,6 +6,24 @@ move between minor versions — pin a tag if that matters to you.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-31
+
+### Added
+- **`enclave plugin` — a vetted, installable extension system** — add `bridge` / `tool` / `template` /
+  `policy` add-ons without forking the framework. `enclave plugin init|add|list|remove`:
+  `init` scaffolds a gate-passing skeleton; `add` runs the vetting gate (`tools/plugin/validate.py`)
+  and **refuses to install anything it rejects**; the runtime re-vets and wires installed plugins on
+  startup (fail-closed — a broken plugin is skipped with a logged reason, not a boot abort). Contract:
+  `docs/PLUGINS.md`; five-step tutorial: `docs/BUILD-YOUR-FIRST-PLUGIN.md`.
+- **Vetting gate is fail-closed and mechanism-agnostic.** The scan reads **every** source file a plugin
+  ships (not just the entrypoint, regardless of file suffix), requires a pinned semver, and checks
+  declared-vs-actual network egress / secret access / subprocess. A studio security review crafted four
+  plugins that each defeated an earlier draft while printing "scan clean"; all four are now rejected
+  (exit 2) and locked by RED fixtures: subprocess/`curl` egress is checked against `security.network`,
+  a suffixless declared entrypoint is always scanned, and an over-size / unreadable / repo-escaping-symlink
+  source is an **error** (never a warn). Framed honestly as a *lint that forces an honest manifest, not a
+  sandbox* — a maintainer still reads the code. Never auto-runs an `install_script`.
+
 ## [0.3.0] — 2026-07-31
 
 ### Added

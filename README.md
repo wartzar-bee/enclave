@@ -195,7 +195,7 @@ Dockerfile.agent          lean agent image (python + node + claude CLI; opt-in c
 Dockerfile.chat/.relay    web-chat + telegram sidecars (stdlib, tiny)
 Dockerfile.qmd/.codegraph optional memory-accelerator images (off by default — compose profiles)
 docker-compose.yml        the stack (+ opt-in `qmd` / `codegraph` / `telegram` profiles)
-bin/enclave               CLI: new / init / brain / run / publish / snapshot / vault-encrypt|decrypt / send / chat / status / stop / logs
+bin/enclave               CLI: new / init / brain / run / publish / snapshot / vault-encrypt|decrypt / send / chat / plugin / status / stop / logs
 platform/agentd/          the runtime: agentloop, runtime.sh, guard + delegation_guard hooks, route_tier
                           (model-tier router), delegate.py + local_agent.py (manager→worker delegation),
                           memory (memory.py + wiki.py), vault_snapshot.py, web_chat, chat_responder,
@@ -208,8 +208,33 @@ docs/                     design notes — CHAT (the chat plane + per-brain endp
                           DELEGATION (manager→worker), OPTIMIZE-BRAIN, WORK-DIR (working folder + indexing),
                           EVAL (benchmark models on your pools — endpoint-based, catalog-integrated),
                           WIKI-LAYER, MEMORY-PROVIDERS, MEMORY-MODES, CODE-MEMORY, WASM-SANDBOX,
+                          PLUGINS (the plugin contract + vetting gate),
                           VETTING (dependency security passes), ROADMAP
 ```
+
+## Extending enclave (plugins)
+Enclave is extensible without forking it. A **plugin** is an installable add-on of an existing
+extension type — `bridge` (a host capability), `tool`, `template` (a starter agent home), or `policy`.
+
+Because installing a plugin is an **install surface**, enclave vets it *before* it is wired in — the
+same fail-closed rule it applies to baked dependencies (`docs/VETTING.md`):
+- **Pinned** version (no ranges / `latest`) — an install surface must be reproducible.
+- **Declared-vs-actual** — the manifest must declare its network egress, secret access and any
+  subprocess/`eval`/`exec`; a static scan reads **every** source file the plugin ships (not just the
+  entrypoint) and refuses to install anything the manifest didn't declare.
+- **No blind install-scripts** — enclave never auto-runs a plugin's install script.
+
+```bash
+enclave plugin init my-tool --type tool   # scaffold a gate-passing skeleton
+enclave plugin add ./my-tool              # vet, then install (refuses anything the gate rejects)
+enclave plugin list                       # name · version · type
+enclave plugin remove my-tool
+```
+The vetting gate is a **lint, not a sandbox** — it forces an honest manifest and catches the obvious
+exfil shapes, but a determined author can evade any static check, so a maintainer still reads the code.
+On startup the runtime re-vets and wires installed plugins, skipping a broken one with a logged reason
+rather than aborting boot. Write your first one in five steps: `docs/BUILD-YOUR-FIRST-PLUGIN.md`; the
+full contract is `docs/PLUGINS.md`.
 
 ## Memory — one linked, durable, secret-safe brain
 The agent's memory is **one linked vault**, all markdown, all git-trackable, navigable as a graph:

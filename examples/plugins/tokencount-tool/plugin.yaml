@@ -1,0 +1,19 @@
+# A `tool`-type enclave plugin (the second plugin TYPE demoed, after the bridge examples).
+# It's the plugin the "Build your first plugin" tutorial walks you through building from scratch.
+# Pure-stdlib, reads only the file path you hand it — so it honestly declares NO network, NO
+# secrets, NO exec, and the vetting gate passes it clean.
+name: tokencount-tool
+version: 0.1.0
+type: tool
+entrypoint: tool.py
+description: >
+  A tool the agent can call to estimate the token cost of a text file (~4 chars/token heuristic),
+  so a run can budget-check a prompt before spending it. The minimal honest `tool` plugin.
+author: wartzar-bee
+license: Apache-2.0
+requires:
+  enclave: ">=0.2.0"
+security:
+  network: []        # no outbound egress — pure local computation
+  secrets: false     # reads only the path you pass it, never a credential store
+  exec: false        # no subprocess / eval

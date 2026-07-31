@@ -1,0 +1,27 @@
+# A REAL enclave bridge repackaged as a plugin (deliverable #4): the container-side Google Cloud
+# SDK bridge (tools/gcloud/bridge.py). Unlike the toy sysinfo example, this one legitimately needs
+# network + secret access — so it DECLARES them, and the vetting gate passes it. That is the point:
+# a capable plugin is fine as long as its manifest is honest about what the code does.
+#
+# In the enclave repo the cleaner move is to add this plugin.yaml directly to tools/gcloud/ (no
+# duplication); this examples/ copy exists so the test suite can prove the add->load path on real code.
+name: gcloud-bridge
+version: 0.1.0
+type: bridge
+entrypoint: bridge.py
+description: >
+  Container client for the host's Google Cloud SDK — proxies gcloud/gsutil/bq to the host's
+  logged-in account over the host bridge. The container holds no Google credentials.
+author: wartzar-bee
+license: Apache-2.0
+requires:
+  enclave: ">=0.2.0"
+security:
+  # Talks ONLY to the host bridge on the docker host; reads a bearer token from .secrets. The
+  # privileged CLI execution happens on the HOST side (host-bridge.py), installed by the declared
+  # install_script below — enclave never auto-runs it.
+  network:
+    - host.docker.internal
+  secrets: true                       # reads .secrets/gcloud-bridge.env for the bridge bearer token
+  exec: false                         # container side is HTTP-only; no subprocess here
+  install_script: host-bridge-setup.sh

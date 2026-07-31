@@ -1494,11 +1494,17 @@ def cmd_eval(args):
     sys.exit(r.returncode)
 
 
+def cmd_plugin(args):
+    """init / add / list / remove enclave plugins — thin shim over tools/plugin/cli.py (vet-then-install)."""
+    r = subprocess.run([sys.executable, str(REPO / "tools" / "plugin" / "cli.py")] + args)
+    sys.exit(r.returncode)
+
+
 COMMANDS = {
     "new": cmd_new, "init": cmd_init, "run": cmd_run, "app": cmd_app, "stop": cmd_stop, "logs": cmd_logs,
     "send": cmd_send, "status": cmd_status, "chat": cmd_chat, "publish": cmd_publish, "brain": cmd_brain,
     "snapshot": cmd_snapshot, "audit-secrets": cmd_audit_secrets, "vault-encrypt": cmd_vault_encrypt, "vault-decrypt": cmd_vault_decrypt,
-    "fleet": cmd_fleet, "console": cmd_console, "update": cmd_update, "eval": cmd_eval,
+    "fleet": cmd_fleet, "console": cmd_console, "update": cmd_update, "eval": cmd_eval, "plugin": cmd_plugin,
 }
 
 def main():

