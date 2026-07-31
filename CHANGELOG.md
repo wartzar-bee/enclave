@@ -6,6 +6,40 @@ move between minor versions — pin a tag if that matters to you.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-31
+
+### Added
+- **`enclave eval` — endpoint-based model-eval primitive** — benchmark models on any OpenAI-compatible
+  pool endpoint (local MLX, ollama, NVIDIA, OpenRouter — host or in-container) with
+  `enclave eval <capability|gsm8k> --models … (--pool NAME | --base URL)`. Per-model sampling params come
+  from the catalog (`catalog.model_params`), so a single global temperature can't silently invalidate a
+  comparison; a model with no documented entry is tagged `params_source:"default"` so an undocumented run
+  is never mistaken for a documented one. `--record` appends each model's summary to the catalog evidence
+  trail (`catalog.record_eval`, capped at 10) so routing picks can cite their eval. (`0e57333`)
+- **Editable console catalog** — models, providers and presets are managed live from the dashboard
+  (Models tab, `/api/catalog`) instead of being hardcoded. (`d2d7b83`)
+- **Config drift badge** — the config tab surfaces keys where the on-disk config files disagree with the
+  running container's env, so silent compose/file drift is visible at a glance. (`483c4f9`)
+
+### Fixed
+- **Credential redaction on auto-capture (security)** — auto-captured activity/decisions now route
+  through the shared secrets redactor, so a credential can't reach tracked memory via the framework's own
+  writers (previously only the fail-closed vault scan caught it). Follow-up loads `secrets.py` by file
+  path to fix a CI-red `AttributeError`. (`cf40220`, `18c0887`)
+- **Key-material labels in the secret scan (security)** — `SEED` / `SEED_HEX` / `PRIV_KEY` /
+  `SIGNING_KEY` are now caught by scan + redact; pure-hex seeds previously slipped the entropy
+  catch-all. (`94c9bfb`)
+- **Boot re-syncs hooks** — the runtime re-syncs `/agent/.claude/hooks` from the mounted framework at
+  boot, so a shipped hook fix reaches existing pods instead of staying dead after first init. (`62cf17f`)
+- **Epoch-aware config + diagnostics gates** — the `warm_session` preflight sanctions epoch-bounded warm
+  sessions (`WARM_SESSION=auto` + `EPOCH_TICKS>=1`), and the `context_explosion` / `prompt_creep`
+  diagnostics account for context climbing toward the epoch boundary — no more false preflight/diagnostic
+  escalations under adaptive ticks. (`207cd7b`, `32a56da`)
+- **Wake-gate-aware liveness** — the monitor no longer restarts a healthy parked pod, the agentloop bumps
+  `.heartbeat` on a gated wake-skip so alive-idle pods aren't flagged overdue, and `_has_open_work` reads
+  both work.json shapes (list + dict) so dict-shaped pods aren't starved of ticks. (`f3ae30b`, `4b31b6e`,
+  `125250a`)
+
 ## [0.2.0] — 2026-07-28
 Second minor since the public 0.1.0. Folds in one session of framework work: adaptive (epoch-driven)
 ticks, a typed-envelope handoff protocol, model-agnostic (BYOM) docs + an examples gallery, the

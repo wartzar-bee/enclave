@@ -55,6 +55,7 @@ Everything runs through `./bin/enclave` from the deployment folder:
 | Switch the brain (keeps memory) | `enclave brain <claude\|api\|local\|optimize>` |
 | Update the runtime to latest + rebuild | `enclave update` (git clone) · `enclave update --from <product-dir>` (any) · `enclave update --pull` (prebuilt images) |
 | Commit the memory vault now | `enclave snapshot ["msg"]` (also auto-runs each tick) |
+| Benchmark a model on your pools | `enclave eval <capability\|gsm8k> --models … --pool …` (see `docs/EVAL.md`) |
 
 **Switch brain** — flips the mode in place (rewrites `agent.env` + `.env`, runs the `optimize` pool
 wizard when needed) and recreates the container. **Memory/inbox/work are untouched** (unlike re-running
@@ -205,6 +206,7 @@ templates/                starter agent homes (ops, support, analyst) — all wi
 docs/                     design notes — CHAT (the chat plane + per-brain endpoints + tunables),
                           BRIDGES (give an agent a host capability — the contribution surface),
                           DELEGATION (manager→worker), OPTIMIZE-BRAIN, WORK-DIR (working folder + indexing),
+                          EVAL (benchmark models on your pools — endpoint-based, catalog-integrated),
                           WIKI-LAYER, MEMORY-PROVIDERS, MEMORY-MODES, CODE-MEMORY, WASM-SANDBOX,
                           VETTING (dependency security passes), ROADMAP
 ```
