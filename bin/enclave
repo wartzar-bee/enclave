@@ -20,6 +20,7 @@ Commands:
   enclave vault-encrypt            Encrypt the brain to an at-rest archive (key in secrets/, never committed)
   enclave vault-decrypt <blob>     Restore the brain from an encrypted archive
   enclave publish --registry R     Maintainer: build + push images to a registry (teammates `run --pull`)
+  enclave eval <adapter> …         Benchmark models on any OpenAI-compatible pool (capability|gsm8k; see eval --help)
 
 The wizard + run/stop/etc. all operate on the Enclave repo this script lives in
 (the clone IS the deployment, like a configured ps-ops checkout). `init` populates
@@ -1487,11 +1488,17 @@ def cmd_brain(args):
         print("✓ applied.")
 
 
+def cmd_eval(args):
+    """Model eval on any OpenAI-compatible pool — thin shim over platform/agentd/eval/cli.py."""
+    r = subprocess.run([sys.executable, str(REPO / "platform" / "agentd" / "eval" / "cli.py")] + args)
+    sys.exit(r.returncode)
+
+
 COMMANDS = {
     "new": cmd_new, "init": cmd_init, "run": cmd_run, "app": cmd_app, "stop": cmd_stop, "logs": cmd_logs,
     "send": cmd_send, "status": cmd_status, "chat": cmd_chat, "publish": cmd_publish, "brain": cmd_brain,
     "snapshot": cmd_snapshot, "audit-secrets": cmd_audit_secrets, "vault-encrypt": cmd_vault_encrypt, "vault-decrypt": cmd_vault_decrypt,
-    "fleet": cmd_fleet, "console": cmd_console, "update": cmd_update,
+    "fleet": cmd_fleet, "console": cmd_console, "update": cmd_update, "eval": cmd_eval,
 }
 
 def main():

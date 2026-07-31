@@ -55,6 +55,20 @@ SEED = {
                              "ESCALATION_MODEL": "minimaxai/minimax-m3",
                              "SUPERVISE": "off"},
     },
+    # per-model DOCUMENTED sampling params + thinking behaviour, from the model card (never guessed —
+    # one global temp invalidates comparisons). temp/top_p may be [thinking, non_thinking] or a scalar.
+    # can_think = supports the enable_thinking chat-template toggle. rep = repetition_penalty (null=off).
+    # Read by eval/runner.params_for(); results are tagged "default" when a model has no entry.
+    "model_params": {
+        "mlx-community/gemma-4-26b-a4b-it-4bit":
+            {"temp": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0, "rep": None, "can_think": True},
+        "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit":
+            {"temp": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "rep": 1.05, "can_think": False},
+        "mlx-community/Qwen3-8B-4bit":
+            {"temp": [0.6, 0.7], "top_p": [0.95, 0.8], "top_k": 20, "min_p": 0.0, "rep": None, "can_think": True},
+        "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit":
+            {"temp": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0, "rep": None, "can_think": True},
+    },
 }
 
 BARE_POOLS = {"claude"}            # claude CLI: bare ids, no provider prefix
@@ -212,4 +226,34 @@ def remove_preset(name):
         return {"error": f"unknown preset {name}"}
     cat["presets"].pop(name)
     save(cat); _audit("remove_preset", name)
+    return {"ok": True, "catalog": cat}
+
+
+# ── model params + eval evidence (read by eval/runner; written by `enclave eval`) ───────────────
+def model_params(mid):
+    """The documented sampling/thinking params for a model id, or None (caller falls back + tags it)."""
+    return load().get("model_params", {}).get(mid)
+
+
+def set_model_params(mid, params):
+    mid = (mid or "").strip()
+    if not mid or not isinstance(params, dict) or not params:
+        return {"error": "need a model id + non-empty params object"}
+    cat = load()
+    cat.setdefault("model_params", {})[mid] = params
+    save(cat); _audit("set_model_params", f"{mid} = {sorted(params)}")
+    return {"ok": True, "catalog": cat}
+
+
+def record_eval(mid, summary):
+    """Append an eval summary to the model's evidence trail (last 10 kept) — the eval→catalog loop
+    that lets a routing pick point at its evidence."""
+    mid = (mid or "").strip()
+    if not mid or not isinstance(summary, dict):
+        return {"error": "need a model id + summary object"}
+    cat = load()
+    lst = cat.setdefault("eval_results", {}).setdefault(mid, [])
+    lst.append(summary)
+    del lst[:-10]
+    save(cat); _audit("record_eval", f"{mid}: {summary.get('adapter')} {summary.get('acc', summary.get('score'))}")
     return {"ok": True, "catalog": cat}
