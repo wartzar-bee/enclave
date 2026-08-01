@@ -117,6 +117,13 @@ def is_reference(val):
     # literal `<identifier>`; blocking these false-froze channel-lab's brain backup (2026-07-25).
     if re.match(r"^<[A-Za-z_][\w\- ]*>", raw):
         return True
+    # A bare SCREAMING_SNAKE env-var NAME used as a placeholder value: `header api-key:DEVTO_API_KEY`,
+    # `X-Token: SERVICE_API_KEY`. This is a reference (the NAME of the env var that holds the secret),
+    # not the literal. looks_random() above already caught any real opaque token; a value that is pure
+    # [A-Z0-9_] and literally ends in a credential-label word is unambiguously a name, never key
+    # material (real tokens are not English words in caps). Froze wartzar-bee's brain backup 2026-08-01.
+    if re.fullmatch(r"[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|SEED(?:_HEX)?)", v):
+        return True
     # $VAR, $(cmd), ${A:-$B}, re.compile(...), os.environ[...]
     if v[0] == "$" or v.lstrip("-:").startswith("$") or "(" in v or "[" in v:
         return True

@@ -2461,11 +2461,19 @@ class H(BaseHTTPRequestHandler):
                     continue
                 st = pathlib.Path(home) / "state"
                 # escalations.log: blocks beginning "<ts> ESCALATE :: <text>" (+ indented continuations).
-                # SKIP monitor-advisory lines ("[monitor:…") — those are the fleet monitor's recurring
-                # alerts (context_bloat etc.), surfaced LIVE in the Monitor view with dedup + lifecycle;
-                # this HITL channel is for genuine "needs a human decision" items (agent ESCALATE: + approvals).
+                # SKIP pure-FYI / automated-monitoring categories — they fire on their own and are NOT
+                # operator decisions, so they must never inflate the "needs your decision" badge:
+                #   [monitor:…      fleet-monitor alerts (live in the Monitor view, dedup + lifecycle)
+                #   [vault-watch]   brain-commit hygiene — the fix is a daemon commit, not a human call
+                #   [judge]         automated per-tick quality scores
+                #   [coach]         auto-applied / adjudicated interventions (incl. [fyi])
+                #   [fleet-guardian] auto-restart notices (informational)
+                # This HITL channel is for genuine "needs a human decision" items (agent ESCALATE: + approvals).
+                _FYI_PREFIXES = ("[monitor:", "[vault-watch]", "[judge]", "[coach]", "[fleet-guardian]")
                 def _hitl(t):
-                    return bool(t) and not t.lstrip().startswith("[monitor:")
+                    if not t:
+                        return False
+                    return not t.lstrip().startswith(_FYI_PREFIXES)
 
                 # escalations.log is APPEND-ONLY and carries no status field, so every ESCALATE ever
                 # written stayed on the "needs your decision" badge forever — including ones the

@@ -74,6 +74,9 @@ ck("fp-bracket-redact", V.scan_text("RR_PASSWORD: [REDACTED->.secrets/royalroad.
    is None)
 ck("fp-env-index",     V.scan_text("api_key = os.environ['NVIDIA_API_KEY']") is None)
 ck("fp-shell-default", V.scan_text('TOKEN="${BROWSER_BRIDGE_TOKEN:-$X_TOKEN}"') is None)
+# a SCREAMING_SNAKE env-var NAME used as a placeholder value (froze wartzar-bee's brain, 2026-08-01)
+ck("fp-envname-value", V.scan_text("header api-key:DEVTO_API_KEY; body comment") is None)
+ck("fp-envname-header", V.scan_text("X-Token: SERVICE_API_KEY") is None)
 
 # ── end-to-end: a vault with a recipe reference COMMITS; one with a token BLOCKS ─────────────
 if shutil.which("git"):
@@ -103,7 +106,7 @@ if shutil.which("git"):
 else:
     print("(git absent — end-to-end vault checks skipped)")
 
-total = 35 if shutil.which("git") else 31
+total = 37 if shutil.which("git") else 33
 if fails:
     print(f"FAIL ({len(fails)}): " + ", ".join(fails))
     sys.exit(1)
