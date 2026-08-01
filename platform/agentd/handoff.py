@@ -10,8 +10,9 @@ actor FIRES. The canonical way to hand something off is ONE typed envelope, not 
         --payload '{"product":"tokenscope","goal":"validated recipe","audience":"devs on agent cost"}'
 
 Writes `<base>/state/outbox/<utc>-<type>.json` = {id,to,type,title,payload,from,created}. The off-Opus
-handoff-broker dispatches purely on `type` — routing types (distribution-help) auto-deliver to `to`'s
-inbox; judgment/operator types (maintainer-queue, board-request, glama-claim, operator-fire, release,
+handoff-broker dispatches purely on `type` — routing types (distribution-help → `to`'s help-requests/;
+candidate-handoff → `to`'s inbox.md) auto-deliver pod-to-pod with no studio relay; judgment/operator
+types (maintainer-queue, board-request, glama-claim, operator-fire, release,
 cursor-correction, vision-captcha) are surfaced for a studio session to fire. An unknown `type` is
 surfaced, never dropped. This is a PARSED protocol (AGENT-RULES §1), unlike the old bespoke queue files.
 
@@ -19,7 +20,7 @@ surfaced, never dropped. This is a PARSED protocol (AGENT-RULES §1), unlike the
 """
 import argparse, json, os, sys, pathlib, datetime
 
-ROUTE_TYPES = {"distribution-help"}
+ROUTE_TYPES = {"distribution-help", "candidate-handoff"}   # auto-deliver to `to` pod (no studio relay)
 SURFACE_TYPES = {"maintainer-queue", "glama-claim", "operator-fire", "board-request",
                  "release", "cursor-correction", "vision-captcha"}
 KNOWN = ROUTE_TYPES | SURFACE_TYPES
