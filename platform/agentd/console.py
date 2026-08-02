@@ -967,7 +967,11 @@ function render(){
       const mine=all.filter(a=>(a.fleet||"—")===fl);
       if(!mine.length)return;
       const nUp=mine.filter(a=>a.up).length;
-      if(multi)h+=`<div class="grp" style="margin-top:${i?14:0}px;color:var(--fg);border-left:3px solid var(--acc);padding-left:6px;letter-spacing:.04em">${esc(fl)} <span style="color:var(--mut);font-weight:400">· ${nUp}/${mine.length} up</span></div>`;
+      const shut=multi&&FLC.has(fl);
+      if(multi)h+=`<div class="grp fleethdr" data-fleet="${esc(fl)}" title="click to ${shut?"expand":"collapse"}" style="margin-top:${i?14:0}px;color:var(--fg);border-left:3px solid var(--acc);padding-left:6px;letter-spacing:.04em;cursor:pointer;user-select:none">`
+        +`<span style="display:inline-block;width:11px;color:var(--mut)">${shut?"▸":"▾"}</span>${esc(fl)} `
+        +`<span style="color:var(--mut);font-weight:400">· ${nUp}/${mine.length} up</span></div>`;
+      if(shut)return;   /* collapsed: header only, skip the rows */
       /* a manager only ever owns sub-agents inside its OWN fleet — never nest across a boundary */
       const sameFleet=new Set(mine.map(a=>a.id));
       const fleetAgents=mine.filter(a=>a.kind!=="standalone");
@@ -987,6 +991,22 @@ function render(){
   }
   document.getElementById("list").innerHTML=h||`<div class="grp" style="color:var(--mut)">no agents discovered</div>`;
 }
+/* ---------- collapsible fleet groups ----------
+   Persisted in localStorage so a collapse survives a refresh and the SSE re-renders (render() runs
+   on every push; without module-level state the group would spring back open each tick). */
+let FLC=new Set();
+try{FLC=new Set(JSON.parse(localStorage.getItem("enclaveFleetCollapsed")||"[]"));}catch(e){}
+function toggleFleet(fl){
+  if(!fl)return;
+  FLC.has(fl)?FLC.delete(fl):FLC.add(fl);
+  try{localStorage.setItem("enclaveFleetCollapsed",JSON.stringify([...FLC]));}catch(e){}
+  render();
+}
+/* Delegated: the rail is re-rendered wholesale, so per-element handlers would be lost each time. */
+document.addEventListener("click",e=>{
+  const hd=e.target.closest&&e.target.closest(".fleethdr");
+  if(hd){e.stopPropagation();toggleFleet(hd.dataset.fleet);}
+},true);
 function setBar(a){bm.innerHTML=a?`${statusPill(a)} · <span class="mono">${esc(a.status)}</span> · :${a.port}`:"";syncPauseBtn();}
 function pick(id){sel=id;if(curview!=="agents")view("agents");render();const a=agents[id];bt.textContent=id;setBar(a);tab(curtab);loadAgBlockers();}
 /* ---------- per-agent blocker strip — visible on EVERY tab of the selected agent ---------- */
