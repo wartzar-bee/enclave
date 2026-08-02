@@ -975,9 +975,14 @@ function render(){
       const seen=new Set();
       const walk=(a,depth)=>{if(seen.has(a.id))return;seen.add(a.id);h+=railRow(a,depth);
         kidsOf(a.id).filter(c=>sameFleet.has(c.id)).sort(byId).forEach(c=>walk(c,depth+1));};
-      if(roots.length){h+=`<div class="grp">▸ fleet</div>`;roots.forEach(r=>walk(r,0));}
+      /* The fleet/standalone SUB-headers only make sense on a single-fleet install, where they
+         separated "wired into the master" from "independent enclave". Once we group by fleet they
+         are noise — and worse, repeating "standalone" under every fleet reads like a second fleet.
+         Multi-fleet: render the hierarchy, then the unmanaged ones, under ONE header per fleet.
+         The ♛ badge still marks managers and the detail panel still says "standalone enclave". */
+      if(roots.length){if(!multi)h+=`<div class="grp">▸ fleet</div>`;roots.forEach(r=>walk(r,0));}
       const standalone=mine.filter(a=>a.kind==="standalone").sort(byId);
-      if(standalone.length){h+=`<div class="grp">▸ standalone</div>`;standalone.forEach(a=>h+=railRow(a,0));}
+      if(standalone.length){if(!multi)h+=`<div class="grp">▸ standalone</div>`;standalone.forEach(a=>h+=railRow(a,0));}
     });
   }
   document.getElementById("list").innerHTML=h||`<div class="grp" style="color:var(--mut)">no agents discovered</div>`;
