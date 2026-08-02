@@ -955,17 +955,30 @@ function render(){
   if(f){ /* filtering: flat list (a tree with hidden parents misleads) — badges still mark managers */
     list.sort(byId).forEach(a=>h+=railRow(a,0));
   }else{
-    /* FLEET as a real hierarchy: each master (depth-0 manager) with its sub-agents nested
-       beneath it; STANDALONE (independent enclaves not wired into a fleet) in their own section. */
+    /* Grouped by FLEET first — the ENCLAVE_STACKS_ROOT each deployment lives under — so ONE console
+       can show every enclave agent on the machine while keeping separate fleets visibly separate.
+       Within a fleet the old structure is preserved: masters with their sub-agents nested, then
+       STANDALONE (independent enclaves not wired into a master). The fleet header is suppressed when
+       only one fleet is present, so a single-fleet install looks exactly as it did before. */
     const ids=new Set(all.map(a=>a.id));
-    const fleet=all.filter(a=>a.kind!=="standalone");
-    const roots=fleet.filter(a=>!a.manager||!ids.has(a.manager)).sort(byId);
-    const seen=new Set();
-    const walk=(a,depth)=>{if(seen.has(a.id))return;seen.add(a.id);h+=railRow(a,depth);
-      kidsOf(a.id).sort(byId).forEach(c=>walk(c,depth+1));};
-    if(roots.length){h+=`<div class="grp">▸ fleet</div>`;roots.forEach(r=>walk(r,0));}
-    const standalone=all.filter(a=>a.kind==="standalone").sort(byId);
-    if(standalone.length){h+=`<div class="grp">▸ standalone</div>`;standalone.forEach(a=>h+=railRow(a,0));}
+    const fleets=[...new Set(all.map(a=>a.fleet||"—"))].sort();
+    const multi=fleets.length>1;
+    fleets.forEach((fl,i)=>{
+      const mine=all.filter(a=>(a.fleet||"—")===fl);
+      if(!mine.length)return;
+      const nUp=mine.filter(a=>a.up).length;
+      if(multi)h+=`<div class="grp" style="margin-top:${i?14:0}px;color:var(--fg);border-left:3px solid var(--acc);padding-left:6px;letter-spacing:.04em">${esc(fl)} <span style="color:var(--mut);font-weight:400">· ${nUp}/${mine.length} up</span></div>`;
+      /* a manager only ever owns sub-agents inside its OWN fleet — never nest across a boundary */
+      const sameFleet=new Set(mine.map(a=>a.id));
+      const fleetAgents=mine.filter(a=>a.kind!=="standalone");
+      const roots=fleetAgents.filter(a=>!a.manager||!ids.has(a.manager)||!sameFleet.has(a.manager)).sort(byId);
+      const seen=new Set();
+      const walk=(a,depth)=>{if(seen.has(a.id))return;seen.add(a.id);h+=railRow(a,depth);
+        kidsOf(a.id).filter(c=>sameFleet.has(c.id)).sort(byId).forEach(c=>walk(c,depth+1));};
+      if(roots.length){h+=`<div class="grp">▸ fleet</div>`;roots.forEach(r=>walk(r,0));}
+      const standalone=mine.filter(a=>a.kind==="standalone").sort(byId);
+      if(standalone.length){h+=`<div class="grp">▸ standalone</div>`;standalone.forEach(a=>h+=railRow(a,0));}
+    });
   }
   document.getElementById("list").innerHTML=h||`<div class="grp" style="color:var(--mut)">no agents discovered</div>`;
 }
@@ -1092,7 +1105,7 @@ async function renderDiag(a){const p=document.getElementById("pane");p.innerHTML
   const lr=d.last_record||((ov.last||{})[sel]||{});const c=d.wtd||((((ov.usage||{}).wtd||{}).agents||{})[sel]||{});
   let html=`<div style="padding:14px 16px;overflow:auto">
     <div class="card" style="margin-bottom:12px"><div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start">
-      <div><div class="v" style="font-size:15px">${statusPill(a)}</div><div class="s" style="margin-top:2px"><span class="mono">${esc(a.status)}</span> · ${esc(a.brain)}/${esc(shortModel(a.model))} · :${a.port}<br>${a.kind==="standalone"?"standalone enclave":(isManager(a.id)?"♛ manages "+kidsOf(a.id).length+" sub-agent(s)":"fleet · ↳ "+esc(a.manager||"—"))} · chat ${a.reachable?"reachable":"<span style='color:var(--err)'>unreachable</span>"} · open work ${a.work_open||0}</div></div>
+      <div><div class="v" style="font-size:15px">${statusPill(a)}</div><div class="s" style="margin-top:2px"><span class="mono">${esc(a.status)}</span> · ${esc(a.brain)}/${esc(shortModel(a.model))} · :${a.port}<br>${a.fleet?`<b>${esc(a.fleet)}</b> · `:""}${a.kind==="standalone"?"standalone enclave":(isManager(a.id)?"♛ manages "+kidsOf(a.id).length+" sub-agent(s)":"fleet · ↳ "+esc(a.manager||"—"))} · chat ${a.reachable?"reachable":"<span style='color:var(--err)'>unreachable</span>"} · open work ${a.work_open||0}</div></div>
       <span style="flex:1"></span>
       <div class="s" style="text-align:right"><b>${usd(c.cost_usd)}</b> wtd · ${c.ticks||0} ticks<br>last: ${lr.cost_usd!=null?usd(lr.cost_usd):"—"} ${esc(lr.reason||"")}${lr.rc!=null&&lr.rc!==0?" · rc "+lr.rc:""}</div>
       <button class="btn" onclick="runDoctor()" title="Run host-side health checks">🩺 Health</button></div>

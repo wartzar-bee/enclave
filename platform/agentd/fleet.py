@@ -371,12 +371,48 @@ def _state(home):
     return s
 
 
+# Human labels per fleet root, e.g. ENCLAVE_FLEET_LABELS='{"pas-agents":"Peter & Sons"}'.
+# Defaults to the root's folder name, which is already meaningful.
+try:
+    FLEET_LABELS = json.loads(os.environ.get("ENCLAVE_FLEET_LABELS", "") or "{}")
+except Exception:
+    FLEET_LABELS = {}
+
+
+def _fleet_of(d):
+    """Which STACKS_ROOT a deployment lives under -> its fleet id ("" if under none).
+
+    This is what lets ONE console show every enclave agent on the machine while keeping them
+    honestly separated: the fleet is derived from the path, never from a label someone typed.
+    Most-specific root wins, so nested roots resolve to the inner one.
+    """
+    if not d:
+        return ""
+    try:
+        p = pathlib.Path(d).resolve()
+    except Exception:
+        return ""
+    best = None
+    for r in STACKS_ROOTS:
+        if p == r or str(p).startswith(str(r) + os.sep):
+            if best is None or len(str(r)) > len(str(best)):
+                best = r
+    if best is None:
+        return ""
+    return FLEET_LABELS.get(best.name, best.name)
+
+
 def snapshot():
     """The single source of truth: one dict {id: {...}} from disk reads. No backend HTTP calls."""
     man = _manifest()
     agents = {}
     for row in _compose_ls():
         name = row["name"]
+        # compose ls is docker-GLOBAL: it returns every project on the HOST, so without this the
+        # console lists agents from fleets it was never pointed at. Fails CLOSED — a row we cannot
+        # locate on disk is not shown, because we cannot say which fleet it belongs to (2026-08-02).
+        if not _fleet_of(row["dir"]):
+            continue
         # heuristic: an enclave agent project has an agent container + a web-chat sibling
         env = _env(row["dir"])
         home = _agent_home(name, row["dir"])
@@ -395,6 +431,7 @@ def snapshot():
             "port": _port(env),
             "chat_token": env.get("WEB_CHAT_TOKEN", ""),
             "dir": row["dir"],
+            "fleet": _fleet_of(row["dir"]),
             "configfile": row["configfile"],
             "home": str(home) if home else "",
             "manager": m.get("manager", ""),
@@ -423,7 +460,7 @@ def snapshot():
         agents[aid] = {
             "id": aid, "up": False, "status": "stopped",
             "brain": env.get("BRAIN", "?"), "model": _model_of(env),
-            "port": _port(env), "chat_token": env.get("WEB_CHAT_TOKEN", ""), "dir": dep,
+            "port": _port(env), "chat_token": env.get("WEB_CHAT_TOKEN", ""), "dir": dep, "fleet": _fleet_of(dep),
             "configfile": str(pathlib.Path(dep) / "docker-compose.yml"),
             "home": str(home) if home else "",
             "manager": m.get("manager", ""), "tags": m.get("tags", []),
