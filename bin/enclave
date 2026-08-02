@@ -402,6 +402,23 @@ def _apply_spec_extras(spec, home, secrets, envf):
         if spec.get("preflight_gate"):
             _set_env_kv(home / "agent.env", {"PREFLIGHT_GATE": "1"})
 
+    # Work-product scorecard config. WITHOUT THIS A POD IS BORN UNMEASURABLE: scorecard.py reports
+    # product:null / config:"missing", the console shows `prod:blind`, and agentloop's
+    # unproductive-streak decay has nothing to read — so a pod that ships nothing paces exactly like
+    # one that ships constantly. `kpi_artifacts` was previously honoured ONLY by spawn_watcher, and
+    # only for venture-class specs, so every pod created by `enclave new --spec` silently dropped it.
+    ka = [str(g).strip() for g in (spec.get("kpi_artifacts") or []) if str(g).strip()]
+    if ka:
+        state = home / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        _write(state / "scorecard-config.json", json.dumps({
+            "kpi_artifacts": ka,
+            "tooling_paths": spec.get("tooling_paths") or ["bin/**", "work/**/*.py", "work/**/*.sh"],
+            "self_state_paths": spec.get("self_state_paths") or ["state/**", "memory/**", "*.md"],
+            "product_measured_externally": bool(spec.get("product_measured_externally", False)),
+            "set_by": "enclave new --spec",
+        }, indent=2) + "\n")
+
     # BRAIN=api endpoint wiring (the no-Claude path): a `provider` shorthand (nvidia/openrouter) expands to
     # base + key-env; explicit brain_api_base / brain_api_key_env / escalation_* win. Written into agent.env
     # so runtime.sh's BRAIN=api block drives local_agent.py against that endpoint with no Claude in the loop.
