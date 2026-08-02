@@ -34,10 +34,19 @@ def test_gate_skips_empty_queue():
     assert not fire and "empty" in why
 
 
-def test_gate_skips_blocked_even_with_open_work():
-    """A blocked pod's open items are not actionable — inbox/comms wake it the moment the
-    dependency answers; the ceiling covers the periodic self-check."""
-    fire, why = wake_gate(True, True, 100, 21600)
+def test_gate_fires_when_blocked_but_other_work_is_open():
+    """Blocking is PER-DEPENDENCY. A pod waiting on one answer must still work its remaining queue.
+
+    Regression for the real incident: a pod blocked on a pause question held two unrelated,
+    actionable items and worked neither for the whole 6h ceiling."""
+    fire, why = wake_gate(has_work=True, blocked=True, last_fire_age=100, max_staleness=21600)
+    assert fire and "blocker" in why
+
+
+def test_gate_skips_blocked_with_nothing_else_to_do():
+    """The original protection survives: a blocked pod with an EMPTY queue parks quietly instead of
+    re-logging "still blocked" every tick. inbox/comms wake it the moment the dependency answers."""
+    fire, why = wake_gate(has_work=False, blocked=True, last_fire_age=100, max_staleness=21600)
     assert not fire and "blocked" in why
 
 

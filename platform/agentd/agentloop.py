@@ -58,13 +58,22 @@ def wake_gate(has_work, blocked, last_fire_age, max_staleness):
     dependency at the same price. Fire when there is actionable open work; otherwise skip until the
     staleness ceiling, which guarantees a periodic real self-check (blocker re-check, maintenance)
     no matter what the files claim — a wrong skip self-heals there. Skips cost zero tokens, and
-    inbox/comms still wake the pod within seconds."""
+    inbox/comms still wake the pod within seconds.
+
+    BLOCKED IS PER-DEPENDENCY, NOT PER-POD (2026-08-02). `blocked` used to short-circuit ahead of
+    `has_work`, so one unanswered dependency froze the WHOLE queue: a pod with several unrelated open
+    items sat idle for the full 6h ceiling. Observed in the wild — a pod blocked on a pause question
+    had two actionable items and worked neither. Blocking now only parks a pod that has nothing else
+    to do. The failure this originally guarded against — re-logging "still blocked" every tick, which
+    cost real money — is handled where it belongs: the agent's own escalate-once-then-work-the-queue
+    discipline, plus the unproductive-streak decay that slows a pod claiming progress while shipping
+    nothing."""
     if last_fire_age >= max_staleness:
         return True, f"staleness ceiling ({max_staleness}s since last tick)"
-    if blocked:
-        return False, "blocked on a named dependency (ceiling re-check pending)"
+    if blocked and not has_work:
+        return False, "blocked on a named dependency, nothing else open (ceiling re-check pending)"
     if has_work:
-        return True, "open work"
+        return True, "open work despite the blocker" if blocked else "open work"
     return False, "empty queue"
 
 
