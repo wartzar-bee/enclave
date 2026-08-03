@@ -358,6 +358,38 @@ def _clone_brain(agent_id, home, include_work):
         pass
     print(f"  cloned BRAIN from '{agent_id}': {', '.join(copied) or '(no brain dirs found)'}")
 
+def _mount_framework(image_only):
+    """Scaffold the framework live-mount into docker-compose.override.yml.
+
+    Without it a new pod is frozen to the agentd baked into its image: framework fixes reach it only
+    on a rebuild, and a `docker cp` patch is discarded the next time the container is recreated. The
+    mount is read-only — agentd is the operator's to change, not the agent's."""
+    src = REPO / "platform" / "agentd"
+    if not src.is_dir():
+        return                                  # not a full checkout (nothing to mount from)
+    ov = DEPLOY / "docker-compose.override.yml"
+    if ov.exists():
+        print("  (framework live-mount: docker-compose.override.yml already exists — left untouched)")
+        return
+    # A full-copy deployment IS its own checkout, so a relative path keeps the folder movable. An
+    # --image-only deployment has no platform/ of its own and must point at the canonical checkout.
+    path = "./platform/agentd" if DEPLOY.resolve() == REPO.resolve() else str(src.resolve())
+    _write(ov, (
+        "# docker-compose.override.yml — scaffolded by `enclave new`.\n"
+        "#\n"
+        "# FRAMEWORK LIVE-MOUNT. platform/agentd is baked into the agent image, so without this the pod\n"
+        "# runs whatever agentd shipped in that image and inherits no framework fix until a rebuild\n"
+        "# (and a `docker cp` patch is discarded on the next recreate). Mounting it read-only means a\n"
+        "# fix to the source tree reaches this pod on a plain restart.\n"
+        "#\n"
+        "# Delete this file to pin the pod to its image's own copy instead.\n"
+        "services:\n"
+        "  agent:\n"
+        "    volumes:\n"
+        f"      - {path}:/workspace/platform/agentd:ro\n"
+    ))
+    print(f"  framework → live-mounted {path} (read-only); framework fixes land on restart, no rebuild")
+
 def _apply_spec_extras(spec, home, secrets, envf):
     """Apply the spec fields that aren't plain init flags to the freshly-scaffolded deployment."""
     mission = (spec.get("mission") or "").strip()
@@ -837,6 +869,15 @@ def cmd_init(args):
     # canonical one if the deployment doesn't have its own.
     if image_only and not (DEPLOY / "docker-compose.yml").exists():
         shutil.copy2(REPO / "docker-compose.yml", DEPLOY / "docker-compose.yml")
+
+    # Framework LIVE-MOUNT. agentd is BAKED into the image, so a new pod runs whatever shipped in it
+    # and inherits no framework fix until someone rebuilds — and a `docker cp` is discarded on the next
+    # recreate. Every long-lived pod ended up hand-patched with this mount (wartzar-bee's override is
+    # the pattern); scaffolding it means the fix lands once, centrally, for pods that don't exist yet.
+    # Read-only: the framework is the operator's to change, never the agent's.
+    #   --image-only → mount THIS canonical checkout (a fix here propagates to every pod built from it)
+    #   full copy    → REPO is the deployment itself, so the relative path keeps the folder movable
+    _mount_framework(image_only)
 
     # 7b) spec extras (mission/kpi → CLAUDE.md, interval, scoped-secret placeholders, guardrails)
     if spec:

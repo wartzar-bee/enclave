@@ -90,7 +90,7 @@ If a live tool fails with a credentials / re-auth error, STOP (don't retry in a 
 Plan work as coherent BUDGETED packages (related tasks only), keep ONE lean `state/handoff.md` current
 (objective · now-doing · EXACT next step · key files path:line · decisions · blockers), and obey the
 `ctx_budget` hook: **soft** 📊 → reach a boundary + refresh handoff + no big reads; **hard** 🛑 → finalize
-`handoff.md`, write `state/tick-status.json {"status":"continue","session":"clear","serves":["<directive-id>"]}`,
+`handoff.md`, write `/agent/state/tick-status.json {"status":"continue","session":"clear","serves":["<directive-id>"]}`,
 then `finish` (next tick resumes lean). **Every tick-status you write MUST carry `serves`: the id(s) from
 `state/directives.json` this tick worked on** — the harness scorecard attributes your work by it; an empty
 serves reads as drift. Estimate a $ budget per package in `state/budget.json

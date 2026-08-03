@@ -59,6 +59,6 @@ If a live tool fails with a credentials / re-auth error, STOP (don't retry in a 
 Plan work as coherent BUDGETED packages, keep ONE lean `state/handoff.md` current (objective · now-doing ·
 EXACT next step · key files path:line · decisions · blockers), obey the `ctx_budget` hook: **soft** 📊 →
 reach a boundary + refresh handoff + no big reads; **hard** 🛑 → finalize `handoff.md`, write
-`state/tick-status.json {"status":"continue","session":"clear"}`, then `finish`. Budget per package in
+`/agent/state/tick-status.json {"status":"continue","session":"clear"}`, then `finish`. Budget per package in
 `state/budget.json {"package":...,"soft_usd":N,"hard_usd":N}`; calibrate from actuals. grep/Read-offset,
 never `cat` whole files.
