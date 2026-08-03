@@ -43,6 +43,14 @@ LOCAL_AGENT = HERE / "local_agent.py"
 #   4. nothing                          — raise, naming exactly what to set. NEVER guess a model:
 #                                         guessing is what produced a week of silent failure.
 DELEGATE_POOL = os.environ.get("DELEGATE_POOL", "nvidia")
+
+# The delegation kinds a manager may ask for. OUR vocabulary, deliberately separate from the
+# capability names policy.json uses ("default"/"fast"/"coder") — _KIND_ALIASES maps between them.
+# It replaces the deleted KIND_MODEL table, which `--kind`'s argparse `choices` still referenced
+# after the de-hardcoding commit: every invocation died with `NameError: KIND_MODEL` before it
+# parsed a single argument. `test_delegate.py` now runs `--help` for exactly this reason — the
+# commit verified _model_for() against the live policy and never ran the CLI it had broken.
+DELEGATE_KINDS = ("code", "write", "analyze", "classify")
 _KIND_ALIASES = {"analyze": ("analyze", "analysis"), "classify": ("classify", "fast")}
 
 
@@ -238,7 +246,7 @@ def _run_verify(cmd, cwd, timeout):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", required=True)
-    ap.add_argument("--kind", default="code", choices=list(KIND_MODEL))
+    ap.add_argument("--kind", default="code", choices=list(DELEGATE_KINDS))
     ap.add_argument("--cwd", default=os.environ.get("AGENT_DIR", "/agent"))
     ap.add_argument("--context-files", default="")
     ap.add_argument("--allow-files", default="",
