@@ -24,23 +24,62 @@ import sys, os, re, json, time, argparse, subprocess, pathlib, urllib.request
 HERE = pathlib.Path(__file__).resolve().parent
 LOCAL_AGENT = HERE / "local_agent.py"
 
-# kind → worker model (env override DELEGATE_MODEL_<KIND>). Default pool = NVIDIA's FREE OpenAI-compatible
-# API (build.nvidia.com): $0, reliable INSTRUCT models that emit clean content (verified) — unlike the
-# local MLX Nemotron which reasons forever, and unlike paid OpenRouter. Point at local MLX instead by
-# setting DELEGATE_BASE + DELEGATE_MODEL_<KIND> (truly-offline mode).
-# 2026-08-03: all three qwen entries were qwen/qwen3-next-80b-a3b-instruct, which NVIDIA RETIRED on
-# 2026-07-27 (HTTP 410 Gone). Every delegation on two live pods had failed silently for a week —
-# 54 calls, 0 successes, each logged as one $0 `brain_error` tick — so the Claude manager quietly did
-# all the labour itself. Repointed to gpt-oss-120b, retested the same day: clean content, reasoning
-# kept out of `content`. Keep this table in sync with policy.json models.nvidia.
-KIND_MODEL = {
-    "code":     "openai/gpt-oss-120b",
-    "write":    "openai/gpt-oss-120b",
-    "analyze":  "openai/gpt-oss-120b",
-    "classify": "meta/llama-3.3-70b-instruct",
-}
-WORKER_BASE = os.environ.get("DELEGATE_BASE") or os.environ.get("NVIDIA_API_BASE") \
-    or "https://integrate.api.nvidia.com/v1"
+# Worker models are CONFIGURATION, never framework constants.
+#
+# This table used to name vendor models inline, with a comment instructing whoever edited it to
+# "keep this table in sync with policy.json" — a manual sync with nothing enforcing it. It went
+# stale exactly as you would expect: all three entries pointed at qwen/qwen3-next-80b-a3b-instruct,
+# NVIDIA retired it on 2026-07-27 (HTTP 410 Gone), and every delegation on two live pods failed for
+# a WEEK — 54 calls, 0 successes — each logged as one innocuous $0 `brain_error` tick, so the fleet
+# read as idle-and-cheap while the Claude manager silently absorbed all the delegated labour.
+#
+# A framework that hardcodes one vendor's catalogue entry breaks on that vendor's next retirement,
+# and enclave is a product other people run. So there is no model name in this file. Resolution:
+#
+#   1. DELEGATE_MODEL_<KIND>            — explicit per-kind override, always wins
+#   2. $DELEGATE_POLICY                 — path to a policy.json
+#   3. $TOOLS_ROOT/llm/policy.json      — the SAME file route.mjs reads, so the duplication that
+#                                         caused the stale table cannot recur
+#   4. nothing                          — raise, naming exactly what to set. NEVER guess a model:
+#                                         guessing is what produced a week of silent failure.
+DELEGATE_POOL = os.environ.get("DELEGATE_POOL", "nvidia")
+_KIND_ALIASES = {"analyze": ("analyze", "analysis"), "classify": ("classify", "fast")}
+
+
+def _policy_path():
+    p = os.environ.get("DELEGATE_POLICY")
+    if p:
+        return pathlib.Path(p)
+    return pathlib.Path(os.environ.get("TOOLS_ROOT", "/workspace")) / "llm" / "policy.json"
+
+
+def _policy_models():
+    """models.<DELEGATE_POOL> from policy.json, or {} if unreadable. Never raises."""
+    try:
+        return (json.loads(_policy_path().read_text()).get("models") or {}).get(DELEGATE_POOL) or {}
+    except Exception:
+        return {}
+
+
+def _worker_base():
+    """Endpoint for the worker pool. Config, not a constant — same reasoning as the models."""
+    for env in ("DELEGATE_BASE", "NVIDIA_API_BASE"):
+        if os.environ.get(env):
+            return os.environ[env]
+    try:
+        pools = json.loads(_policy_path().read_text()).get("pools") or {}
+        pool = pools.get(DELEGATE_POOL) or {}
+        base = os.environ.get(pool.get("base_url_env", "")) or pool.get("base_url_default")
+        if base:
+            return base
+    except Exception:
+        pass
+    raise RuntimeError(
+        f"no endpoint for delegation pool {DELEGATE_POOL!r}: set DELEGATE_BASE, or provide a "
+        f"policy.json at {_policy_path()} defining pools.{DELEGATE_POOL}.base_url_default"
+    )
+
+
 
 
 def _worker_key():
@@ -60,7 +99,23 @@ def _worker_key():
 
 
 def _model_for(kind):
-    return os.environ.get(f"DELEGATE_MODEL_{kind.upper()}") or KIND_MODEL.get(kind, KIND_MODEL["code"])
+    """Resolve the worker model for `kind`. Raises rather than guessing — see the note above."""
+    explicit = os.environ.get(f"DELEGATE_MODEL_{kind.upper()}")
+    if explicit:
+        return explicit
+
+    models = _policy_models()
+    # policy.json names models by capability ("default"/"fast"/"coder"), not by our kind vocabulary.
+    for key in _KIND_ALIASES.get(kind, (kind,)) + ("default",):
+        if models.get(key):
+            return models[key]
+
+    raise RuntimeError(
+        f"no worker model for kind={kind!r}: set DELEGATE_MODEL_{kind.upper()}, or provide a "
+        f"policy.json at {_policy_path()} defining models.{DELEGATE_POOL}.default. "
+        f"Refusing to guess — a stale hardcoded default is what silently broke 54 delegations "
+        f"over a week when the vendor retired the model it named."
+    )
 
 
 def _prewarm(model, key, timeout=120):
@@ -70,7 +125,7 @@ def _prewarm(model, key, timeout=120):
     hdrs = {"Content-Type": "application/json"}
     if key:
         hdrs["Authorization"] = "Bearer " + key
-    req = urllib.request.Request(WORKER_BASE.rstrip("/") + "/chat/completions", data=body, headers=hdrs)
+    req = urllib.request.Request(_worker_base().rstrip("/") + "/chat/completions", data=body, headers=hdrs)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             r.read()
@@ -129,7 +184,7 @@ def _run_worker(task, model, args, trace_path, extra=""):
         "WORKER_MODE": "1",
         "DELEGATE_TASK": task + (("\n\n" + extra) if extra else ""),
         "LOCAL_BRAIN_MODEL": model,
-        "LOCAL_BRAIN_BASE": WORKER_BASE,
+        "LOCAL_BRAIN_BASE": _worker_base(),
         "LOCAL_BRAIN_KEY": _worker_key(),
         "LOCAL_MAX_STEPS": str(args.max_steps),
         "LOCAL_REQ_TIMEOUT": str(max(120, args.timeout // 2)),   # NVIDIA free is fast; generous floor
