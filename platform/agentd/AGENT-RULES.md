@@ -13,7 +13,10 @@
 
 # Harness protocol (framework-owned — the harness parses these; do not skip them)
 
-## 1. Declare what you served — `state/tick-status.json`
+## 1. Declare what you served — `/agent/state/tick-status.json`
+Write that **absolute** path, not a relative one. A relative
+`state/tick-status.json` lands under your *cwd* — `/work` or `/workspace`, not your home — and the
+loop then has to recover it by guessing, or drops your declaration entirely and paces by inference.
 Before you `finish`, write:
 ```json
 {"status":"continue|blocked|done", "session":"clear|keep", "serves":["<directive-id>", ...]}

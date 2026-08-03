@@ -28,10 +28,15 @@ LOCAL_AGENT = HERE / "local_agent.py"
 # API (build.nvidia.com): $0, reliable INSTRUCT models that emit clean content (verified) — unlike the
 # local MLX Nemotron which reasons forever, and unlike paid OpenRouter. Point at local MLX instead by
 # setting DELEGATE_BASE + DELEGATE_MODEL_<KIND> (truly-offline mode).
+# 2026-08-03: all three qwen entries were qwen/qwen3-next-80b-a3b-instruct, which NVIDIA RETIRED on
+# 2026-07-27 (HTTP 410 Gone). Every delegation on two live pods had failed silently for a week —
+# 54 calls, 0 successes, each logged as one $0 `brain_error` tick — so the Claude manager quietly did
+# all the labour itself. Repointed to gpt-oss-120b, retested the same day: clean content, reasoning
+# kept out of `content`. Keep this table in sync with policy.json models.nvidia.
 KIND_MODEL = {
-    "code":     "qwen/qwen3-next-80b-a3b-instruct",   # ~2s, clean code, no reasoning bloat
-    "write":    "qwen/qwen3-next-80b-a3b-instruct",
-    "analyze":  "qwen/qwen3-next-80b-a3b-instruct",
+    "code":     "openai/gpt-oss-120b",
+    "write":    "openai/gpt-oss-120b",
+    "analyze":  "openai/gpt-oss-120b",
     "classify": "meta/llama-3.3-70b-instruct",
 }
 WORKER_BASE = os.environ.get("DELEGATE_BASE") or os.environ.get("NVIDIA_API_BASE") \

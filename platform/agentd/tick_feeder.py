@@ -42,7 +42,7 @@ WARN2 = ("⚠️ BUDGET — ${cost:.2f} of ${hard:.2f}. You are about to be cut 
          "state/handoff.md now (objective · now-doing · EXACT next step · key files "
          "path:line · decisions · blockers) and stop opening new work.")
 STOP  = ("\U0001F6D1 STOP NOW — ${cost:.2f} ≥ your ${hard:.2f} budget. Do ONLY this, immediately: "
-         "(1) finish writing state/handoff.md; (2) write state/tick-status.json "
+         "(1) finish writing state/handoff.md; (2) write /agent/state/tick-status.json "
          "{{\"status\":\"continue\",\"session\":\"clear\"}}; (3) finish this turn. You will be "
          "hard-stopped in ~{grace}s.")
 # Turn-cap wrap-up (2026-07-04 fix #4/#9-adjacent): MAX_TURNS used to GUILLOTINE mid-work
@@ -50,7 +50,7 @@ STOP  = ("\U0001F6D1 STOP NOW — ${cost:.2f} ≥ your ${hard:.2f} budget. Do ON
 # Inject a wrap-up order near the cap so the agent banks state and exits cleanly instead.
 TURNWRAP = ("⏳ TURN CAP — you are at turn {turn} of a {max_turns}-turn tick cap. WRAP UP NOW: "
             "bank the current chunk (commit if applicable), write state/handoff.md with the EXACT "
-            "next step, write state/tick-status.json {{\"status\":\"continue\"}}, and finish this "
+            "next step, write /agent/state/tick-status.json {{\"status\":\"continue\"}}, and finish this "
             "turn cleanly. Do NOT start anything new — hitting the cap wipes this tick's unsaved "
             "work and the next tick pays to re-derive it.")
 # Epoch continuation: the increment landed and context is still lean — keep working in THIS session
@@ -60,14 +60,14 @@ TURNWRAP = ("⏳ TURN CAP — you are at turn {turn} of a {max_turns}-turn tick 
 CONT = ("✅ Increment #{inc} banked — your context is still lean ({ctx}k tokens, ${cost:.2f} spent), "
         "so CONTINUE IN THIS SESSION: take the NEXT single highest-leverage increment toward your KPI, "
         "same rules (do it to a verifiable done, log the decision, update work.json, write "
-        "state/tick-status.json when the increment completes). Everything you read is still in "
+        "/agent/state/tick-status.json when the increment completes). Everything you read is still in "
         "context — do NOT re-read inbox/plans/capabilities unless they changed. Skip the full "
         "state/handoff.md rewrite mid-session (you'll be told when to wrap up); keep it to a one-line "
-        "pointer if you must. If nothing actionable remains, write state/tick-status.json "
+        "pointer if you must. If nothing actionable remains, write /agent/state/tick-status.json "
         "{{\"status\":\"idle\"}} (or \"blocked\" + waiting_on) and finish.")
 EPOCHEND = ("\U0001F3C1 EPOCH END ({reason}). Do ONLY this now: (1) finalize state/handoff.md "
             "(objective · now-doing · EXACT next step · key files path:line · decisions · blockers) "
-            "so the next fresh session continues cheaply; (2) write state/tick-status.json — "
+            "so the next fresh session continues cheaply; (2) write /agent/state/tick-status.json — "
             "{{\"status\":\"continue\"}} if actionable work remains, else \"idle\"/\"blocked\" with "
             "waiting_on; (3) finish this turn. Do NOT start new work.")
 
