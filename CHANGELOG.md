@@ -6,6 +6,49 @@ move between minor versions — pin a tag if that matters to you.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-03
+
+### Added
+- **Console lists every enclave agent on the host, grouped by fleet.** `docker compose ls` is
+  host-global, so `ENCLAVE_STACKS_ROOTS` was silently ignored for the agent list. It is now honoured and
+  the compose-ls filter fails **closed**; each agent's `fleet` is derived from which configured root it
+  lives under (`fleet.py:_fleet_of`), with an optional label map `ENCLAVE_FLEET_LABELS`. (`2507051`)
+- **Collapsible fleet groups in the console rail.** Click a fleet header to collapse it; state persists in
+  `localStorage` (the rail is rebuilt on every SSE push, so the handler is delegated). (`45f44c0`)
+- **`candidate-handoff` route — pods hand off to pods with no studio relay.** A `candidate-handoff`
+  envelope auto-delivers to the target pod's `inbox.md`; only judgment/operator types still route through
+  the studio. (`58fdb74`)
+- **`enclave new` live-mounts the framework read-only.** New pods get a scaffolded
+  `docker-compose.override.yml` bind-mounting `platform/agentd` at `:ro`, so a framework fix lands on the
+  next `restart` with no image rebuild. (`a166e50`)
+
+### Fixed
+- **Delegation no longer dies silently when a vendor retires a model.** `delegate.py`'s kind→model table
+  hardcoded `qwen/qwen3-next-80b-a3b-instruct`; NVIDIA retired it (HTTP 410) and every delegation on live
+  pods failed for a week (54 calls / 0 successes), each logged as one `$0 brain_error` tick so it read as
+  idle-and-cheap. The table now carries **no model name** — it resolves from the same `policy.json`
+  `route.mjs` reads (the duplication that went stale cannot recur), RAISES naming what to set rather than
+  guessing, and `--kind` accepts a stable `DELEGATE_KINDS` vocabulary mapped to policy capability names via
+  `_KIND_ALIASES`. `tick_feeder` also now locates `tick-status.json` in the home state dir AND cwd-relative
+  spots so it reaches RUNNING pods. (`2a93882`, `15bf697`, `d2b5fee`)
+- **Agents write `tick-status.json` to an absolute path.** Templates named it relative; a pod whose cwd is
+  `/work` wrote the status into the wrong tree. Templates now name `/agent/state/tick-status.json`. (`a166e50`)
+- **agentloop: blocking is per-DEPENDENCY, not per-pod.** `wake_gate` short-circuited on `blocked` before
+  `has_work`, so one unanswered dependency froze the whole queue — a pod sat idle for the full 6h ceiling
+  with unrelated actionable items. A blocked pod now still ticks when it has other work. (`ea4e6c8`)
+- **`enclave new` honours `kpi_artifacts` — a pod was being born unmeasurable.** `kpi_artifacts` was
+  consumed only by `spawn_watcher.py` for venture-class specs, so `enclave new --spec` dropped it and
+  started with no `state/scorecard-config.json` (`scorecard.py` reported `product:null`, console showed
+  `prod:blind`). `_apply_spec_extras` now writes the same config. (`f71750d`)
+- **Console: fleet grouping no longer repeats "standalone" under every fleet** — single-fleet installs
+  keep the old sub-headers. (`8ba5c5d`)
+- **Vault secret-gate no longer false-freezes brain backups on env-var NAME placeholders.**
+  `is_reference()` now exempts a bare SCREAMING_SNAKE credential label used as a placeholder value
+  (`header api-key:DEVTO_API_KEY`); `looks_random()` still catches any real opaque token first. (`139202d`)
+- **HITL console hides pure-FYI / automated-monitoring rows** — `[monitor:` / `[vault-watch]` / `[judge]` /
+  `[coach]` / `[fleet-guardian]` / `[fyi]` / `[board]` / `[studio-action]` prefixes are filtered out of the
+  human decision queue. (`139202d`)
+
 ## [0.4.0] — 2026-07-31
 
 ### Added
