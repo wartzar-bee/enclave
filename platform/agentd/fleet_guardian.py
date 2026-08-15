@@ -26,6 +26,22 @@ import subprocess
 import sys
 import time
 
+# Share fleet.py's per-agent lifecycle lock so a guardian restart can't race a console/CLI/monitor
+# recreate of the same pod. Fail-OPEN if fleet can't be imported (guardian keeps working, just
+# unserialized — never worse than before this change).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from fleet import _agent_lock
+except Exception:
+    import contextlib
+    @contextlib.contextmanager
+    def _agent_lock(aid, wait=120):
+        yield
+try:
+    import supervision
+except Exception:
+    supervision = None
+
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FLEET_ROOT = os.environ.get("ENCLAVE_FLEET_ROOT", os.path.join(_REPO, "fleet"))
 ROOT = os.path.dirname(FLEET_ROOT)
@@ -38,18 +54,33 @@ LABEL = "org.enclave.fleetguardian"
 PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
 
 
+def _excluded_from_watch(aid):
+    """A watched pod is EXCLUDED from resurrection if either:
+      * `.guardian-off` sits in the pod dir (manual, persistent operator override), OR
+      * `state/.operator-stopped` exists (written by console/CLI `down`, cleared on the next up/
+        start/restart). The monitor's autofix already honours .operator-stopped; the GUARDIAN did not,
+        so a `watch: true` pod the operator deliberately stopped was brought back within 60s — the
+        parked-agent incident, still open on this path. Honour the same signal both tiers use."""
+    if os.path.exists(os.path.join(FLEET_ROOT, aid, ".guardian-off")):
+        return True
+    # standard layout is <FLEET_ROOT>/<aid>/home/state/.operator-stopped; tolerate home==pod dir too
+    for base in (os.path.join(FLEET_ROOT, aid, "home"), os.path.join(FLEET_ROOT, aid)):
+        if os.path.exists(os.path.join(base, "state", ".operator-stopped")):
+            return True
+    return False
+
+
 def _watched_pods():
     """Watch-set is DECLARED, not hardcoded: manifest agents with supervision `watch: true` (OPT-IN, so a
     deliberately-stopped pod like forgepod is never resurrected — the failure mode is 'unwatched', never
-    'wrongly restarted'). A `.guardian-off` file in the pod dir is a runtime override that also excludes it.
+    'wrongly restarted'). `.guardian-off` (manual) or state/.operator-stopped (console/CLI down) excludes one.
     Empty/unreadable manifest → watch nothing (fail safe, never guess a pod list)."""
     try:
         agents = json.loads(open(MANIFEST).read()).get("agents", {})
     except Exception:
         return []
     return [aid for aid, a in agents.items()
-            if a.get("watch") is True
-            and not os.path.exists(os.path.join(FLEET_ROOT, aid, ".guardian-off"))]
+            if a.get("watch") is True and not _excluded_from_watch(aid)]
 
 
 def _registration_drift():
@@ -93,8 +124,9 @@ def _status(pod):
 def _restart(pod):
     d = os.path.join(FLEET_ROOT, pod)
     try:
-        r = subprocess.run(["docker", "compose", "up", "-d", "agent"], cwd=d,
-                           capture_output=True, text=True, timeout=120)
+        with _agent_lock(pod):   # interlock with console/CLI/monitor recreates of the same pod
+            r = subprocess.run(["docker", "compose", "up", "-d", "agent"], cwd=d,
+                               capture_output=True, text=True, timeout=120)
         return r.returncode == 0, (r.stderr or r.stdout or "").strip()[-200:]
     except Exception as e:
         return False, str(e)
@@ -112,6 +144,8 @@ def _escalate(pod, detail):
 
 
 def check(install_note=False):
+    if supervision:
+        supervision.beat("fleet-guardian")   # liveness so the supervision tier isn't itself invisible
     state = {}
     if os.path.exists(STATE):
         try:

@@ -29,6 +29,8 @@ the cap regardless of what the agent does.
 Epoch env: EPOCH_TICKS(1) CTX_EPOCH_TOKENS(140000) EPOCH_MAX_INCREMENTS(8) EPOCH_WALL_SEC(5400).
 """
 import os, sys, json, time, argparse, subprocess, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import statefile
 
 POLL = float(os.environ.get("FEED_POLL_SEC", "2"))
 
@@ -153,11 +155,11 @@ def _read_status(state_dir):
 
 
 def _has_open_work(agent_dir):
-    try:
-        w = json.loads((pathlib.Path(agent_dir) / "work.json").read_text())
-        return any(i.get("status") not in ("done", "dropped") for i in w if isinstance(i, dict))
-    except Exception:
-        return False
+    # statefile.open_work is the ONE work.json normaliser (shared with agentloop + memory). This
+    # reader used to iterate the file directly and treat a {"items":[...]} dict as empty — so a
+    # dict-shaped backlog closed the epoch as "no open work" while agentloop's wake-gate saw the
+    # backlog. Reading through the shared normaliser removes that disagreement.
+    return statefile.has_open_work(pathlib.Path(agent_dir) / "work.json")
 
 
 def _cap_ok():

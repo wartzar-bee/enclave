@@ -34,6 +34,11 @@ allowlisted stacks root before touching docker. Every action is appended to
 ~/.config/enclave/fleet-audit.log (same log spawn_watcher and fleet.py write).
 """
 import os, sys, re, json, time, pathlib, subprocess
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import supervision
+except Exception:
+    supervision = None
 
 REPO = pathlib.Path(__file__).resolve().parents[2]     # platform/agentd/ -> repo root
 ENCLAVE = REPO / "bin" / "enclave"
@@ -154,6 +159,8 @@ def main():
     print(f"control_watcher: queue={queue} interval={interval}s once={once}")
 
     while True:
+        if supervision:
+            supervision.beat("control-watcher", interval=interval)   # liveness (fail-soft)
         specs = sorted((queue / "incoming").glob("*"),
                        key=lambda p: p.stat().st_mtime)
         for s in specs:

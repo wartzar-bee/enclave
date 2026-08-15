@@ -30,6 +30,7 @@ import os, sys, time, json, subprocess, pathlib, urllib.request, urllib.error
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import framework_version
+import statefile
 
 HERE = pathlib.Path(__file__).resolve().parent
 SKIP_RC = 75                                   # runtime.sh: cap-guard / lock skip (deferred, not done)
@@ -501,19 +502,10 @@ class Loop:
 
     def _has_open_work(self):
         """True if the agent's work.json has any open/doing item — used to keep the loop continuous
-        by default while there's a backlog.
-
-        Handles BOTH shapes the fleet uses: a bare list of items, and the
-        {"updated","note","items":[...]} dict some pods write. Iterating the dict directly walked its
-        KEYS (strings) → i.get() raised AttributeError → the except reported 'no work' on a full
-        backlog, silently starving the wake-gate so the pod idled with open items + a live Mission-#3
-        ecosystem backlog. Normalise to the item list before scanning."""
-        try:
-            w = json.loads((self.dir / "work.json").read_text())
-            items = w if isinstance(w, list) else (w.get("items") or w.get("tasks") or [])
-            return any(i.get("status") not in ("done", "dropped") for i in items)
-        except Exception:
-            return False
+        by default while there's a backlog. Reads through statefile.open_work, the ONE normaliser
+        shared with tick_feeder + memory (handles both the bare-list and {"items":[...]} dict shapes;
+        a dict-shaped backlog used to read as 'no work' here vs. tick_feeder and park the pod)."""
+        return statefile.has_open_work(self.dir / "work.json")
 
     def _unproductive_streak(self, cap=6):
         """How many of the most recent scored ticks in a row wrote NO product and NO tooling.
@@ -586,7 +578,7 @@ class Loop:
             except Exception:
                 pass
             bm.parent.mkdir(parents=True, exist_ok=True)
-            bm.write_text(json.dumps({"since": since, "waiting_on": why}))
+            statefile.write_json(bm, {"since": since, "waiting_on": why}, trailing_newline=False)
         except OSError:
             pass
 

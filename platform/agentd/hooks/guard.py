@@ -39,6 +39,25 @@ SECRET_DENY = (".ssh/", "id_rsa", "id_ed25519", ".aws/credentials", "/.netrc",
                ".secrets/git.env", "gitcreds-helper")
 GIT_RE = re.compile(r"(?:^|[;&|]\s*|\s)git(?:\s|$)")
 
+# Tools whose an outright FAILURE of the guard should not silently ALLOW when fail-closed is on.
+_MUTATION_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "WebFetch")
+
+
+def _failclosed():
+    """Fail-CLOSED mode — OFF by default, so deploying this changes NOTHING until an operator opts in.
+    Enable per-agent with GUARD_FAILCLOSED=1 (only after propagation_check shows the pod is current).
+    When on: a CRASHING guard blocks a mutation instead of failing open, and enforce-mode egress blocks
+    on a missing policy instead of allowing. Instant kill switch (no recreate): the agent-unwritable file
+    /workspace/GUARD_FAILCLOSED_OFF (root-owned since the Dockerfile fix, so the agent can't create it)
+    forces OFF regardless of the env var. Create it as root — `docker exec -u 0 <pod> touch
+    /workspace/GUARD_FAILCLOSED_OFF`, or via the mounted framework path if platform/agentd is bind-mounted."""
+    try:
+        if os.path.exists("/workspace/GUARD_FAILCLOSED_OFF"):
+            return False
+    except Exception:
+        pass
+    return os.environ.get("GUARD_FAILCLOSED", "0") not in ("", "0", "off", "false", "False")
+
 # SSRF → cloud-metadata credential theft (P2, always on). The instance-metadata service
 # (169.254.169.254 / metadata.google.internal, identical across AWS/GCP/Azure/OpenStack) hands out
 # short-lived cloud credentials to anything that can reach it — an autonomous agent has ZERO
@@ -182,6 +201,21 @@ def decide(tool_name, tool_input):
         if pat in blob:
             return False, f"access to '{pat.strip()}' denied — outside this agent's scoped secrets"
 
+    # 2b) the agent's OWN guard config is off-limits. A Write/Edit to its live hooks or settings.json
+    # could neuter the guard for the rest of the tick (the /agent home is agent-writable; runtime.sh
+    # re-syncs the hook copies from the root-owned source each boot, so this shuts only the WITHIN-tick
+    # window). Matched on the file_path with a PREFIX check (path.startswith), so a project repo whose
+    # path merely CONTAINS "agent/.claude/hooks/" — e.g. /work/agent/.claude/… — is not false-blocked,
+    # and a Bash command that mentions the path isn't a Write so never trips it. KNOWN GAPS (defense in
+    # depth, not a wall): a Bash redirect or a relative/constructed path still slips — the real fix is a
+    # read-only mount of the hooks dir, which is NOT in this change.
+    if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        norm = os.path.normpath(path) if path else ""
+        for pat in ("/agent/.claude/hooks/", "/agent/.claude/settings.json"):
+            if norm.startswith(pat):
+                return False, (f"writing the agent's own guard config ({pat}) is blocked — hooks and "
+                               f"settings.json are framework-managed and re-synced each tick")
+
     # NB: no "publish-gate" substring rule here — spending the operator's money is prevented
     # STRUCTURALLY (no payment credential mounted into the pod; see module docstring), not by
     # matching command text. A capability the agent doesn't have can't be string-matched around.
@@ -318,7 +352,13 @@ def decide_egress_allowlist(tool_name, tool_input, cmd, url):
 
     policy = _load_egress_policy()
     if not policy:
-        return True, ""   # no policy loaded → fail-open
+        # Default: no policy → fail-open. When BOTH enforce AND fail-closed are on, a missing/corrupt/
+        # empty policy BLOCKS instead — otherwise "enforce" silently permits everything the moment the
+        # policy file is absent, which defeats the whole point of turning enforcement on.
+        if enforce and _failclosed():
+            return False, ("egress-policy: enforce + fail-closed is on but no egress policy is loaded — "
+                           "blocking outbound calls until a policy is present")
+        return True, ""
 
     binary = _is_binary_upload(tool_name, tool_input, cmd)
     violations = []
@@ -367,14 +407,30 @@ def _wasm_sandbox_observe(tool_name, tool_input):
         pass   # observability must never wedge or block a call
 
 
+def _guard_decision(tool_name, tool_input):
+    """decide(), but a CRASH inside guard.decide() becomes a BLOCK for mutation tools when fail-closed
+    is on (else it stays fail-open). Returns (exit_code, reason). Scope: this covers a crash in THIS
+    hook (guard.py) only — it is the same failure shape that made secret_scan fail open (a broken hook
+    exits non-zero and is treated as 'allow'), but secret_scan is a separate process and is NOT gated
+    by GUARD_FAILCLOSED. Reads always fail open; unparseable stdin (handled in main) always fails open,
+    so a harness format change can never wedge the whole fleet."""
+    try:
+        allow, reason = decide(tool_name, tool_input)
+    except Exception as e:                                    # the guard itself errored
+        if _failclosed() and tool_name in _MUTATION_TOOLS:
+            return 2, f"guard errored on a {tool_name} call ({e}) — fail-closed block"
+        return 0, ""
+    return (0 if allow else 2), ("" if allow else reason)
+
+
 def main():
     try:
         data = json.load(sys.stdin)
     except Exception:
-        sys.exit(0)   # fail-open: unparseable input must not wedge the agent
+        sys.exit(0)   # fail-open: unparseable input must not wedge the agent (near-zero; harness-safe)
     tool_name, tool_input = data.get("tool_name", ""), data.get("tool_input", {}) or {}
-    allow, reason = decide(tool_name, tool_input)
-    if not allow:
+    code, reason = _guard_decision(tool_name, tool_input)
+    if code == 2:
         sys.stderr.write(f"[agent-guard] BLOCKED: {reason}\n")
         sys.exit(2)
     _wasm_sandbox_observe(tool_name, tool_input)
@@ -431,6 +487,24 @@ def _selftest():
     check("normal-read-allowed",
           decide("Read", {"file_path": "/agent/state/rollup.md"}),
           True)
+    # self-protection (2b): the agent cannot rewrite its own live guard config…
+    check("self-protect-hooks-blocked",
+          decide("Write", {"file_path": "/agent/.claude/hooks/guard.py", "content": "x"}),
+          False, "framework-managed")
+    check("self-protect-settings-blocked",
+          decide("Edit", {"file_path": "/agent/.claude/settings.json", "new_string": "x"}),
+          False, "framework-managed")
+    # …but a PROJECT's own .claude/ under /work is fine, and a mere Bash MENTION is not a write.
+    check("self-protect-work-repo-allowed",
+          decide("Write", {"file_path": "/work/myrepo/.claude/hooks/foo.py", "content": "x"}),
+          True)
+    # prefix check, not substring: a repo literally named 'agent' under /work must NOT be blocked
+    check("self-protect-work-agent-repo-allowed",
+          decide("Write", {"file_path": "/work/agent/.claude/hooks/x.py", "content": "x"}),
+          True)
+    check("self-protect-bash-mention-allowed",
+          decide("Bash", {"command": "grep -r /agent/.claude/hooks/ docs"}),
+          True)
 
     # --- P1 egress allowlist (report-only mode, no GUARD_EGRESS_ENFORCE) ---
     # In report-only mode all of these should allow (True) even for unknown hosts.
@@ -478,6 +552,60 @@ def _selftest():
           decide("WebFetch", {"url": "https://api.anthropic.com/v1/messages"}),
           True)
     os.environ.pop("GUARD_EGRESS_ENFORCE", None)
+
+    # --- fail-closed batch (1.6 + 1.9): OFF by default, so none of this changes behavior on deploy ---
+    def check_code(name, got, want):
+        nonlocal passed, failed
+        if got == want:
+            passed += 1
+        else:
+            failed += 1
+            print(f"  FAIL [{name}]: got code={got} want {want}")
+
+    os.environ.pop("GUARD_FAILCLOSED", None)
+    check_code("failclosed-off-by-default", 1 if _failclosed() else 0, 0)
+
+    # 1.6 — a CRASHING guard: fail-open by default, blocks a mutation only when fail-closed is on
+    _orig_decide = globals()["decide"]
+    def _boom(t, i):
+        raise RuntimeError("boom")
+    globals()["decide"] = _boom
+    try:
+        os.environ.pop("GUARD_FAILCLOSED", None)
+        check_code("crash-open-by-default", _guard_decision("Write", {"file_path": "/agent/x"})[0], 0)
+        os.environ["GUARD_FAILCLOSED"] = "1"
+        check_code("crash-blocks-mutation-when-failclosed", _guard_decision("Write", {"file_path": "/agent/x"})[0], 2)
+        check_code("crash-blocks-bash-when-failclosed", _guard_decision("Bash", {"command": "x"})[0], 2)
+        check_code("crash-allows-read-even-failclosed", _guard_decision("Read", {"file_path": "/agent/x"})[0], 0)
+    finally:
+        globals()["decide"] = _orig_decide
+        os.environ.pop("GUARD_FAILCLOSED", None)
+
+    # instant kill switch: the root-owned /workspace file forces OFF even when the env enables it
+    _orig_exists = os.path.exists
+    os.environ["GUARD_FAILCLOSED"] = "1"
+    os.path.exists = lambda p: True if p == "/workspace/GUARD_FAILCLOSED_OFF" else _orig_exists(p)
+    try:
+        check_code("killswitch-file-forces-off", 1 if _failclosed() else 0, 0)
+    finally:
+        os.path.exists = _orig_exists
+        os.environ.pop("GUARD_FAILCLOSED", None)
+
+    # 1.9 — enforce-mode egress with a MISSING policy: fail-open unless fail-closed is also on
+    _saved = {k: os.environ.get(k) for k in ("GUARD_EGRESS_ENFORCE", "GUARD_FAILCLOSED", "GUARD_EGRESS_POLICY")}
+    os.environ["GUARD_EGRESS_POLICY"] = "/nonexistent/egress-policy.json"   # → empty policy
+    os.environ["GUARD_EGRESS_ENFORCE"] = "1"
+    os.environ["GUARD_FAILCLOSED"] = "0"
+    check("egress-nopolicy-open-when-failclosed-off",
+          decide_egress_allowlist("Bash", {}, "curl https://x.example.com", ""), True)
+    os.environ["GUARD_FAILCLOSED"] = "1"
+    check("egress-nopolicy-blocked-when-failclosed-on",
+          decide_egress_allowlist("Bash", {}, "curl https://x.example.com", ""), False, "no egress policy is loaded")
+    for k, v in _saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
 
     print(f"guard.py selftest: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)

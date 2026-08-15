@@ -19,6 +19,8 @@ surfaced, never dropped. This is a PARSED protocol (AGENT-RULES §1), unlike the
 `to` is a pod id, or `studio` / `operator` for the ones a human/studio fires.
 """
 import argparse, json, os, sys, pathlib, datetime
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import statefile
 
 ROUTE_TYPES = {"distribution-help", "candidate-handoff"}   # auto-deliver to `to` pod (no studio relay)
 SURFACE_TYPES = {"maintainer-queue", "glama-claim", "operator-fire", "board-request",
@@ -39,7 +41,7 @@ def emit(base, to, typ, title, payload):
            "payload": payload, "from": os.environ.get("AGENT_ID", pathlib.Path(base).name),
            "created": _now()}
     path = outbox / f"{eid}.json"
-    path.write_text(json.dumps(env, indent=2) + "\n")
+    statefile.write_json(path, env)   # atomic: a reader never sees a half-written envelope
     return path
 
 

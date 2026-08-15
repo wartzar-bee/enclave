@@ -1,8 +1,13 @@
 # Enclave
 
-**A security-first, brain-agnostic agent runtime.** Run an autonomous agent in a hardened
-container with scoped credentials and a local web chat — `docker compose up`, talk to it in your
-browser.
+**A security-first, model-portable agent runtime** (deepest integration on Claude Code; also runs
+OpenAI-compatible and local brains). Run an autonomous agent in a hardened container with scoped
+credentials and a local web chat — `docker compose up`, talk to it in your browser.
+
+> Note on defaults: the container boundary (dropped capabilities, no-new-privileges, read-only
+> secret mounts, no inbound ports) is **always** enforced. The network egress allowlist is
+> **report-only** until you set `GUARD_EGRESS_ENFORCE=1`, and agents run with `PERMISSION=dangerous`
+> by default (the tool guard still fires — see [SECURITY.md](SECURITY.md)).
 
 **What "constrained" means here, precisely** (read this before you trust it with anything):
 - **Architectural, always on** — the agent runs with `--cap-drop=ALL --security-opt=no-new-privileges`
@@ -195,14 +200,17 @@ Dockerfile.agent          lean agent image (python + node + claude CLI; opt-in c
 Dockerfile.chat/.relay    web-chat + telegram sidecars (stdlib, tiny)
 Dockerfile.qmd/.codegraph optional memory-accelerator images (off by default — compose profiles)
 docker-compose.yml        the stack (+ opt-in `qmd` / `codegraph` / `telegram` profiles)
-bin/enclave               CLI: new / init / brain / run / publish / snapshot / vault-encrypt|decrypt / send / chat / plugin / status / stop / logs
+bin/enclave               CLI: new / init / run / app / stop / logs / send / status / chat / brain /
+                          snapshot / audit-secrets / vault-encrypt|decrypt / fleet / console / update /
+                          eval / publish / plugin
 platform/agentd/          the runtime: agentloop, runtime.sh, guard + delegation_guard hooks, route_tier
                           (model-tier router), delegate.py + local_agent.py (manager→worker delegation),
                           memory (memory.py + wiki.py), vault_snapshot.py, web_chat, chat_responder,
                           qmd + codegraph gateways, rlm.py
 tools/gcloud/             optional multi-tenant, read-only gcloud bridge (per-agent credential isolation)
 tools/bridge-template/    a WORKING bridge to copy — the extension point for host capabilities
-templates/                starter agent homes (ops, support, analyst) — all wired with guard + delegation_guard
+templates/                9 starter agent homes (analyst, autonomous, code-review, data-pipeline, ops,
+                          orchestrator, research, support, venture) — all wired with guard + delegation_guard
 docs/                     design notes — CHAT (the chat plane + per-brain endpoints + tunables),
                           BRIDGES (give an agent a host capability — the contribution surface),
                           DELEGATION (manager→worker), OPTIMIZE-BRAIN, WORK-DIR (working folder + indexing),

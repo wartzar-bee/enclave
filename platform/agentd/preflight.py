@@ -24,6 +24,8 @@ but never escalate and never gate. (labpod polled a file that was never written 
 because preflight was silently skipped when REQUIRES was unset.)
 """
 import os, sys, json, time, ssl, subprocess, pathlib, urllib.request, argparse
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import statefile
 
 
 def _run(cmd, timeout=25, inp=None):
@@ -414,7 +416,7 @@ def main():
             if fresh and prev.get("_reqs") == sorted(reqs) and all(prev.get(r, {}).get("ok") for r in reqs):
                 prev["_config"] = cfg_findings                 # refresh config findings in the cached file
                 prev["_config_ts"] = int(time.time())
-                capfile.write_text(json.dumps(prev, indent=2))
+                statefile.write_json(capfile, prev, trailing_newline=False)
                 print("preflight: capability probes fresh — skip (config checks refreshed)")
                 return 0
         except Exception:
@@ -440,7 +442,7 @@ def main():
             broken.append(r)
 
     results["_config"] = cfg_findings   # already run + escalated above (before the cache-skip)
-    capfile.write_text(json.dumps(results, indent=2))
+    statefile.write_json(capfile, results, trailing_newline=False)
 
     stamp = st / ".preflight-alerted"
     if broken:

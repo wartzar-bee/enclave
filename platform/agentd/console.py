@@ -3097,9 +3097,16 @@ class H(BaseHTTPRequestHandler):
                         except OSError: pass
                 dest.write_text(json.dumps(spec, indent=2))
                 fleet._audit("create-queued", name, str(dest))
-                watching = (qroot / "processed").exists() or (qroot / "failed").exists()
+                # "watcher running" from a fresh HEARTBEAT, not from the queue dirs existing — the
+                # launcher pre-creates processed/failed, so the old dir-existence check was always true
+                # and the spec could sit undrained forever with the console claiming it was being built.
+                try:
+                    import supervision
+                    watching = "spawn-watcher" not in dict(supervision.stale(max_age=120))
+                except Exception:
+                    watching = (qroot / "processed").exists() or (qroot / "failed").exists()
                 note = "queued — spawn watcher will build + start it" if watching else \
-                       f"queued at {dest} — NOTE: no spawn watcher detected on this queue (run `enclave fleet watch {qroot}`)"
+                       f"queued at {dest} — NOTE: no live spawn watcher (no fresh heartbeat) — run `enclave fleet watch {qroot}`"
                 return self._send(200, "application/json", json.dumps({"ok": True, "queued": str(dest), "note": note}))
             except Exception as e:
                 return self._send(500, "application/json", json.dumps({"error": str(e)}))

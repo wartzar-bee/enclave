@@ -32,7 +32,16 @@ COPY platform/agentd/  /workspace/platform/agentd/
 COPY tools/            /workspace/tools/
 
 # Non-root (claude refuses --dangerously-skip-permissions as root).
-RUN useradd -m -u 1001 -s /bin/bash agent && chown -R agent:agent /workspace \
+# /workspace holds the RUNTIME that governs the agent: runtime.sh, the guard + hooks source that
+# runtime.sh re-syncs from, contracts.py, policy.json. The agent runs as uid 1001 and must NOT be
+# able to rewrite that code — a guard the agent can edit is not a boundary (it could neuter guard.py
+# on one tick and act freely the next). Root-own the whole runtime (world-readable, so the agent can
+# still READ + execute it), and carve out ONLY platform/agentd/state/, the one dir the agent writes
+# at runtime (claude_usage cache; the writer already tolerates a read-only/absent dir). The scoped
+# secrets and the agent HOME are separate mounts, unaffected.
+RUN useradd -m -u 1001 -s /bin/bash agent \
+    && chown -R root:root /workspace \
+    && mkdir -p /workspace/platform/agentd/state && chown -R agent:agent /workspace/platform/agentd/state \
     && mkdir -p /home/agent/.claude && chown -R agent:agent /home/agent/.claude   # agent-owned so a persistent .claude volume is writable
 WORKDIR /agent
 USER agent
