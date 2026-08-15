@@ -34,10 +34,11 @@
 
     {"host": "registry-1.docker.io",     "ports": [443],       "comment": "Docker Hub"},
     {"host": "auth.docker.io",           "ports": [443]},
-    {"host": "production.cloudflare.docker.com", "ports": [443]},
-
-    {"host": "*.amazonaws.com",          "ports": [443],       "comment": "S3-style object storage (some model APIs stream from it)"}
+    {"host": "production.cloudflare.docker.com", "ports": [443]}
   ],
+
+  "_removed_amazonaws": "*.amazonaws.com was dropped from allow AND binary_allow: matcher wildcards span dots and S3 bucket subdomains are attacker-nameable (evil-bucket.s3.amazonaws.com), so it admitted binary exfiltration to an attacker-owned bucket that PASSED the allowlist even in ENFORCE mode. Add the SPECIFIC S3 host your task needs (e.g. my-model-cdn.s3.us-east-1.amazonaws.com) rather than a wildcard.",
+
 
   "binary_deny_by_default": true,
   "_binary_note": "When binary_deny_by_default is true, any host NOT explicitly in binary_allow gets binary=denied in ENFORCE mode. Report-only in default mode. Set binary_allow entries per-host to permit binary uploads to known-safe destinations.",
@@ -45,7 +46,6 @@
     {"host": "raw.githubusercontent.com",   "comment": "Downloading binaries from GH"},
     {"host": "files.pythonhosted.org",      "comment": "Python wheel downloads"},
     {"host": "objects.githubusercontent.com"},
-    {"host": "registry-1.docker.io"},
-    {"host": "*.amazonaws.com",             "comment": "S3-style binary object storage"}
+    {"host": "registry-1.docker.io"}
   ]
 }
