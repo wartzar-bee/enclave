@@ -60,5 +60,26 @@ add the specific host to `egress-policy.json` and restart the egress service.
 - IPv6 is disabled in the shared netns (policy is v4; v6 would race happy-eyeballs into the drop).
 - The guard's text-matching egress stays on as an audit layer (it logs *commands*; the sidecar
   logs *connections*) — they compose.
-- Credential-vault (secrets injected by the sidecar so the agent never holds them) ships in the
-  same image and is a candidate phase 2 — HTTP/HTTPS only; not enabled by this overlay.
+
+## Phase 2 — credential vault (optional; live on financial-advisor 2026-08-15)
+
+The same sidecar can hold a credential in memory and inject it into outbound HTTPS at a
+transparent mitmproxy, so **the agent never holds the real secret** (its env carries a
+placeholder; the vault deletes-and-replaces the Authorization header at the proxy). HTTP/HTTPS
+only (postgres/other ports bypass the mitm). Recipe (see fleet/financial-advisor for a working
+example):
+- Sidecar: add `OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT=true`, a shared volume on
+  `/opt/opensandbox` (it exports `mitmproxy-ca-cert.pem` there per generation), and caps
+  `CHOWN,SETUID,SETGID` on top of `NET_ADMIN` (socket-dir chown + mitmdump's cap-based uid drop;
+  no-new-privileges stays on).
+- Agent: mount that volume ro and point every TLS client at the CA:
+  `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+  `GIT_SSL_CAINFO`, `PIP_CERT` → `/opt/opensandbox/mitmproxy-ca-cert.pem`.
+- Seed: `POST /credential-vault` (one CredentialVaultCreateRequest: inline credential + bearer
+  binding to the destination host, which must have an explicit allow in the egress policy) via
+  `docker exec` into the sidecar — pattern: `fleet/<id>/egress-vault-init.sh`. Keep the real
+  secret in a host-only dir (e.g. `secrets-host/`), NEVER in the agent-mounted `./secrets`.
+- **The vault is memory-only: re-run the seed script after every egress restart** — until then
+  the placeholder 401s (visible, fail-closed). Restarting only the agent keeps the vault.
+- Verify injection: call the destination with a garbage bearer from the agent — a *scope* error
+  (real token, wrong scope) instead of an *authentication* error proves replacement.
