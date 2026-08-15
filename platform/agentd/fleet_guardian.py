@@ -26,6 +26,18 @@ import subprocess
 import sys
 import time
 
+# Share fleet.py's per-agent lifecycle lock so a guardian restart can't race a console/CLI/monitor
+# recreate of the same pod. Fail-OPEN if fleet can't be imported (guardian keeps working, just
+# unserialized — never worse than before this change).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from fleet import _agent_lock
+except Exception:
+    import contextlib
+    @contextlib.contextmanager
+    def _agent_lock(aid, wait=120):
+        yield
+
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FLEET_ROOT = os.environ.get("ENCLAVE_FLEET_ROOT", os.path.join(_REPO, "fleet"))
 ROOT = os.path.dirname(FLEET_ROOT)
@@ -108,8 +120,9 @@ def _status(pod):
 def _restart(pod):
     d = os.path.join(FLEET_ROOT, pod)
     try:
-        r = subprocess.run(["docker", "compose", "up", "-d", "agent"], cwd=d,
-                           capture_output=True, text=True, timeout=120)
+        with _agent_lock(pod):   # interlock with console/CLI/monitor recreates of the same pod
+            r = subprocess.run(["docker", "compose", "up", "-d", "agent"], cwd=d,
+                               capture_output=True, text=True, timeout=120)
         return r.returncode == 0, (r.stderr or r.stdout or "").strip()[-200:]
     except Exception as e:
         return False, str(e)

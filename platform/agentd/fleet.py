@@ -19,6 +19,7 @@ privilege helper; this module is read-only + open-in-browser.
 Usage: fleet.py list [--json] | fleet.py open <agent-id>
 """
 import calendar, os, sys, json, subprocess, pathlib, re, webbrowser, time
+import contextlib, fcntl, tempfile
 
 MANIFEST = pathlib.Path(os.environ.get("ENCLAVE_FLEET_MANIFEST",
                         pathlib.Path.home() / ".config" / "enclave" / "fleet.json"))
@@ -575,6 +576,42 @@ def _allowed_stack(cfg):
         return False
 
 
+def _lock_path(aid):
+    """Stable per-agent lifecycle lock path. The SAME convention must be used by every actor that
+    can recreate a pod (fleet.py here, and fleet_guardian, which imports this) so they interlock."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(aid))
+    return pathlib.Path(tempfile.gettempdir()) / f"enclave-lifecycle-{safe}.lock"
+
+
+@contextlib.contextmanager
+def _agent_lock(aid, wait=120):
+    """Serialize lifecycle ops (up/down/restart) on ONE pod across processes. console, CLI, monitor
+    autofix and the guardian each run as separate processes and could otherwise fire concurrent
+    `up --force-recreate` / `stop` on the same pod and race. Inter-process flock; bounded wait then
+    fail-OPEN (proceed with a warning rather than deadlock the fleet if a holder is wedged)."""
+    f = open(_lock_path(aid), "w")
+    acquired = False
+    deadline = time.time() + wait
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+            break
+        except OSError:
+            if time.time() >= deadline:
+                print(f"  ⚠ lifecycle lock for {aid} busy after {wait}s — proceeding without it")
+                break
+            time.sleep(0.5)
+    try:
+        yield
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(f, fcntl.LOCK_UN)
+        finally:
+            f.close()
+
+
 def _compose(a, *verb, timeout=180):
     """docker compose -f <ConfigFile> --project-directory <dir> <verb> — the M1-correct addressing
     (project name is baked via `name:`; -p won't reach these stacks). Validated + audited."""
@@ -592,6 +629,11 @@ def _compose(a, *verb, timeout=180):
         cmd += ["-f", str(override)]
     cmd += ["--project-directory", a["dir"], *verb]
     _audit(verb[0], a["id"], " ".join(verb[1:]))
+    # Serialize state-changing verbs per pod so console/CLI/monitor/guardian can't race a recreate.
+    # Read-ish verbs (logs, ps, send) don't mutate lifecycle and don't need the lock.
+    if verb and verb[0] in ("up", "down", "restart", "stop", "start", "kick"):
+        with _agent_lock(a["id"]):
+            return subprocess.run(cmd, timeout=timeout)
     return subprocess.run(cmd, timeout=timeout)
 
 
