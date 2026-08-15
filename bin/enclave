@@ -682,7 +682,7 @@ def cmd_init(args):
             # capable manager is forced to delegate bulk code-writing to a cheap/local worker fleet-wide.
             _dg = [{"type": "command", "command": "python3 /agent/.claude/hooks/delegation_guard.py"}] \
                 if (home / ".claude" / "hooks" / "delegation_guard.py").exists() else []
-            _pre = [{"matcher": "Bash|Read|Edit|Write|NotebookEdit",
+            _pre = [{"matcher": "Bash|Read|Edit|Write|NotebookEdit|WebFetch",
                      "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/guard.py"}]}]
             if _dg:
                 _pre.append({"matcher": "Write|Edit|MultiEdit", "hooks": _dg})

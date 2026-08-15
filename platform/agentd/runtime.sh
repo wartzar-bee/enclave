@@ -37,6 +37,14 @@ HOOKS_SRC="${TOOLS_ROOT:-/workspace}/platform/agentd/hooks"
 if [ -d "$HOOKS_SRC" ] && [ -d "$AGENT_DIR/.claude/hooks" ]; then
   cp "$HOOKS_SRC"/*.py "$AGENT_DIR/.claude/hooks/" 2>/dev/null || true
 fi
+# hooks/*.py re-sync above; settings.json is NOT re-synced (operators customise it), so a MATCHER fix
+# — e.g. wiring WebFetch into the guard, which closes an SSRF/IMDS bypass — would otherwise stay dead
+# on every already-deployed pod. This migrator only ADDS missing tools to the matcher, writes
+# atomically, and on any error leaves settings.json untouched (never wedge the pod).
+SETTINGS_MIGRATE="$SCRIPT_DIR/settings_migrate.py"; [ -f "$SETTINGS_MIGRATE" ] || SETTINGS_MIGRATE="${TOOLS_ROOT:-/workspace}/platform/agentd/settings_migrate.py"
+if [ -f "$SETTINGS_MIGRATE" ] && [ -f "$AGENT_DIR/.claude/settings.json" ]; then
+  python3 "$SETTINGS_MIGRATE" "$AGENT_DIR/.claude/settings.json" 2>/dev/null || true
+fi
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
 LOG="$AGENT_DIR/logs/runner.log"
