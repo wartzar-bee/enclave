@@ -182,6 +182,19 @@ def decide(tool_name, tool_input):
         if pat in blob:
             return False, f"access to '{pat.strip()}' denied — outside this agent's scoped secrets"
 
+    # 2b) the agent's OWN guard config is off-limits. A Write/Edit to its live hooks or settings.json
+    # could neuter the guard for the rest of the tick. The source is root-owned (Dockerfile) and the
+    # re-sync reverts the home copy at the next tick boot — this shuts the WITHIN-tick window for an
+    # absolute-path write. Matched on the file_path ONLY (not the command blob), so it never false-trips
+    # a Bash command that merely mentions the path, and it is anchored to /agent/.claude/ so editing a
+    # project's own .claude/ under /work stays allowed. (Relative / Bash-redirect writes still slip; the
+    # ro-mount of hooks is the complete fix — this is defense-in-depth on top of the next-tick revert.)
+    if tool_name in ("Write", "Edit", "MultiEdit"):
+        for pat in ("/agent/.claude/hooks/", "/agent/.claude/settings.json"):
+            if pat in path:
+                return False, (f"writing the agent's own guard config ({pat}) is blocked — hooks and "
+                               f"settings.json are framework-managed and re-synced each tick")
+
     # NB: no "publish-gate" substring rule here — spending the operator's money is prevented
     # STRUCTURALLY (no payment credential mounted into the pod; see module docstring), not by
     # matching command text. A capability the agent doesn't have can't be string-matched around.
@@ -430,6 +443,20 @@ def _selftest():
           True)   # no publish-gate: agent has no payment cred mounted, so the command is harmless
     check("normal-read-allowed",
           decide("Read", {"file_path": "/agent/state/rollup.md"}),
+          True)
+    # self-protection (2b): the agent cannot rewrite its own live guard config…
+    check("self-protect-hooks-blocked",
+          decide("Write", {"file_path": "/agent/.claude/hooks/guard.py", "content": "x"}),
+          False, "framework-managed")
+    check("self-protect-settings-blocked",
+          decide("Edit", {"file_path": "/agent/.claude/settings.json", "new_string": "x"}),
+          False, "framework-managed")
+    # …but a PROJECT's own .claude/ under /work is fine, and a mere Bash MENTION is not a write.
+    check("self-protect-work-repo-allowed",
+          decide("Write", {"file_path": "/work/myrepo/.claude/hooks/foo.py", "content": "x"}),
+          True)
+    check("self-protect-bash-mention-allowed",
+          decide("Bash", {"command": "grep -r /agent/.claude/hooks/ docs"}),
           True)
 
     # --- P1 egress allowlist (report-only mode, no GUARD_EGRESS_ENFORCE) ---
