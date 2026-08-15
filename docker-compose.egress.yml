@@ -1,0 +1,71 @@
+# Enclave — OPTIONAL kernel-level egress enforcement (docs/EGRESS.md).
+#
+# Replaces trust in the guard's text-matching egress allowlist (bypassable — see SECURITY.md
+# "Egress control is advisory") with a network-layer default-deny: a sidecar owns the agent's
+# network namespace and enforces a DNS-proxy + nftables allowlist. Command-string tricks
+# (`U=$host; curl $U`, user@host URLs, custom resolvers, direct-IP connects) all die in-kernel.
+# Sidecar: OpenSandbox egress (Apache-2.0, source-reviewed 2026-08-15, pinned by digest).
+#
+# Activate per deployment:
+#   1. cp <framework>/templates/egress-policy.json ./egress-policy.json   # edit: ONLY what this agent needs
+#   2. echo "EGRESS_TOKEN=$(openssl rand -hex 24)" >> .env
+#   3. cp <framework>/docker-compose.egress.yml ./docker-compose.override.yml
+#      (fleet.py + `enclave` auto-merge docker-compose.override.yml; or pass both -f by hand.
+#       If the deployment already has an override, append these services to it instead.)
+#   4. enclave fleet restart <id>   — then run the verification probes in docs/EGRESS.md.
+#
+# Topology (why `network_mode: bridge`): the sidecar cannot sit on the compose project network —
+# Docker's embedded DNS (127.0.0.11) DNATs port-53 traffic before the sidecar's REDIRECT rule,
+# bypassing the DNS proxy (verified 2026-08-15). The agent+sidecar pair therefore runs on the
+# default bridge, the same topology OpenSandbox's own Docker runtime uses. Costs and invariants:
+#   - The agent loses compose service-DNS: the in-compose qmd/codegraph profiles are unreachable
+#     under egress mode (host bridges via host.docker.internal keep working — allow the host CIDR
+#     in the policy file). web-chat and telegram-relay share ./home files, not network: unaffected.
+#   - The agent cannot edit its own policy: egress-policy.json lives at the deployment ROOT (never
+#     inside ./home — the agent owns home rw), and the policy API on 127.0.0.1:18080 requires
+#     EGRESS_TOKEN, which exists only in the sidecar's env from host-side .env (never in ./secrets,
+#     which is mounted into the agent).
+#   - IPv6 is disabled in the shared netns: policy targets are v4; a v6-capable path would race
+#     happy-eyeballs into the nft v6 drop (and host.docker.internal resolves to a v6 ULA on
+#     Docker Desktop).
+
+services:
+  egress:
+    # opensandbox/egress:v1.1.6 — digest-pinned (multi-arch manifest: amd64+arm64), cosign-signed
+    # upstream. Verify: cosign verify docker.io/opensandbox/egress@sha256:014d36e4... (see their
+    # docs/community/release-verification.md).
+    image: opensandbox/egress@sha256:014d36e4a862c4a466c670b9df3f7516940b4b2aa440062438f09d1d8f9c9403
+    container_name: ${AGENT_ID:-enclave-agent}-egress
+    network_mode: bridge
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]        # owns iptables/nft for the shared netns; the agent keeps cap_drop ALL
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: ${EGRESS_MEM_LIMIT:-512m}
+    cpus: ${EGRESS_CPUS:-1}
+    pids_limit: 128
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
+      - net.ipv6.conf.lo.disable_ipv6=1
+    environment:
+      # NEVER set plain "dns" — dns-only mode has zero IP-layer enforcement (connect-by-IP bypass).
+      - OPENSANDBOX_EGRESS_MODE=dns+nft
+      - OPENSANDBOX_EGRESS_POLICY_FILE=/policy/egress-policy.json
+      - OPENSANDBOX_EGRESS_TOKEN=${EGRESS_TOKEN:?set EGRESS_TOKEN in .env — openssl rand -hex 24}
+    volumes:
+      - ./egress-policy.json:/policy/egress-policy.json:ro
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18080/healthz"]
+      interval: 15s
+      timeout: 4s
+      start_period: 15s
+      retries: 3
+
+  agent:
+    network_mode: "service:egress"   # join the sidecar netns; all egress goes through its rules
+    extra_hosts: !reset []           # /etc/hosts comes from the sidecar (docker forbids add-host here)
+    depends_on:
+      egress:
+        condition: service_healthy   # fail-closed: no healthy sidecar -> no agent, hence no network

@@ -1,0 +1,34 @@
+{
+  "_doc": "Network-layer egress allowlist for the egress sidecar (docker-compose.egress.yml, docs/EGRESS.md). Enforced in-kernel: DNS names not allowed here get NXDOMAIN; IPs not resolved through an allowed name are DROPPED. Copy to the deployment ROOT as ./egress-policy.json (never into ./home — the agent owns home rw and must not author its own policy). Changes require an egress-sidecar restart. Unknown JSON keys (like these _doc/comment fields) are ignored by the sidecar.",
+
+  "_policy": "MINIMAL BY DEFAULT — same stance as the guard's policies/default-egress.json: model APIs, packages, source, images, and the operator's host bridges. Anything task-specific is deliberately absent; add per-agent entries when the agent's mission needs them. Wildcards do NOT match the apex (*.anthropic.com does not cover anthropic.com) and DO span subdomain dots — never allow a wildcard whose subdomains are attacker-nameable (the *.amazonaws.com lesson: evil-bucket.s3.amazonaws.com).",
+
+  "defaultAction": "deny",
+  "egress": [
+    {"action": "allow", "target": "api.anthropic.com",   "comment": "Anthropic API"},
+    {"action": "allow", "target": "*.anthropic.com",     "comment": "statsig/console (telemetry, OAuth refresh)"},
+    {"action": "allow", "target": "claude.ai",           "comment": "Claude subscription auth"},
+
+    {"action": "allow", "target": "openrouter.ai",       "comment": "OpenRouter inference gateway (BRAIN=api)"},
+    {"action": "allow", "target": "api.openrouter.ai"},
+
+    {"action": "allow", "target": "github.com",          "comment": "source"},
+    {"action": "allow", "target": "api.github.com"},
+    {"action": "allow", "target": "raw.githubusercontent.com"},
+    {"action": "allow", "target": "objects.githubusercontent.com"},
+    {"action": "allow", "target": "codeload.github.com"},
+
+    {"action": "allow", "target": "pypi.org",            "comment": "packages"},
+    {"action": "allow", "target": "files.pythonhosted.org"},
+    {"action": "allow", "target": "registry.npmjs.org"},
+    {"action": "allow", "target": "deb.debian.org"},
+    {"action": "allow", "target": "archive.ubuntu.com"},
+    {"action": "allow", "target": "security.ubuntu.com"},
+
+    {"action": "allow", "target": "registry-1.docker.io", "comment": "images"},
+    {"action": "allow", "target": "auth.docker.io"},
+    {"action": "allow", "target": "production.cloudflare.docker.com"},
+
+    {"action": "allow", "target": "192.168.65.0/24",     "comment": "host bridges via host.docker.internal on Docker Desktop (qmd/comms/voice/transcribe). On Linux use 172.17.0.1/32 instead."}
+  ]
+}
