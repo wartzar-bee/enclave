@@ -45,10 +45,22 @@ def _http(url, timeout=6):
 
 
 # --- functional probes: (ok: bool, detail: str) ---
+#: The probe asks "can this pod route at all", so its timeout has to exceed the SLOWEST healthy
+#: answer, not the typical one. 45s produced a coin-flip: a measured `classify` on 2026-08-04 took
+#: 42.0s end to end and passed, while the same call had escalated as BROKEN minutes earlier. The
+#: cost is entirely the free NVIDIA pool, which this stack has measured at 19s and 106s for an
+#: identical prompt minutes apart (local pools refuse in <1ms and `claude --version` is 0.08s, so
+#: neither is the cost). Raising this is CALIBRATION, not weakening a gate: a probe that fails on a
+#: healthy-but-slow pool teaches everyone to ignore preflight, which is worse than no preflight.
+ROUTE_PROBE_TIMEOUT = 150
+
+
 def probe_route(env):
-    rc, out = _run('echo "Reply with the single word OK." | node /workspace/tools/llm/route.mjs --task classify', timeout=45)
+    rc, out = _run('echo "Reply with the single word OK." | node /workspace/tools/llm/route.mjs --task classify',
+                   timeout=ROUTE_PROBE_TIMEOUT)
     ok = rc == 0 and len(out.strip()) > 0 and "no allowed pool" not in out and "all pools failed" not in out
-    return ok, ("route.mjs returns content" if ok else f"route.mjs empty/failed: {out.strip()[:140]}")
+    detail = "route.mjs returns content" if ok else f"route.mjs empty/failed: {out.strip()[:140]}"
+    return ok, detail
 
 
 def probe_render(env):

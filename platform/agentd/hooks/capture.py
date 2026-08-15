@@ -118,25 +118,62 @@ def extract(transcript_path, all_text=False):
 
 # An agent that writes "DECISION: x / WHY: y" gets that captured verbatim; one that writes nothing
 # structured still gets a record built from its own conclusion. Both beat an empty log.
-_DEC = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?(DECISION|DECIDED|CHOSE|CHOICE)(?:\*\*)?\s*[:\-]\s*(.+)$", re.I)
-_WHY = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?(WHY|BECAUSE|RATIONALE|REASON)(?:\*\*)?\s*[:\-]\s*(.+)$", re.I)
-_EVID = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?(EVIDENCE|BASIS)(?:\*\*)?\s*[:\-]\s*(.+)$", re.I)
-_CONF = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?CONFIDENCE(?:\*\*)?\s*[:\-]\s*(high|medium|low)\b", re.I)
+# The agent decides the formatting, so the parser has to accept the shapes a model actually emits.
+# Measured against the live variants on 2026-08-04: a markdown HEADING ("## DECISION: x") was missed
+# entirely and fell through to an implicit record, and "**DECISION:** x" captured a literal "**"
+# into the stored value. `_LEAD` covers list bullets and headings; `_strip_md` cleans the capture.
+_LEAD = r"\s*(?:[-*]\s*|\#{1,6}\s*)?"
+_DEC = re.compile(r"^" + _LEAD + r"(?:\*\*)?(DECISION|DECIDED|CHOSE|CHOICE)(?:\*\*)?\s*[:\-]\s*(.+)$", re.I)
+_WHY = re.compile(r"^" + _LEAD + r"(?:\*\*)?(WHY|BECAUSE|RATIONALE|REASON)(?:\*\*)?\s*[:\-]\s*(.+)$", re.I)
+_EVID = re.compile(r"^" + _LEAD + r"(?:\*\*)?(EVIDENCE|BASIS)(?:\*\*)?\s*[:\-]\s*(.+)$", re.I)
+_CONF = re.compile(r"^" + _LEAD + r"(?:\*\*)?CONFIDENCE(?:\*\*)?\s*[:\-]\s*(high|medium|low)\b", re.I)
+
+
+def _strip_md(value):
+    """Drop markdown emphasis left over from `**DECISION:** x` style headers."""
+    return value.strip().lstrip("*").strip().rstrip("*").strip()
+
+
+#: A logged decision often begins "<ISO ts> — ...". When such a line is read back as the source of
+#: the NEXT implicit decision, the prefixes chain and each entry embeds its predecessor.
+_TS_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?\s*[—-]\s*")
 
 
 def _headline(rollup, final):
-    """The best one-line statement of what this tick concluded.
+    """The best one-line statement of what THIS tick concluded.
 
-    A rollup can be a placeholder ("(no ticks yet)", "—") that says nothing; recording it as a
-    decision is worse than useless, because it inflates the log and hides the pods that genuinely
-    are not reasoning. Fall through to the agent's own closing text instead.
+    `final` is read BEFORE `rollup`, and the order is the whole point. The rollup's newest line is
+    the PREVIOUS tick's logged conclusion, so preferring it made every implicit decision a copy of
+    the one before, stamped with the current time — measured on financial-advisor 2026-08-04, 13 of
+    the last 20 entries were the prior tick's text and the chain accreted until the 500-char cap.
+    A log that attributes old decisions to new ticks is worse than a sparse one: it reads as
+    activity and it corrupts the unevidenced-rate signal decisions_report.py exists to produce.
+
+    A rollup can also be a placeholder ("(no ticks yet)", "—") that says nothing, so it stays a
+    fallback rather than being dropped entirely.
     """
-    for cand in ((rollup or "").strip(), (final or "").strip()):
-        for line in cand.splitlines():
+    # `final` is EVERY assistant text block of the tick joined (see extract(all_text=True)), so its
+    # first line is the agent's OPENING sentence and its last is its conclusion. Scanning forwards
+    # recorded openings as decisions — live examples on 2026-08-04 were "I'll start by checking the
+    # preflight capabilities..." and "Now writing a skill to...", i.e. the plan and the middle of
+    # the work, logged as what the tick decided. The rollup is a curated one-liner, so it is read
+    # forwards.
+    for cand, from_end in (((final or "").strip(), True), ((rollup or "").strip(), False)):
+        lines = cand.splitlines()
+        for line in (reversed(lines) if from_end else lines):
             line = line.strip().lstrip("#-* ").strip()
             if len(line) < 8:
                 continue
             if line.startswith("(") and line.endswith(")"):      # "(no ticks yet)"
+                continue
+            # Strip any chain of leading timestamps, so a headline that did come from a rollup
+            # cannot re-accrete. Bounded loop: a malformed line must not spin here.
+            for _ in range(5):
+                stripped = _TS_PREFIX.sub("", line)
+                if stripped == line:
+                    break
+                line = stripped.strip()
+            if len(line) < 8:
                 continue
             return line[:300]
     return ""
@@ -161,14 +198,14 @@ def extract_decisions(final, actions, rollup, ts, agent):
         if m:
             if cur:
                 recs.append(cur)
-            cur = {"decision": m.group(2).strip()[:500], "why": "", "evidence": "", "confidence": ""}
+            cur = {"decision": _strip_md(m.group(2))[:500], "why": "", "evidence": "", "confidence": ""}
             continue
         if cur is None:
             continue
         for rx, key in ((_WHY, "why"), (_EVID, "evidence")):
             m = rx.match(line)
             if m:
-                cur[key] = m.group(2).strip()[:800]
+                cur[key] = _strip_md(m.group(2))[:800]
         m = _CONF.match(line)
         if m:
             cur["confidence"] = m.group(1).lower()

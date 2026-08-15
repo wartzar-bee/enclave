@@ -14,9 +14,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import capture as C
 
 fails = []
+checks = 0
 
 
 def ck(name, cond):
+    global checks
+    checks += 1
     if not cond:
         fails.append(name)
 
@@ -48,10 +51,16 @@ ck("multi: second decision", r[1]["decision"] == "keep channel B")
 ck("multi: second why", r[1]["why"] == "it converts")
 
 # ── no markers: still a record, honestly marked implicit, evidence from what it RAN ──────────
+# This assertion was INVERTED on 2026-08-04. It previously pinned `decision == "refreshed the
+# Bluesky token"` — i.e. that the ROLLUP wins — which is the defect, not the intent: the rollup's
+# newest line at Stop time is the PREVIOUS tick's logged conclusion, so every implicit decision
+# copied the one before it and accreted. The test recorded the bug, exactly as the FEATURE_WARMUP
+# table did for the EMA warm-up. Kept and inverted rather than deleted.
 r = C.extract_decisions("I refreshed the token and re-ran the check.", ["Bash: curl x", "Write: a.md"],
                         "refreshed the Bluesky token", TS, AGENT)
 ck("implicit: one record", len(r) == 1)
-ck("implicit: uses rollup", r[0]["decision"] == "refreshed the Bluesky token")
+ck("implicit: uses THIS tick's closing text, not the rollup",
+   r[0]["decision"] == "I refreshed the token and re-ran the check.")
 ck("implicit: flagged", r[0]["implicit"] is True)
 ck("implicit: evidence from actions", r[0]["evidence"].startswith("2 tool action(s):"))
 ck("implicit: confidence unstated", r[0]["confidence"] == "unstated")
@@ -137,7 +146,77 @@ try:
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
+
+# --- implicit decisions must describe THIS tick, not the previous one -------------------------
+# financial-advisor, 2026-08-04: 13 of the last 20 logged decisions were the prior tick's text,
+# re-stamped, because _headline read the rollup (whose newest line IS the last logged decision)
+# before the agent's own closing text. The chain accreted until the 500-char cap.
+
+r = C.extract_decisions("Cycle ran, no orders proposed.", [], "2026-08-04T03:02Z — old conclusion", TS, AGENT)
+ck("implicit decision prefers this tick's own text over the rollup",
+   r[0]["decision"] == "Cycle ran, no orders proposed.")
+
+r = C.extract_decisions("", [], "2026-08-04T03:02Z — 2026-08-04T01:52Z — stale chain", TS, AGENT)
+ck("a rollup-derived headline has its timestamp chain stripped",
+   r[0]["decision"] == "stale chain")
+
+r = C.extract_decisions("", [], "(no ticks yet)", TS, AGENT)
+ck("a placeholder rollup produces no decision at all", r == [])
+
+r = C.extract_decisions("", [], "", TS, AGENT)
+ck("nothing to say produces no record", r == [])
+
+r = C.extract_decisions("DECISION: explicit wins\nCONFIDENCE: high", [], "2026-08-04T03:02Z — old", TS, AGENT)
+ck("an explicit DECISION is never displaced by the rollup", r[0]["decision"] == "explicit wins")
+ck("an explicit decision is not marked implicit", r[0]["implicit"] is False)
+
+
+# `final` is every assistant text block joined, so scanning it FORWARDS records the agent's opening
+# sentence as its decision. Live on financial-advisor 2026-08-04: "I'll start by checking the
+# preflight capabilities and inbox/handoff state before running today's cycle."
+r = C.extract_decisions("I'll start by checking capabilities.\nRan the cycle.\nNo orders proposed.",
+                        [], "", TS, AGENT)
+ck("implicit decision takes the CONCLUSION, not the opening line",
+   r[0]["decision"] == "No orders proposed.")
+
+r = C.extract_decisions("Only one line here.", [], "", TS, AGENT)
+ck("a single-line final still works", r[0]["decision"] == "Only one line here.")
+
+r = C.extract_decisions("Opening line.\nRan the cycle, no orders.\n\n   \n", [], "", TS, AGENT)
+ck("trailing blank lines are skipped to the last real one",
+   r[0]["decision"] == "Ran the cycle, no orders.")
+
+r = C.extract_decisions("", [], "curated rollup line\nolder line", TS, AGENT)
+ck("a rollup is still read forwards (it is a curated one-liner)",
+   r[0]["decision"] == "curated rollup line")
+
+
+# The agent chooses the formatting; the parser must accept what a model actually emits. Measured
+# 2026-08-04: a markdown heading was missed entirely (falling through to an implicit record) and
+# bold-wrapped headers leaked "**" into the stored decision.
+for _label, _text in (
+    ("heading", "## DECISION: ship it"),
+    ("bold both sides", "**DECISION:** ship it"),
+    ("bold then colon", "**DECISION**: ship it"),
+    ("list item", "- DECISION: ship it"),
+    ("lowercase", "decision: ship it"),
+):
+    _r = C.extract_decisions(_text, [], "", TS, AGENT)
+    ck(f"DECISION parsed from {_label}", bool(_r) and _r[0]["implicit"] is False)
+    ck(f"DECISION value clean from {_label}", bool(_r) and _r[0]["decision"] == "ship it")
+
+_r = C.extract_decisions("## DECISION: ship it\n**WHY:** the probe passed\nCONFIDENCE: high",
+                         [], "", TS, AGENT)
+ck("WHY parsed alongside a heading decision", _r[0]["why"] == "the probe passed")
+ck("CONFIDENCE parsed alongside a heading decision", _r[0]["confidence"] == "high")
+
+
+# --- verdict -------------------------------------------------------------------------------
+# The summary used to sit ABOVE the checks appended after it, and printed a HARDCODED "36/36".
+# Two consequences, both found on 2026-08-04: the count was decorative rather than measured, and
+# every check added below that line was collected and never evaluated — the suite could not fail
+# on them. The verdict now runs last and counts what actually ran.
 if fails:
     print(f"FAIL ({len(fails)}): " + ", ".join(fails))
     sys.exit(1)
-print("capture decision-log OK (36/36)")
+print(f"capture decision-log OK ({checks} checks)")
