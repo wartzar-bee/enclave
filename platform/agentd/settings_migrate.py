@@ -33,9 +33,12 @@ def migrate(data):
     changed = False
     pre = (data.get("hooks") or {}).get("PreToolUse") or []
     for entry in pre:
-        cmds = " ".join(h.get("command", "") for h in (entry.get("hooks") or []))
+        # basename-token match, NOT substring: "guard.py" must not also match "delegation_guard.py"
+        # (that would spuriously rewrite a DIFFERENT hook's matcher on an already-current pod).
+        cmd_basenames = {os.path.basename(t) for h in (entry.get("hooks") or [])
+                         for t in (h.get("command", "") or "").split()}
         for hook_name, needed in REQUIRED.items():
-            if hook_name not in cmds:
+            if hook_name not in cmd_basenames:
                 continue
             matcher = entry.get("matcher", "")
             if not matcher:
@@ -86,12 +89,21 @@ def _selftest():
         {"matcher": "Bash|Read|Edit|Write|NotebookEdit",
          "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/guard.py"}]},
         {"matcher": "Write|Edit|MultiEdit",
+         "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/delegation_guard.py"}]},
+        {"matcher": "Write|Edit|MultiEdit",
          "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/secret_scan.py"}]},
     ]}}
     ch, out = migrate(json.loads(json.dumps(base)))
     ck("adds-webfetch", ch and "WebFetch" in out["hooks"]["PreToolUse"][0]["matcher"])
     ck("guard-order-preserved", out["hooks"]["PreToolUse"][0]["matcher"].startswith("Bash|Read|Edit|Write|NotebookEdit"))
-    ck("leaves-non-guard", out["hooks"]["PreToolUse"][1]["matcher"] == "Write|Edit|MultiEdit")
+    # "guard.py" must NOT match "delegation_guard.py" — its matcher stays untouched
+    ck("leaves-delegation-guard", out["hooks"]["PreToolUse"][1]["matcher"] == "Write|Edit|MultiEdit")
+    ck("leaves-secret-scan", out["hooks"]["PreToolUse"][2]["matcher"] == "Write|Edit|MultiEdit")
+    # and an already-current settings (guard already has WebFetch) → no change at all
+    cur = {"hooks": {"PreToolUse": [
+        {"matcher": "Bash|WebFetch", "hooks": [{"command": "python3 /agent/.claude/hooks/guard.py"}]},
+        {"matcher": "Write|Edit", "hooks": [{"command": "python3 /agent/.claude/hooks/delegation_guard.py"}]}]}}
+    ck("current-is-noop", migrate(json.loads(json.dumps(cur)))[0] is False)
     # idempotent
     ch2, out2 = migrate(out)
     ck("idempotent", (not ch2) and out2["hooks"]["PreToolUse"][0]["matcher"].count("WebFetch") == 1)

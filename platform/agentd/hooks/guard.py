@@ -48,8 +48,9 @@ def _failclosed():
     Enable per-agent with GUARD_FAILCLOSED=1 (only after propagation_check shows the pod is current).
     When on: a CRASHING guard blocks a mutation instead of failing open, and enforce-mode egress blocks
     on a missing policy instead of allowing. Instant kill switch (no recreate): the agent-unwritable file
-    /workspace/GUARD_FAILCLOSED_OFF (root-owned since the Dockerfile fix; the operator touches it
-    host-side in the mounted clone) forces OFF regardless of the env var."""
+    /workspace/GUARD_FAILCLOSED_OFF (root-owned since the Dockerfile fix, so the agent can't create it)
+    forces OFF regardless of the env var. Create it as root — `docker exec -u 0 <pod> touch
+    /workspace/GUARD_FAILCLOSED_OFF`, or via the mounted framework path if platform/agentd is bind-mounted."""
     try:
         if os.path.exists("/workspace/GUARD_FAILCLOSED_OFF"):
             return False
@@ -201,15 +202,17 @@ def decide(tool_name, tool_input):
             return False, f"access to '{pat.strip()}' denied — outside this agent's scoped secrets"
 
     # 2b) the agent's OWN guard config is off-limits. A Write/Edit to its live hooks or settings.json
-    # could neuter the guard for the rest of the tick. The source is root-owned (Dockerfile) and the
-    # re-sync reverts the home copy at the next tick boot — this shuts the WITHIN-tick window for an
-    # absolute-path write. Matched on the file_path ONLY (not the command blob), so it never false-trips
-    # a Bash command that merely mentions the path, and it is anchored to /agent/.claude/ so editing a
-    # project's own .claude/ under /work stays allowed. (Relative / Bash-redirect writes still slip; the
-    # ro-mount of hooks is the complete fix — this is defense-in-depth on top of the next-tick revert.)
-    if tool_name in ("Write", "Edit", "MultiEdit"):
+    # could neuter the guard for the rest of the tick (the /agent home is agent-writable; runtime.sh
+    # re-syncs the hook copies from the root-owned source each boot, so this shuts only the WITHIN-tick
+    # window). Matched on the file_path with a PREFIX check (path.startswith), so a project repo whose
+    # path merely CONTAINS "agent/.claude/hooks/" — e.g. /work/agent/.claude/… — is not false-blocked,
+    # and a Bash command that mentions the path isn't a Write so never trips it. KNOWN GAPS (defense in
+    # depth, not a wall): a Bash redirect or a relative/constructed path still slips — the real fix is a
+    # read-only mount of the hooks dir, which is NOT in this change.
+    if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        norm = os.path.normpath(path) if path else ""
         for pat in ("/agent/.claude/hooks/", "/agent/.claude/settings.json"):
-            if pat in path:
+            if norm.startswith(pat):
                 return False, (f"writing the agent's own guard config ({pat}) is blocked — hooks and "
                                f"settings.json are framework-managed and re-synced each tick")
 
@@ -405,11 +408,12 @@ def _wasm_sandbox_observe(tool_name, tool_input):
 
 
 def _guard_decision(tool_name, tool_input):
-    """decide(), but a CRASH inside the guard becomes a BLOCK for mutation tools when fail-closed is on
-    (else it stays fail-open). Returns (exit_code, reason). This closes the actual observed fail-open
-    class — a broken hook (e.g. secret_scan's stdlib-shadow import) that exits non-zero and is treated
-    as 'allow'. Reads always fail open; unparseable stdin (handled in main) always fails open, so a
-    harness format change can never wedge the whole fleet."""
+    """decide(), but a CRASH inside guard.decide() becomes a BLOCK for mutation tools when fail-closed
+    is on (else it stays fail-open). Returns (exit_code, reason). Scope: this covers a crash in THIS
+    hook (guard.py) only — it is the same failure shape that made secret_scan fail open (a broken hook
+    exits non-zero and is treated as 'allow'), but secret_scan is a separate process and is NOT gated
+    by GUARD_FAILCLOSED. Reads always fail open; unparseable stdin (handled in main) always fails open,
+    so a harness format change can never wedge the whole fleet."""
     try:
         allow, reason = decide(tool_name, tool_input)
     except Exception as e:                                    # the guard itself errored
@@ -493,6 +497,10 @@ def _selftest():
     # …but a PROJECT's own .claude/ under /work is fine, and a mere Bash MENTION is not a write.
     check("self-protect-work-repo-allowed",
           decide("Write", {"file_path": "/work/myrepo/.claude/hooks/foo.py", "content": "x"}),
+          True)
+    # prefix check, not substring: a repo literally named 'agent' under /work must NOT be blocked
+    check("self-protect-work-agent-repo-allowed",
+          decide("Write", {"file_path": "/work/agent/.claude/hooks/x.py", "content": "x"}),
           True)
     check("self-protect-bash-mention-allowed",
           decide("Bash", {"command": "grep -r /agent/.claude/hooks/ docs"}),
