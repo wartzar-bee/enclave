@@ -6,6 +6,82 @@ move between minor versions — pin a tag if that matters to you.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-15
+
+A security + durability + fleet-ops release driven by an external comparative review (enclave vs
+LangGraph / CrewAI / OpenHands). Two hook-level credential/SSRF gates were **failing open**; several
+state writers could tear `work.json` under the tick cutoff. Both classes are closed here, and an
+optional kernel-level egress wall lands for deployments that want a real network boundary rather than
+the guard's advisory allowlist.
+
+### Added
+- **Optional kernel-level egress enforcement (`docs/EGRESS.md`, `docker-compose.egress.yml`).** The
+  guard's egress allowlist is command-text matching — bypassable by design (`SECURITY.md`). This
+  overlay adds the real wall: an [OpenSandbox egress](https://github.com/opensandbox-group/OpenSandbox)
+  sidecar (Apache-2.0, digest-pinned + cosign-verifiable) owns the agent's network namespace and
+  enforces a **default-deny DNS + nftables allowlist in the kernel**. Names not in the policy get
+  NXDOMAIN; connections to IPs that didn't come from an allowed name are dropped — so `U=$host; curl
+  $U`, `user@host` URLs, custom resolvers (`dig @8.8.8.8`), and direct-IP connects all fail. Off by
+  default; enable per deployment (`egress-policy.json` at the deployment root, `EGRESS_TOKEN` in
+  `.env` only). `effective_config.py` reports the active egress posture. (`6af8e800`, `6a99055c`)
+- **Optional credential vault on the same sidecar (phase 2 of `docs/EGRESS.md`).** Transparent
+  mitmproxy on 80/443 injects the real credential into outbound requests at the proxy, so the agent's
+  env and mounts hold only a placeholder — a compromised agent has no secret to exfiltrate. Needs
+  sidecar caps `CHOWN,SETUID,SETGID`, a shared CA volume, and per-client CA env; the vault is
+  memory-only, so reseed (`egress-vault-init.sh` pattern) after every egress restart. (`fe999e07`)
+- **`GUARD_FAILCLOSED` fail-closed batch (INERT by default).** With the flag set, a crashing guard
+  blocks the mutation instead of allowing it, and enforce-mode egress blocks on a missing policy.
+  Ships OFF — enable only once `propagation_check.py` is green fleet-wide; kill switch is
+  `GUARD_FAILCLOSED=0` + recreate, or the root-owned `/workspace/GUARD_FAILCLOSED_OFF`. (`929b7890`)
+- **`propagation_check.py` — verify a framework fix actually reached every pod.** Reports per-pod
+  adoption of the webfetch/secret_scan gates so a security fix can't silently miss a live pod
+  (0 DEGRADED = fully propagated). (`875b05c3`)
+- **`drain_recreate.py` — recreate a pod at a tick boundary, not mid-tick.** `enclave update` now
+  drains through it, so a redeploy can no longer SIGKILL a running tick and tear `work.json`.
+  (`22886c7c`, `05bcfdb5`)
+- **`supervision.py` — real heartbeats for the guardian / spawn / control watchers.** The console's
+  "watcher detected" now reads an actual heartbeat rather than a directory that always exists,
+  closing the "host daemon tier silently unloads" class. (`683904bd`)
+- **`settings_migrate.py` back-fills existing pods at tick boot** so the WebFetch guard wiring reaches
+  already-running deployments without a manual settings edit. (`0e952286`)
+
+### Fixed
+- **secret_scan's credential-leak gate was failing open.** It loaded the shared `secrets` module by
+  name and silently bound Python's stdlib `secrets` off-path — so the gate crashed and allowed the
+  write. Now loaded by file path; the hook `--selftest`s are RUN by `run_tests.sh` (they never were —
+  that's how this stayed invisible). (`bbde2f45`)
+- **WebFetch bypassed the guard entirely.** It was never in the PreToolUse matcher, so its SSRF / IMDS
+  and egress checks were dead code — an agent could `WebFetch 169.254.169.254/...` unblocked. Now
+  wired into the matcher and propagated to live pods. (`0e952286`)
+- **Torn `work.json` and empty-queue misreads.** `statefile.py` routes state writers through atomic
+  writes (tmp + fsync + `os.replace`) and provides ONE canonical `work.json` reader — fixing both the
+  torn write under the pkill cutoff and the bug where a `{"items":[...]}` file read as an EMPTY queue
+  in 2 of 3 readers, parking pods that had a full backlog. (`a45d2dcc`, `f96bbded`)
+- **CRITICAL: `enclave update` never actually drained.** A review-fix caught the drain path being
+  skipped, plus four fleet/lifecycle fixes and a `settings_migrate` hook-name collision. (`6a99055c`,
+  `05a778de`)
+- **Guardian resurrected deliberately-stopped pods.** It now honours `state/.operator-stopped` and
+  leaves a stopped pod down. (`8e0ce49d`)
+
+### Changed
+- **Per-agent lifecycle lock (flock).** Console, CLI, monitor, and guardian can no longer race a
+  recreate of the same pod. (`d7ea7dbb`)
+- **Guard blocks the agent from writing its own live `hooks/` or `settings.json`.** An agent can no
+  longer rewrite the code that governs it. (`d654b728`)
+- **Docs truth pass.** Fixed the broken quickstart step, changed "brain-agnostic" →
+  "model-portable (deepest on Claude)", and now states plainly that the guard's egress is
+  report-only and `PERMISSION=dangerous` by default. (`e777116a`)
+
+### Security
+- **Dropped the attacker-reachable `*.amazonaws.com` wildcard** from the default egress allowlist —
+  it let exfil/fetch to any AWS-hosted bucket past the advisory check. (`f3640c2e`)
+- CI now runs the security hooks' selftests (suite 29 → 43), so a gate that crashes fails the build
+  instead of shipping dark.
+
+_Note: the Dockerfile change to root-own `/workspace` (`081f9f69`) is committed but not yet active —
+it needs an image rebuild; the read-only framework mount already protects the live fleet in the
+meantime._
+
 ## [0.5.0] — 2026-08-03
 
 ### Added
