@@ -1324,17 +1324,30 @@ PRODUCT_PATHS = ["platform", "bin", "templates", "docs", "README.md", "SECURITY.
 def cmd_update(args):
     """Update THIS deployment's Enclave runtime to the latest + rebuild — preserving home/, secrets/,
     .env, and your local docker-compose.yml. Works for git-clone AND `enclave new` (non-git) deployments.
-    Usage: enclave update [--from <product-dir>] [--pull] [--branch B] [--no-build] [--force-compose]
-      --pull   prebuilt-image mode: docker compose pull + recreate (no source refresh)
-      --from   copy runtime files from a local product checkout (for non-git deployments)
+    Usage: enclave update [--from <product-dir>] [--pull] [--branch B] [--no-build] [--force-compose] [--no-drain]
+      --pull     prebuilt-image mode: docker compose pull + recreate (no source refresh)
+      --from     copy runtime files from a local product checkout (for non-git deployments)
+      --no-drain recreate immediately (default: wait for the current tick to finish first)
       (no flag) git-clone deployments fetch origin and refresh the runtime paths"""
     if not (REPO / "docker-compose.yml").exists():
         sys.exit("Not an Enclave deployment (no docker-compose.yml here).")
+
+    def _recreate(build):
+        # Recreate at a TICK BOUNDARY, not mid-tick: a raw `up -d --build` SIGKILLs an in-flight tick,
+        # and hot state (work.json) is fsync-atomic now but a killed tick still loses its work. Reuse
+        # the tested drain helper (pause -> wait for tick != working -> recreate -> unpause). Falls
+        # back to a plain recreate if the helper isn't in this deployment (e.g. --image-only) or the
+        # operator passed --no-drain.
+        dr = REPO / "platform" / "agentd" / "drain_recreate.py"
+        if dr.exists() and not _has(args, "--no-drain"):
+            subprocess.run([sys.executable, str(dr), "--dir", str(REPO)] + (["--build"] if build else []))
+        else:
+            subprocess.run(["docker", "compose", "up", "-d"] + (["--build"] if build else []), cwd=REPO)
     # 1) prebuilt-image mode — the image carries the code; just pull + recreate
     if _has(args, "--pull") or _read_env("ENCLAVE_AGENT_IMAGE"):
         print("Updating via prebuilt images (docker compose pull)…")
         subprocess.run(["docker", "compose", "pull"], cwd=REPO)
-        subprocess.run(["docker", "compose", "up", "-d"], cwd=REPO)
+        _recreate(build=False)
         print("✓ updated (pulled images + recreated)."); return
     # 2) build-from-source mode — refresh the runtime files, then rebuild
     src = _flag(args, "--from")
@@ -1378,7 +1391,7 @@ def cmd_update(args):
         print("  (skipped rebuild — run `enclave run` to apply)"); return
     _check_chat_js()
     print("Rebuilding + recreating…")
-    subprocess.run(["docker", "compose", "up", "-d", "--build"], cwd=REPO)
+    _recreate(build=True)
     print("✓ updated + live.")
 
 
