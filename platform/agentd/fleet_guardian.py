@@ -38,18 +38,33 @@ LABEL = "org.enclave.fleetguardian"
 PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
 
 
+def _excluded_from_watch(aid):
+    """A watched pod is EXCLUDED from resurrection if either:
+      * `.guardian-off` sits in the pod dir (manual, persistent operator override), OR
+      * `state/.operator-stopped` exists (written by console/CLI `down`, cleared on the next up/
+        start/restart). The monitor's autofix already honours .operator-stopped; the GUARDIAN did not,
+        so a `watch: true` pod the operator deliberately stopped was brought back within 60s — the
+        parked-agent incident, still open on this path. Honour the same signal both tiers use."""
+    if os.path.exists(os.path.join(FLEET_ROOT, aid, ".guardian-off")):
+        return True
+    # standard layout is <FLEET_ROOT>/<aid>/home/state/.operator-stopped; tolerate home==pod dir too
+    for base in (os.path.join(FLEET_ROOT, aid, "home"), os.path.join(FLEET_ROOT, aid)):
+        if os.path.exists(os.path.join(base, "state", ".operator-stopped")):
+            return True
+    return False
+
+
 def _watched_pods():
     """Watch-set is DECLARED, not hardcoded: manifest agents with supervision `watch: true` (OPT-IN, so a
     deliberately-stopped pod like forgepod is never resurrected — the failure mode is 'unwatched', never
-    'wrongly restarted'). A `.guardian-off` file in the pod dir is a runtime override that also excludes it.
+    'wrongly restarted'). `.guardian-off` (manual) or state/.operator-stopped (console/CLI down) excludes one.
     Empty/unreadable manifest → watch nothing (fail safe, never guess a pod list)."""
     try:
         agents = json.loads(open(MANIFEST).read()).get("agents", {})
     except Exception:
         return []
     return [aid for aid, a in agents.items()
-            if a.get("watch") is True
-            and not os.path.exists(os.path.join(FLEET_ROOT, aid, ".guardian-off"))]
+            if a.get("watch") is True and not _excluded_from_watch(aid)]
 
 
 def _registration_drift():
