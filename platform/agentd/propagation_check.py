@@ -70,10 +70,14 @@ def _sym(v):
 
 
 def audit(homes):
-    """Return (rows, any_stale). rows = [(home, {check: bool|None})]."""
+    """Return (rows, any_stale, egress_unknown). rows = [(home, {check: bool|None})].
+    egress_unknown flags pods with NO egress policy file — those are the MOST dangerous to enable
+    fail-closed against (a missing policy under enforce blocks all egress), so the gate must not pass
+    them silently even though the check can't read a value."""
     rows = [(str(h), check_home(h)) for h in homes]
     any_stale = any(v is False for _, res in rows for v in res.values())
-    return rows, any_stale
+    egress_unknown = [h for h, res in rows if res["egress_tightened"] is None]
+    return rows, any_stale, egress_unknown
 
 
 def _discover(fleet_root):
@@ -112,17 +116,18 @@ def _selftest():
         ck("stale-scan", rs["secret_scan_fixed"] is False)
         ck("stale-egress", rs["egress_tightened"] is False)
 
-        rows, any_stale = audit(_discover(root))
+        rows, any_stale, egress_unknown = audit(_discover(root))
         ck("discovers-two", len(rows) == 2)
         ck("flags-stale", any_stale is True)
 
-        # a home missing the files → all unknown, NOT counted as stale
+        # a home with the OTHER files but no egress policy → egress flagged (dangerous for fail-closed)
         empty = root / "empty" / "home"
         (empty / ".claude").mkdir(parents=True)
         r_empty = check_home(empty)
         ck("unknown-not-stale", all(v is None for v in r_empty.values()))
-        _, only_unknown_stale = audit([empty])
-        ck("unknown-audit-clean", only_unknown_stale is False)
+        _, only_unknown_stale, eu = audit([empty])
+        ck("unknown-not-counted-stale", only_unknown_stale is False)
+        ck("egress-absent-flagged", str(empty) in eu)
 
     print(("selftest FAIL: " + ", ".join(fails)) if fails else "selftest OK")
     return 1 if fails else 0
@@ -139,13 +144,21 @@ def main():
     homes = list(a.home) + (_discover(a.fleet_root) if a.fleet_root else [])
     if not homes:
         ap.error("give --fleet-root or one/more --home (or --selftest)")
-    rows, any_stale = audit(homes)
+    rows, any_stale, egress_unknown = audit(homes)
     width = max((len(h) for h, _ in rows), default=4)
     print(f"{'POD HOME':<{width}}  " + "  ".join(n for n, _ in CHECKS))
     for h, res in rows:
         print(f"{h:<{width}}  " + "  ".join(f"{_sym(res[n]):>{max(len(n),5)}}" for n, _ in CHECKS))
-    print(f"\n{'STALE — some pods are missing a fix (see above)' if any_stale else 'all pods current (unknowns = file absent)'}")
-    return 1 if any_stale else 0
+    if egress_unknown:
+        print(f"\nEGRESS POLICY ABSENT on {len(egress_unknown)} pod(s) — do NOT enable fail-closed egress "
+              f"there (a missing policy blocks all egress under enforce):")
+        for h in egress_unknown:
+            print(f"  ? {h}")
+    if any_stale:
+        print("\nSTALE — some pods are missing a fix (see above)")
+    elif not egress_unknown:
+        print("\nall pods current")
+    return 1 if (any_stale or egress_unknown) else 0
 
 
 if __name__ == "__main__":

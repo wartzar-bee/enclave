@@ -583,8 +583,24 @@ def _lock_path(aid):
     return pathlib.Path(tempfile.gettempdir()) / f"enclave-lifecycle-{safe}.lock"
 
 
+def _clear_operator_stopped(a):
+    """Clear state/.operator-stopped when a pod is INTENTIONALLY brought up. console `down` sets that
+    flag and the guardian now honours it — so if a CLI/`enclave update` up doesn't clear it, the
+    guardian will later refuse to resurrect a genuine crash of that pod. console clears it on resume;
+    this covers the CLI/fleet up/start/restart paths too. Best-effort."""
+    try:
+        home = a.get("home") if isinstance(a, dict) else None
+        if home:
+            f = pathlib.Path(home) / "state" / ".operator-stopped"
+            if f.exists():
+                f.unlink()
+    except Exception:
+        pass
+
+
 @contextlib.contextmanager
-def _agent_lock(aid, wait=120):
+def _agent_lock(aid, wait=200):   # > the longest compose op it guards (_compose timeout=180) so the
+                                  # interlock doesn't fail-open into the race precisely under contention
     """Serialize lifecycle ops (up/down/restart) on ONE pod across processes. console, CLI, monitor
     autofix and the guardian each run as separate processes and could otherwise fire concurrent
     `up --force-recreate` / `stop` on the same pod and race. Inter-process flock; bounded wait then
@@ -629,6 +645,9 @@ def _compose(a, *verb, timeout=180):
         cmd += ["-f", str(override)]
     cmd += ["--project-directory", a["dir"], *verb]
     _audit(verb[0], a["id"], " ".join(verb[1:]))
+    # An intentional bring-up clears the guardian's do-not-restart flag (else a later crash isn't healed).
+    if verb and verb[0] in ("up", "start", "restart"):
+        _clear_operator_stopped(a)
     # Serialize state-changing verbs per pod so console/CLI/monitor/guardian can't race a recreate.
     # Read-ish verbs (logs, ps, send) don't mutate lifecycle and don't need the lock.
     if verb and verb[0] in ("up", "down", "restart", "stop", "start", "kick"):

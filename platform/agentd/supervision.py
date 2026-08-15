@@ -31,12 +31,13 @@ DEFAULT_MAX_AGE = 300
 
 
 def reports_dir():
+    # ONE default all processes resolve identically regardless of their env. The guardian sets
+    # ENCLAVE_FLEET_ROOT but the console-launched watchers set neither, so deriving from FLEET_ROOT
+    # split the heartbeats across two dirs and made `--check` cry-wolf. Default to a fixed ~/.enclave
+    # path (same HOME for every launchd job); ENCLAVE_REPORTS_DIR is an explicit override for all of them.
     d = os.environ.get("ENCLAVE_REPORTS_DIR")
     if d:
         return pathlib.Path(d).expanduser()
-    fr = os.environ.get("ENCLAVE_FLEET_ROOT")
-    if fr:
-        return pathlib.Path(fr).expanduser().parent / "reports"
     return pathlib.Path.home() / ".enclave" / "reports"
 
 

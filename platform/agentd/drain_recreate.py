@@ -21,18 +21,38 @@ Usage:
   drain_recreate.py --dir <deployment-dir> [--build] [--force-recreate] [--timeout 2700] [--poll 5]
   drain_recreate.py --selftest
 """
-import argparse, os, pathlib, subprocess, sys, time
+import argparse, calendar, os, pathlib, subprocess, sys, time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import fleet  # stdlib-only; provides _state / _agent_home / _env
+import fleet  # stdlib-only; provides _agent_home / _env
 
 
-def is_working(home):
-    """True iff a tick is genuinely in progress right now (host-side, from runner.log markers)."""
+def _tick_running(home, now=None):
+    """Pause-AGNOSTIC 'a tick is in progress' check, read straight from runner.log markers — the SAME
+    logic fleet._state uses but WITHOUT its pause override. Using fleet._state here was a real bug: it
+    reports tick='paused' the instant the drain writes the pause file, so the wait loop saw 'not
+    working' immediately and the recreate landed mid-tick — the exact tearing this module exists to
+    prevent. `now` is injectable for tests."""
     try:
-        return fleet._state(home).get("tick") == "working"
+        lines = (pathlib.Path(home) / "logs" / "runner.log").read_text(errors="ignore").splitlines()[-1500:]
     except Exception:
-        return False   # can't tell → don't block the drain forever; treat as drainable
+        return False   # no log / can't read → nothing to wait for
+    last_start = last_end = ""
+    for l in lines:
+        if "tick start" in l:
+            last_start = l[:20]
+        elif "tick end" in l or "tick TIMED OUT" in l:
+            last_end = l[:20]
+    if not (last_start and last_start > last_end):
+        return False
+    try:   # an orphaned 'tick start' (tick died without an end marker) must NOT latch working forever
+        st = calendar.timegm(time.strptime(last_start[:19], "%Y-%m-%dT%H:%M:%S"))
+        max_tick = int(os.environ.get("TICK_TIMEOUT", "2400")) + 600
+        if ((now if now is not None else time.time()) - st) > max_tick:
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def recreate_cmd(dep_dir, build=False, force_recreate=False):
@@ -58,46 +78,57 @@ def drain_and_recreate(dep_dir, build=False, force_recreate=False, timeout=2700,
     home = pathlib.Path(home)
     paused = home / "state" / "paused"
     was_paused = paused.exists()
+    we_paused = False
 
     print(f"[drain] {aid}: home={home}")
-    if not home.is_dir():
-        print(f"[drain] WARN home not found; recreating without drain")
-    else:
-        if not was_paused:
-            paused.parent.mkdir(parents=True, exist_ok=True)
-            paused.write_text(f"PAUSED for drain-recreate {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
-            print(f"[drain] paused (no new ticks will start)")
-        # wait for the in-flight tick to finish
-        deadline = _clock() + timeout
-        waited = 0
-        while is_working(home):
-            if _clock() >= deadline:
-                print(f"[drain] WARN tick still 'working' after {timeout}s — proceeding anyway "
-                      f"(a wedged tick would otherwise block deploy forever)")
-                break
-            if waited == 0:
-                print(f"[drain] a tick is in progress — waiting for the boundary (≤{timeout}s)…")
-            _sleep(poll)
-            waited += poll
+    try:
+        if not home.is_dir():
+            print(f"[drain] WARN home not found; recreating without drain")
         else:
-            if waited:
-                print(f"[drain] tick finished after ~{waited}s")
+            if not was_paused:
+                paused.parent.mkdir(parents=True, exist_ok=True)
+                paused.write_text(f"PAUSED for drain-recreate {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
+                we_paused = True
+                print(f"[drain] paused (no new ticks will start)")
+            # wait for the ALREADY-RUNNING tick to finish (pause-agnostic detector, not fleet._state)
+            deadline = _clock() + timeout
+            waited = 0
+            while _tick_running(home, now=_clock()):
+                if _clock() >= deadline:
+                    print(f"[drain] WARN tick still running after {timeout}s — proceeding anyway "
+                          f"(a wedged tick would otherwise block deploy forever)")
+                    break
+                if waited == 0:
+                    print(f"[drain] a tick is in progress — waiting for the boundary (≤{timeout}s)…")
+                _sleep(poll)
+                waited += poll
+            else:
+                if waited:
+                    print(f"[drain] tick finished after ~{waited}s")
 
-    cmd = recreate_cmd(dep_dir, build=build, force_recreate=force_recreate)
-    print(f"[drain] {' '.join(cmd)}")
-    rc = _run(cmd).returncode
-    print(f"[drain] recreate rc={rc}")
-
-    # restore prior pause state: only unpause what WE paused
-    if home.is_dir() and not was_paused and paused.exists():
-        try:
-            paused.unlink()
-            print(f"[drain] unpaused (restored to running)")
-        except OSError as e:
-            print(f"[drain] WARN could not remove pause file: {e}")
-    elif was_paused:
-        print(f"[drain] left paused (it was paused before)")
-    return rc
+        cmd = recreate_cmd(dep_dir, build=build, force_recreate=force_recreate)
+        print(f"[drain] {' '.join(cmd)}")
+        rc = _run(cmd).returncode
+        print(f"[drain] recreate rc={rc}")
+        if rc == 0:   # an intentional recreate clears the guardian's do-not-restart flag
+            try:
+                osf = home / "state" / ".operator-stopped"
+                if osf.exists():
+                    osf.unlink()
+            except Exception:
+                pass
+        return rc
+    finally:
+        # ALWAYS restore prior pause state — even if the recreate raised or the operator interrupted;
+        # only unpause what WE paused, never a pod the operator had deliberately paused.
+        if we_paused and paused.exists():
+            try:
+                paused.unlink()
+                print(f"[drain] unpaused (restored to running)")
+            except OSError as e:
+                print(f"[drain] WARN could not remove pause file: {e}")
+        elif was_paused:
+            print(f"[drain] left paused (it was paused before)")
 
 
 def _selftest():
@@ -110,43 +141,65 @@ def _selftest():
     ck("cmd-build", "--build" in recreate_cmd("/x", build=True))
     ck("cmd-force", "--force-recreate" in recreate_cmd("/x", force_recreate=True))
 
-    # drain loop: waits while working, then recreates once; virtual clock, no docker/sleep
     import tempfile
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+    now = calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%S"))
+
+    # REGRESSION for the pause-mask bug: _tick_running must be True EVEN WITH the pause file present
+    # (fleet._state would report 'paused' and mask it). No monkeypatch — a real runner.log + pause file.
+    with tempfile.TemporaryDirectory() as tmp:
+        home = pathlib.Path(tmp) / "home"
+        (home / "logs").mkdir(parents=True); (home / "state").mkdir(parents=True)
+        log = home / "logs" / "runner.log"
+        log.write_text(f"{ts}Z — tick start\n")           # a tick in progress, no end marker yet
+        (home / "state" / "paused").write_text("x")        # pause file present
+        ck("working-despite-pause", _tick_running(home, now=now) is True)
+        with log.open("a") as f: f.write(f"{ts}Z — tick end\n")
+        ck("not-working-after-end", _tick_running(home, now=now) is False)
+        # an orphaned start (older than the tick window) reads not-running
+        old = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now - 99999))
+        log.write_text(f"{old}Z — tick start\n")
+        ck("orphaned-start-not-working", _tick_running(home, now=now) is False)
+
+    # drain loop over a REAL log: the tick ends after 2 polls (sleep appends the end marker)
     with tempfile.TemporaryDirectory() as tmp:
         dep = pathlib.Path(tmp) / "pod"
-        (dep / "home" / "state").mkdir(parents=True)
-        # fake a moving clock and a tick that is "working" for the first 2 polls then idle
-        state = {"t": 0.0, "polls": 0}
+        home = dep / "home"
+        (home / "logs").mkdir(parents=True); (home / "state").mkdir(parents=True)
+        log = home / "logs" / "runner.log"
+        log.write_text(f"{ts}Z — tick start\n")
+        state = {"t": float(now), "polls": 0}
         def clock(): return state["t"]
-        def sleep(s): state["t"] += s; state["polls"] += 1
+        def sleep(s):
+            state["t"] += s; state["polls"] += 1
+            if state["polls"] == 2:
+                with log.open("a") as f: f.write(f"{ts}Z — tick end\n")
         calls = {"n": 0}
-        class R:  # fake CompletedProcess
-            returncode = 0
-        def run(cmd, **k): calls["n"] += 1; return R()
-        # patch is_working via fleet._state: monkeypatch fleet._state
-        orig = fleet._state
-        fleet._state = lambda home: {"tick": "working"} if state["polls"] < 2 else {"tick": "idle"}
-        try:
-            rc = drain_and_recreate(dep, build=True, timeout=100, poll=5,
-                                    _clock=clock, _sleep=sleep, _run=run)
-        finally:
-            fleet._state = orig
+        def run(cmd, **k): calls["n"] += 1; return type("R", (), {"returncode": 0})()
+        rc = drain_and_recreate(dep, build=True, timeout=100, poll=5,
+                                _clock=clock, _sleep=sleep, _run=run)
         ck("drained-then-recreated", rc == 0 and calls["n"] == 1)
-        ck("waited-for-boundary", state["polls"] >= 2)
-        ck("unpaused-after", not (dep / "home" / "state" / "paused").exists())
+        ck("waited-for-real-boundary", state["polls"] >= 2)
+        ck("unpaused-after", not (home / "state" / "paused").exists())
+
+    # unpause happens even if the recreate RAISES (try/finally), and we paused it
+    with tempfile.TemporaryDirectory() as tmp:
+        dep = pathlib.Path(tmp) / "pod"
+        (dep / "home" / "state").mkdir(parents=True); (dep / "home" / "logs").mkdir(parents=True)
+        def boom(cmd, **k): raise RuntimeError("docker exploded")
+        try:
+            drain_and_recreate(dep, _clock=lambda: 0.0, _sleep=lambda s: None, _run=boom)
+        except RuntimeError:
+            pass
+        ck("unpaused-even-on-recreate-error", not (dep / "home" / "state" / "paused").exists())
 
     # a pod already paused stays paused
     with tempfile.TemporaryDirectory() as tmp:
         dep = pathlib.Path(tmp) / "pod"
-        (dep / "home" / "state").mkdir(parents=True)
+        (dep / "home" / "state").mkdir(parents=True); (dep / "home" / "logs").mkdir(parents=True)
         (dep / "home" / "state" / "paused").write_text("operator paused")
-        orig = fleet._state
-        fleet._state = lambda home: {"tick": "idle"}
-        try:
-            drain_and_recreate(dep, _clock=lambda: 0.0, _sleep=lambda s: None,
-                               _run=lambda cmd, **k: type("R", (), {"returncode": 0})())
-        finally:
-            fleet._state = orig
+        drain_and_recreate(dep, _clock=lambda: 0.0, _sleep=lambda s: None,
+                           _run=lambda cmd, **k: type("R", (), {"returncode": 0})())
         ck("left-paused-if-preexisting", (dep / "home" / "state" / "paused").exists())
 
     print(("selftest FAIL: " + ", ".join(fails)) if fails else "selftest OK")
