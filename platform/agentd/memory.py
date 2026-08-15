@@ -27,6 +27,8 @@ CLI:
   memory.py --base D forget   <type>/<slug>
 """
 import sys, os, re, json, argparse, pathlib, datetime, subprocess, math, time, hashlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import statefile
 
 def _slug(s, n=48):
     s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
@@ -392,7 +394,7 @@ class Memory:
                     slimmed = _slim(data, af, cnt)
                 if cnt[0]:
                     before = wf.stat().st_size
-                    wf.write_text(json.dumps(slimmed, indent=2))
+                    statefile.write_json(wf, slimmed)
                     notes.append(f"work.json {before}B→{wf.stat().st_size}B: archived {cnt[0]} history value(s) → _archive/work-history.jsonl")
         except Exception as e:
             notes.append(f"work.json size-guard skipped ({e})")
@@ -504,20 +506,17 @@ class Memory:
     # ── WORK QUEUE (continuity across ticks — the "what am I in the middle of") ──
     def _workf(self): return self.base / "work.json"
     def work_list(self):
-        # Tolerate a non-conforming work.json: only a LIST of dict items is a queue. An agent that
-        # tracks work its own way (e.g. a free-form dict) yields an empty queue here instead of
-        # crashing the digest (which would leave the tick with NO recall.md and force a full re-read).
-        if not self._workf().exists():
-            return []
-        try:
-            d = json.loads(self._workf().read_text())
-        except Exception:
-            return []
-        return [i for i in d if isinstance(i, dict) and "status" in i] if isinstance(d, list) else []
+        # statefile.open_work is the ONE normaliser (shared with agentloop + tick_feeder): it handles
+        # both the bare-list and {"items":[...]} dict shapes, so the digest can no longer show an empty
+        # queue for a dict-shaped backlog that the wake-gate sees as full. Keep the stricter "status"
+        # filter this queue relies on. Torn/missing/invalid → [] (never crash the digest).
+        return [i for i in statefile.open_work(self._workf()) if "status" in i]
     def work_add(self, text, verify=""):
-        w = self.work_list(); wid = max([i["id"] for i in w], default=0) + 1
+        # int-id max only — work_list now also surfaces externally-managed items whose ids may be
+        # strings; comparing those against an int default would raise. Ignore non-int ids for numbering.
+        w = self.work_list(); wid = max([i["id"] for i in w if isinstance(i.get("id"), int)], default=0) + 1
         w.append({"id": wid, "text": text, "status": "todo", "ts": self._now(), "evidence": "", "verify": verify})
-        self._workf().write_text(json.dumps(w, indent=2) + "\n"); return wid
+        statefile.write_json(self._workf(), w); return wid
     def _run_verify(self, cmd):
         """Run an item's verify command (cwd=base). Returns (ok, output). Deterministic completion gate
         so the model can't self-mark 'done' without the work actually being verifiable (anti-fabrication)."""
@@ -539,7 +538,7 @@ class Memory:
                     evidence = (evidence + f" | verify PASSED: {i['verify']}").strip(" |")
                 i["status"] = status; i["ts"] = self._now()
                 if evidence: i["evidence"] = evidence
-        self._workf().write_text(json.dumps(w, indent=2) + "\n")
+        statefile.write_json(self._workf(), w)
         return {"ok": True, "id": int(wid), "status": status}
 
     def _directive_state(self):
