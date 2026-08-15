@@ -89,12 +89,15 @@ report with a Sources section — and it only ever made read-only HTTP GETs; the
 
 ## 5. Run more than one
 
-Each deployment is a folder. Scaffold siblings that share the built image (no rebuild):
+Each deployment is a folder. Scaffold a sibling that shares the built image (no rebuild). `new`
+already runs `init`, so pass the init flags to `new` in ONE shot — don't init a second time:
 
 ```bash
-./bin/enclave new my-reviewer --image-only   # → ../my-reviewer/, its own free port
-cd ../my-reviewer && ./bin/enclave init --template code-review --yes --name my-reviewer \
-  --brain claude --model claude-sonnet-4-6 --cred "$ANTHROPIC_TOKEN" && ./bin/enclave run
+# lightweight sibling → ../my-reviewer/, its own free port, sharing this checkout's image:
+./bin/enclave new my-reviewer --image-only --template code-review --yes \
+  --brain claude --model claude-sonnet-4-6 --cred "$ANTHROPIC_TOKEN"
+# start it from THIS checkout (shared image, no rebuild):
+./bin/enclave run --dir ../my-reviewer --no-build
 ```
 
 See the whole fleet at a glance:

@@ -3,6 +3,15 @@
 Start on Claude, shift to the cheapest reachable LLM as the subscription cap fills. Generic: every pool
 is an OpenAI-compatible endpoint, so any provider works.
 
+> ⚠ **Known limitation (as of 2026-08): the cap-driven shift does not currently fire.**
+> `route_brain._cap_pct` reads `<agent>/state/claude-usage.json` with keys `util_5h`/`util_7d`, but the
+> only writer (`claude_usage.py`) emits a different schema (`five_hour.pct` / `seven_day.pct`) to a
+> different path. The read fails, cap is treated as 0 (headroom), and `BRAIN=optimize` therefore stays
+> on Claude regardless of utilization. The hard cap-guard in `runtime.sh` (which defers ticks near the
+> limit) still works — but the *routing* described below is aspirational until this is wired. Tracked
+> for the scheduler work (registry + real quota-aware routing); see the improvement plan. The schema in
+> the section below documents the intended keys, not what is currently written.
+
 ## How it decides (per tick)
 `platform/agentd/route_brain.py` reads two things and prints ONE decision line for `runtime.sh`:
 
