@@ -69,7 +69,7 @@ class Memory:
         line = f"- [{mtype}] {text.strip().splitlines()[0][:120]} → `{mtype}/{slug}.md`"
         idx = self.mem / "INDEX.md"; lines = idx.read_text().splitlines()
         lines = [l for l in lines if f"`{mtype}/{slug}.md`" not in l]  # de-dup
-        idx.write_text("\n".join(lines + [line]) + "\n")
+        statefile.write_atomic(idx, "\n".join(lines + [line]) + "\n")
         return f
 
     def link(self, rel, targets):
@@ -241,7 +241,7 @@ class Memory:
         line = f"- **{title}** → `{slug}.md` (v{ver})"
         idx = self.skills / "INDEX.md"; lines = idx.read_text().splitlines()
         lines = [l for l in lines if f"`{slug}.md`" not in l]
-        idx.write_text("\n".join(lines + [line]) + "\n")
+        statefile.write_atomic(idx, "\n".join(lines + [line]) + "\n")
         return f, ver
 
     def _rank_skills(self, query, k=2):

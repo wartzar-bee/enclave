@@ -578,7 +578,7 @@ class Loop:
             except Exception:
                 pass
             bm.parent.mkdir(parents=True, exist_ok=True)
-            bm.write_text(json.dumps({"since": since, "waiting_on": why}))
+            statefile.write_json(bm, {"since": since, "waiting_on": why}, trailing_newline=False)
         except OSError:
             pass
 
