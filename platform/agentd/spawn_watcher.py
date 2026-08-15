@@ -19,6 +19,11 @@ under the stacks root (no path escape), and an existing target is refused. Every
 ~/.config/enclave/fleet-audit.log.
 """
 import os, sys, re, json, time, pathlib, subprocess, shutil
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import supervision
+except Exception:
+    supervision = None
 
 REPO = pathlib.Path(__file__).resolve().parents[2]     # platform/agentd/ -> repo root
 ENCLAVE = REPO / "bin" / "enclave"
@@ -338,6 +343,8 @@ def main():
     print(f"spawn_watcher: queue={queue} stacks_root={stacks_root} interval={interval}s once={once}")
 
     while True:
+        if supervision:
+            supervision.beat("spawn-watcher", interval=interval)   # liveness (fail-soft)
         specs = sorted((queue / "incoming").glob("*"),
                        key=lambda p: p.stat().st_mtime)
         for s in specs:

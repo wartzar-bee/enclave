@@ -37,6 +37,10 @@ except Exception:
     @contextlib.contextmanager
     def _agent_lock(aid, wait=120):
         yield
+try:
+    import supervision
+except Exception:
+    supervision = None
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FLEET_ROOT = os.environ.get("ENCLAVE_FLEET_ROOT", os.path.join(_REPO, "fleet"))
@@ -140,6 +144,8 @@ def _escalate(pod, detail):
 
 
 def check(install_note=False):
+    if supervision:
+        supervision.beat("fleet-guardian")   # liveness so the supervision tier isn't itself invisible
     state = {}
     if os.path.exists(STATE):
         try:
