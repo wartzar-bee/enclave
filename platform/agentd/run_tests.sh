@@ -16,11 +16,18 @@ FILTER=""
 [ "${1:-}" = "-k" ] && FILTER="${2:-}"
 
 # Discover suites (sorted; bash-3.2 compatible — no mapfile). Skip the helper module itself.
+# hooks/test_selftests.py runs each security hook's embedded --selftest (guard/secret_scan/
+# delegation_guard) — previously those selftests existed but nothing ran them.
 SUITES=$(ls test_*.py hooks/test_*.py 2>/dev/null | sort)
+
+# The plugin-vetting security suites live at the repo root (../../test/), not under agentd. They are
+# the "visible" security tests and were never gated by CI; include them here. Pathed relative to this
+# script's dir (agentd) so the runner works from any cwd.
+ROOT_TESTS=$(ls ../../test/test_*.py 2>/dev/null | sort)
 
 pass=0; fail=0; failed_names=""
 echo "=== Enclave test suite ($PY) ==="
-for t in $SUITES; do
+for t in $SUITES $ROOT_TESTS; do
   if [ -n "$FILTER" ]; then case "$t" in *"$FILTER"*) ;; *) continue ;; esac; fi
   printf '\n--- %s ---\n' "$t"
   if "$PY" "$t"; then

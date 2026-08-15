@@ -13,18 +13,37 @@ board-report*, skills/**, and blocks (exit 2) when it looks like a real credenti
 
 Deterministic, no deps. exit 0 = allow, exit 2 + stderr = block (fires under --dangerously-skip-perms).
 """
-import json, os, re, sys
+import json, os, re, sys, pathlib
 
 # The framework's ONE credential definition. The hook lives in the agent home but the module ships
 # with the runtime; if it is ever unreachable we say so LOUDLY on stderr rather than failing open in
 # silence — a write-blocker that quietly stops blocking is the worst possible failure here.
-sys.path.insert(0, os.environ.get("ENCLAVE_AGENTD", "/workspace/platform/agentd"))
-try:
-    import secrets as _sec
-except Exception as _e:                                    # pragma: no cover
-    _sec = None
-    sys.stderr.write(f"[secret_scan] DEGRADED: cannot import the shared secrets module ({_e}); "
-                     f"writes are NOT being scanned\n")
+# Load secrets.py BY FILE PATH (same as capture.py): its module name (`secrets`) collides with
+# Python's stdlib, and a plain `import secrets` on a bad/missing sys.path SILENTLY binds the stdlib
+# module — which has no .scan_text, so the import "succeeds", the DEGRADED branch never fires, and
+# the gate then crashes at first use (exit 1 = non-blocking = fail-open in total silence). Explicit
+# file-path load + a scan_text capability check avoids the name collision entirely.
+_sec = None
+for _dir in (str(pathlib.Path(__file__).resolve().parent.parent),
+             os.environ.get("ENCLAVE_AGENTD"), "/workspace/platform/agentd"):
+    if not _dir:
+        continue
+    _f = pathlib.Path(_dir) / "secrets.py"
+    if not _f.exists():
+        continue
+    try:
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location("enclave_secrets", str(_f))
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        if hasattr(_mod, "scan_text"):
+            _sec = _mod
+            break
+    except Exception:                                      # pragma: no cover
+        pass
+if _sec is None:
+    sys.stderr.write("[secret_scan] DEGRADED: shared secrets module unreachable; "
+                     "writes are NOT being scanned\n")
 
 # durable, git-committed or recall-fed files a leaked secret would poison
 _TARGET = re.compile(r"(memory/|/work/|work\.json|rollup|board-report|skills/|handoff|learnings|activity)", re.I)
