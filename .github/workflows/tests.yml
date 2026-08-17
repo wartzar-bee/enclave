@@ -1,9 +1,13 @@
 name: tests
 
-# Run the framework test suite on every push / PR. The suite is dependency-free (plain stdlib
-# python3 scripts — no pytest), so CI == what you run locally with `bash platform/agentd/run_tests.sh`.
-# The frontend-static suite needs `node` (for `node --check` on the embedded dashboard JS); the
-# Playwright E2E self-skips cleanly when no browser is present, so it does not gate CI here.
+# Run the framework test suite on every push / PR. The suite is plain stdlib python3 scripts (no
+# pytest) plus ONE runtime dep: pyyaml, which Dockerfile.agent bakes into every shipped image and
+# the plugin slice (plugin.yaml manifests) exercises — CI without it tests a configuration that
+# never ships, and is exactly how the suite silently went red on 2026-08-15 (the plugin suites
+# landed green locally, where pyyaml exists, and failed 16 tests here).
+# CI == `bash platform/agentd/run_tests.sh` locally. The frontend-static suite needs `node` (for
+# `node --check` on the embedded dashboard JS); the Playwright E2E self-skips cleanly when no
+# browser is present, so it does not gate CI here.
 
 on:
   push:
@@ -26,6 +30,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      - name: Install the runtime deps the shipped image bakes (Dockerfile.agent)
+        run: pip install pyyaml
 
       - name: Run the full suite
         run: bash platform/agentd/run_tests.sh
