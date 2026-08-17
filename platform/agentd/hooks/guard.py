@@ -36,7 +36,10 @@ SECRET_DENY = (".ssh/", "id_rsa", "id_ed25519", ".aws/credentials", "/.netrc",
                ".secrets/anthropic", ".secrets/google.env",
                # git-push credential (BRAIN/allow_git agents): the agent can `git push` but NOT read the
                # raw token nor run the helper directly — git invokes the helper internally.
-               ".secrets/git.env", "gitcreds-helper")
+               ".secrets/git.env", "gitcreds-helper",
+               # GitHub App private key (PaS ops tier) — carried as a local patch in the pas-agents
+               # vendored runtime since June; upstreamed 2026-08-17 so that copy needs no patches.
+               ".secrets/gh-app")
 GIT_RE = re.compile(r"(?:^|[;&|]\s*|\s)git(?:\s|$)")
 
 # Tools whose an outright FAILURE of the guard should not silently ALLOW when fail-closed is on.
