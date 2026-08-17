@@ -289,9 +289,34 @@ def cfg_observability(env):
     return None
 
 
+def cfg_llm_routing(env):
+    """A Claude/anthropic model id pointed at a METERED endpoint re-buys tokens the subscription
+    already covers (the $173.70 OpenRouter leak, 2026-07-20/21 — the config remnants survived that
+    fix and re-armed it). Claude runs ONLY via the claude CLI pool. Fires on any of:
+      * BRAIN=api with an anthropic/claude BRAIN_MODEL (metered by definition)
+      * ESCALATION_MODEL naming anthropic/claude while ESCALATION_BASE is not anthropic.com
+      * CHAT_MODEL in provider-path form ('anthropic/...') — the CLI takes bare ids, so this
+        either routes metered or hands the CLI a bogus id; both are misconfig."""
+    import re as _re
+    claudeish = lambda v: bool(_re.search(r"anthropic/|claude", v or "", _re.I))
+    hits = []
+    if env.get("BRAIN", "") == "api" and claudeish(env.get("BRAIN_MODEL", "")):
+        hits.append(f"BRAIN=api + BRAIN_MODEL={env.get('BRAIN_MODEL')}")
+    esc_m = env.get("ESCALATION_MODEL", "")
+    if claudeish(esc_m) and "anthropic.com" not in env.get("ESCALATION_BASE", ""):
+        hits.append(f"ESCALATION_MODEL={esc_m} @ {env.get('ESCALATION_BASE') or 'openrouter default'}")
+    if (env.get("CHAT_MODEL") or "").startswith("anthropic/"):
+        hits.append(f"CHAT_MODEL={env.get('CHAT_MODEL')} (provider-path form)")
+    if not hits:
+        return None
+    return ("crit", "Claude model routed at a metered endpoint — Claude runs ONLY via the claude "
+                    "CLI pool (subscription). Offending config: " + "; ".join(hits) +
+                    ". Fix the deployment override; do not re-point Claude at OpenRouter.")
+
+
 CONFIG_CHECKS = {"cost": cfg_cost, "permission": cfg_permission,
                  "persistence": cfg_persistence, "warm_session": cfg_warm_session,
-                 "observability": cfg_observability}
+                 "observability": cfg_observability, "llm_routing": cfg_llm_routing}
 
 
 def _run_config_checks(env, st):
@@ -338,6 +363,12 @@ def _selftest():
     ck("cost silent: metered team (empty free_tier)", cfg_cost({"BRAIN":"api","MODEL":"claude-opus-4-8","COST_FREE_TIER":""}) is None)
     # cost: subscription brain → not applicable
     ck("cost silent: BRAIN=claude", cfg_cost({"BRAIN":"claude","MODEL":"claude-opus-4-8","COST_FREE_TIER":"claude"}) is None)
+    ck("routing fires: escalation claude@openrouter", cfg_llm_routing({"ESCALATION_MODEL":"anthropic/claude-opus-4-8"}) and cfg_llm_routing({"ESCALATION_MODEL":"anthropic/claude-opus-4-8"})[0]=="crit")
+    ck("routing fires: api brain on claude", cfg_llm_routing({"BRAIN":"api","BRAIN_MODEL":"anthropic/claude-sonnet-4.6"})[0]=="crit")
+    ck("routing fires: provider-path CHAT_MODEL", cfg_llm_routing({"CHAT_MODEL":"anthropic/claude-sonnet-4.6"})[0]=="crit")
+    ck("routing silent: bare CLI chat id", cfg_llm_routing({"CHAT_MODEL":"claude-sonnet-4-6","BRAIN":"claude"}) is None)
+    ck("routing silent: escalation on anthropic.com", cfg_llm_routing({"ESCALATION_MODEL":"claude-opus-4-8","ESCALATION_BASE":"https://api.anthropic.com"}) is None)
+    ck("routing silent: gemini escalation", cfg_llm_routing({"ESCALATION_MODEL":"google/gemini-2.5-pro"}) is None)
     # perm: declared network need under approval-gated mode → ERROR
     ck("perm fires: needs network + acceptEdits", cfg_permission({"PERMISSION":"acceptEdits","AGENT_NEEDS":"network"}) and cfg_permission({"PERMISSION":"acceptEdits","AGENT_NEEDS":"network"})[0]=="error")
     # perm: dangerous mode → silent

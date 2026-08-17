@@ -80,9 +80,17 @@ def resolve_endpoints():
     }
     esc = {
         "base": os.environ.get("ESCALATION_BASE") or top.get("base_url_default", "https://openrouter.ai/api/v1"),
-        "model": os.environ.get("ESCALATION_MODEL") or (models.get("top", {}) or {}).get("reasoning", "anthropic/claude-sonnet-4.6"),
+        # HARD RULE (operator, 2026-08-17; $173.70 incident 07-20/21): Claude tokens come ONLY from
+        # the claude CLI pool (subscription). NEVER default to an anthropic/* id on a metered
+        # endpoint; if config still asks for one, refuse it here rather than silently pay.
+        "model": os.environ.get("ESCALATION_MODEL") or (models.get("top", {}) or {}).get("reasoning", "google/gemini-2.5-pro"),
         "key": os.environ.get("ESCALATION_KEY") or _secret("openrouter.env", "OPENROUTER_API_KEY"),
     }
+    if re.search(r"anthropic/|claude", esc["model"], re.I) and "anthropic.com" not in esc["base"]:
+        print(f"{time.strftime('%FT%TZ', time.gmtime())} — [local_agent] ESCALATION REFUSED: "
+              f"'{esc['model']}' is a Claude model on a metered endpoint ({esc['base']}) — "
+              f"doctrine: Claude only via the CLI pool. Escalation disabled.", flush=True)
+        esc["model"] = ""
     return brain, esc
 
 
