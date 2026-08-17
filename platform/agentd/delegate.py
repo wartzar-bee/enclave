@@ -58,7 +58,14 @@ def _policy_path():
     p = os.environ.get("DELEGATE_POLICY")
     if p:
         return pathlib.Path(p)
-    return pathlib.Path(os.environ.get("TOOLS_ROOT", "/workspace")) / "llm" / "policy.json"
+    # Same resolution as local_agent._policy(): the compose files mount workspace tools at
+    # $TOOLS_ROOT/tools, so the file lives at <root>/tools/llm/policy.json. The old "<root>/llm/"
+    # path existed nowhere, which left _model_for() raising on every pod — broken-loud, but broken.
+    root = pathlib.Path(os.environ.get("TOOLS_ROOT", "/workspace"))
+    for cand in (root / "tools" / "llm" / "policy.json", root / "llm" / "policy.json"):
+        if cand.exists():
+            return cand
+    return root / "tools" / "llm" / "policy.json"
 
 
 def _policy_models():

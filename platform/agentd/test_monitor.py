@@ -213,6 +213,7 @@ check("intel._parse_json: junk -> None", intel._parse_json("no json here") is No
 
 # hypothesize with a monkeypatched worker (no network) — verifies shape + honesty defaults
 intel._resolve_key = lambda: "fake-key"
+intel._resolve_model = lambda: "fake-model"   # model is config-resolved now, never a vendor constant
 intel.local_agent.chat = lambda ep, msgs, **k: '{"cause":"runaway retry loop","fix":"cap retries","confidence":"med"}'
 lf = intel.hypothesize("a", {"severity": "high", "key": "cost_spike", "title": "Cost 4x", "evidence": "$0.4/tick"}, {})
 check("intel.hypothesize: source=llm finding", lf and lf["source"] == "llm" and lf["key"] == "llm_cost_spike")
@@ -225,6 +226,7 @@ check("intel.hypothesize: fail-open on transport error",
 fleet_monitor.intel.available = lambda: True
 fleet_monitor.intel.local_agent.chat = lambda ep, msgs, **k: '{"cause":"unbounded log","fix":"rotate it","confidence":"high"}'
 fleet_monitor.intel._resolve_key = lambda: "fake-key"
+intel._resolve_model = lambda: "fake-model"   # model is config-resolved now, never a vendor constant
 fleet_monitor.diagnostics.from_home = lambda h: {"anomalies": [
     {"severity": "high", "key": "cost_spike", "title": "Cost spiked 4x", "evidence": "$0.4/tick"}], "health": {}}
 st3 = mstate.MonitorState(path=pathlib.Path(tempfile.mkdtemp()) / "s3.json")

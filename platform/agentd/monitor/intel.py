@@ -25,9 +25,35 @@ import local_agent
 # Anomaly keys a deterministic playbook already explains well — the LLM stays out of these.
 DETERMINISTIC_ANOMALY_KEYS = {"context_explosion", "context_bloat", "tool_failures", "failures"}
 
-MODEL = os.environ.get("MONITOR_LLM_MODEL", "qwen/qwen3-next-80b-a3b-instruct")
 BASE = (os.environ.get("MONITOR_LLM_BASE") or os.environ.get("NVIDIA_API_BASE")
         or "https://integrate.api.nvidia.com/v1")
+
+
+def _resolve_model():
+    """Worker model from env or the same policy.json the delegation tier reads. NEVER a hardcoded
+    vendor id: the previous default here (qwen/qwen3-next-80b-a3b-instruct) outlived its vendor —
+    NVIDIA retired it 2026-07-27 — and this fail-open layer degraded to a silent no-op while
+    available() still reported it on. No model resolvable ⇒ '' ⇒ the layer reports unavailable."""
+    m = os.environ.get("MONITOR_LLM_MODEL")
+    if m:
+        return m
+    cands = []
+    for env in ("MONITOR_LLM_POLICY", "DELEGATE_POLICY"):
+        if os.environ.get(env):
+            cands.append(pathlib.Path(os.environ[env]))
+    roots = [r for r in os.environ.get("ENCLAVE_STACKS_ROOTS", "").split(os.pathsep) if r]
+    for r in roots:
+        rp = pathlib.Path(r)
+        cands += [rp / "tools" / "llm" / "policy.json", rp.parent / "tools" / "llm" / "policy.json"]
+    for f in cands:
+        try:
+            models = (json.loads(f.read_text()).get("models") or {}).get("nvidia") or {}
+            if models.get("fast") or models.get("default"):
+                return models.get("fast") or models.get("default")
+        except Exception:
+            continue
+    models = (local_agent._policy().get("models") or {}).get("nvidia") or {}
+    return models.get("fast") or models.get("default") or ""
 
 
 def _resolve_key():
@@ -61,7 +87,9 @@ def _resolve_key():
 
 
 def available():
-    return bool(_resolve_key())
+    # Key AND model: a resolvable key with no live model is exactly the state that let this layer
+    # read as "on" for a week while every call 410'd.
+    return bool(_resolve_key()) and bool(_resolve_model())
 
 
 def is_novel(anomaly):
@@ -85,7 +113,8 @@ def hypothesize(aid, anomaly, diag, *, timeout=25):
     """Ask the off-Opus worker for a likely cause + fix. Returns a finding dict (source='llm') or None.
     Pure + fail-open: never raises, never calls Opus."""
     key = _resolve_key()
-    if not key:
+    model = _resolve_model()
+    if not key or not model:
         return None
     health = (diag or {}).get("health") or {}
     metrics = (diag or {}).get("metrics") or {}
@@ -101,7 +130,7 @@ def hypothesize(aid, anomaly, diag, *, timeout=25):
             f"Current health: {health.get('label')} — {health.get('reason')}\n"
             f"Metrics: {json.dumps(ctx)}")
     try:
-        raw = local_agent.chat({"model": MODEL, "base": BASE, "key": key},
+        raw = local_agent.chat({"model": model, "base": BASE, "key": key},
                                [{"role": "system", "content": system},
                                 {"role": "user", "content": user}],
                                max_tokens=220, temperature=0.2, timeout=timeout)
@@ -122,5 +151,5 @@ def hypothesize(aid, anomaly, diag, *, timeout=25):
         "evidence": anomaly.get("evidence", ""),
         "recommendation": str(obj.get("fix", "")).strip()[:300] or None,
         "source": "llm",
-        "model": MODEL,
+        "model": model,
     }

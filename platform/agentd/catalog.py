@@ -35,8 +35,10 @@ SEED = {
                        "key_env": "OPENROUTER_API_KEY", "secret": "openrouter.env"},
     },
     "provider_models": {
-        "nvidia": ["qwen/qwen3-next-80b-a3b-instruct", "minimaxai/minimax-m3",
-                   "openai/gpt-oss-120b", "openai/gpt-oss-20b",
+        # qwen/qwen3-next-80b-a3b-instruct removed 2026-08-17: NVIDIA retired it 2026-07-27
+        # (HTTP 410) — seeding a retired id re-arms the exact silent-failure delegate.py documents.
+        "nvidia": ["openai/gpt-oss-120b", "openai/gpt-oss-20b",
+                   "minimaxai/minimax-m3",
                    "meta/llama-4-maverick-17b-128e-instruct",
                    "nvidia/llama-3.3-nemotron-super-49b-v1.5"],
         "openrouter": [],
@@ -51,7 +53,7 @@ SEED = {
         "no-claude-nvidia": {"BRAIN": "api",
                              "BRAIN_API_BASE": "https://integrate.api.nvidia.com/v1",
                              "BRAIN_API_KEY_ENV": "NVIDIA_API_KEY",
-                             "BRAIN_MODEL": "qwen/qwen3-next-80b-a3b-instruct",
+                             "BRAIN_MODEL": "openai/gpt-oss-120b",
                              "ESCALATION_MODEL": "minimaxai/minimax-m3",
                              "SUPERVISE": "off"},
     },
