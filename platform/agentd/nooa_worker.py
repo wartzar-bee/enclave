@@ -94,6 +94,16 @@ def main():
 
     async def _acall(*args, **kw):
         r = await _orig(*args, **kw)
+        # Harmony-leak repair (measured 2026-08-17, harder-task h2h): NVIDIA's gpt-oss serving
+        # stochastically leaks channel markers INTO the tool-call name ('execute_python<|channel|>
+        # commentary'); NOOA exact-matches tool names, so each leak burns a retry and runs die at
+        # the default budget. Strip from '<|' on — the real name is always the prefix.
+        try:
+            for tc in (getattr(r, "tool_calls", None) or []):
+                if tc.name and "<|" in tc.name:
+                    tc.name = tc.name.split("<|", 1)[0]
+        except Exception:
+            pass
         try:
             u = getattr(r.raw_response, "usage", None)
             metrics["llm_calls"] += 1
