@@ -125,6 +125,39 @@ def chat(ep, model, prompt, params, think=None, max_tokens=1024, timeout=300):
                     "extras_stripped": stripped, "error": f"{type(e).__name__}: {e}"}
 
 
+def run_harness(ep, model, task, timeout=300):
+    """One agentic-harness run (pyexec/rlm CLI) instead of a single chat call — for adapters that
+    measure the HARNESS, not the model. Subprocess so endpoint env + spend log stay scoped; tokens
+    = prompt+completion summed over every call the harness made (SPEND_LOG), calls = call count.
+    NOTE the timeout is per-TASK here: rlm over a big fixture legitimately needs --timeout 1800."""
+    import subprocess, sys, tempfile
+    here = pathlib.Path(__file__).resolve().parents[1]
+    tool = here / f"{task['harness']}.py"
+    with tempfile.NamedTemporaryFile(suffix=".jsonl") as spend:
+        env = {**os.environ,
+               "LOCAL_BRAIN_BASE": ep["base"], "LOCAL_BRAIN_MODEL": model,
+               "LOCAL_BRAIN_KEY": ep["key"], "ESCALATION_MODEL": "",   # single-model runs only
+               "SPEND_LOG": spend.name}
+        t0 = time.time()
+        try:
+            p = subprocess.run([sys.executable or "python3", str(tool),
+                                "--query", task["query"], "--file", task["file"]],
+                               capture_output=True, text=True, timeout=timeout, env=env)
+            text, err = p.stdout, (None if p.returncode == 0 else f"exit {p.returncode}: {p.stderr[-200:]}")
+        except subprocess.TimeoutExpired:
+            text, err = "", f"harness timeout after {timeout}s"
+        toks, calls = 0, 0
+        try:
+            for ln in pathlib.Path(spend.name).read_text().splitlines():
+                u = json.loads(ln)
+                toks += (u.get("prompt_tokens") or 0) + (u.get("completion_tokens") or 0)
+                calls += 1
+        except Exception:
+            pass
+    return {"text": text, "secs": round(time.time() - t0, 1), "tokens": toks or None,
+            "calls": calls, "extras_stripped": False, "error": err}
+
+
 def run(adapter, models, ep, out_path, opts=None):
     """Eval each model on the adapter's tasks; append one jsonl row per (model, task) to out_path;
     return per-model summaries. Models run sequentially (single-resident local server)."""
@@ -136,15 +169,19 @@ def run(adapter, models, ep, out_path, opts=None):
         rows = []
         for task in adapter.tasks(opts):
             think = task.get("think", False)
-            p = params_for(model, think)
-            r = chat(ep, model, task["prompt"], p, think=think if p["can_think"] else None,
-                     max_tokens=task.get("max_tokens", 1024), timeout=opts.get("timeout", 300))
+            if task.get("harness"):
+                p = {"source": "harness"}   # harness tools own their sampling; nothing to document here
+                r = run_harness(ep, model, task, timeout=opts.get("timeout", 300))
+            else:
+                p = params_for(model, think)
+                r = chat(ep, model, task["prompt"], p, think=think if p["can_think"] else None,
+                         max_tokens=task.get("max_tokens", 1024), timeout=opts.get("timeout", 300))
             ok, detail = (None, r["error"]) if r["error"] else adapter.grade(task, r["text"])
             row = {"ts": time.strftime("%FT%TZ", time.gmtime()), "adapter": adapter.name,
                    "endpoint": ep["label"], "model": model, "task": task["id"], "think": think,
                    "params_source": p["source"], "ok": ok, "detail": str(detail)[:200],
                    "secs": r["secs"], "tokens": r["tokens"], "extras_stripped": r["extras_stripped"],
-                   "error": r["error"]}
+                   "calls": r.get("calls"), "error": r["error"]}
             rows.append(row)
             with out.open("a") as f:
                 f.write(json.dumps(row) + "\n")

@@ -137,4 +137,100 @@ class GSM8K:
                 "avg_secs": round(sum(r["secs"] for r in rows) / n, 1)}
 
 
-ADAPTERS = {"capability": Capability, "gsm8k": GSM8K}
+class BigData:
+    """Harness-comparison adapter: exact counting over a LARGE structured file — the task class
+    where harness design, not model quality, decides the outcome (2026-08-17 pilot: same worker
+    model answered exact-correct via pyexec at ~2k tokens and WRONG via rlm map-reduce at 638k).
+
+    The fixture is SYNTHESIZED deterministically (seeded) so no real agent log ever enters the
+    repo or the eval trail; gold counts are known by construction. --data <events.jsonl> swaps in
+    a local real log instead (gold computed by counting it directly; file stays local).
+    Opts: harness pyexec|rlm|both (default pyexec — rlm on a big fixture is slow and token-hungry,
+    that is the point of measuring it); n = reps per harness (default 3, capped 10); seed; size.
+    """
+    name = "bigdata"
+    TOOLS = [("Bash", 12, 0.04), ("Read", 4, 0.0), ("Write", 3, 0.01), ("Edit", 2, 0.08),
+             ("WebSearch", 2, 0.0), ("Agent", 1, 0.0)]   # (tool, weight, failure probability)
+    QUERY = ('Report exactly: (a) total number of tool events (event=="tool"), (b) calls per '
+             'tool, (c) failures (ok is False) per tool, (d) total failures. Count, do not estimate.')
+
+    def _fixture(self, opts):
+        """→ (path, gold). Deterministic per (seed, size); cached on disk under state/evals."""
+        import os, pathlib, random
+        if opts.get("data"):
+            return self._gold_from(opts["data"])
+        seed, size = int(opts.get("seed", 1177)), int(opts.get("size", 1500))
+        d = pathlib.Path(os.environ.get("AGENT_DIR", ".")) / "state" / "evals"
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"bigdata-fixture-{seed}-{size}.jsonl"
+        rng = random.Random(seed)
+        pool = [t for t, w, _ in self.TOOLS for _ in range(w)]
+        prob = {t: p for t, _, p in self.TOOLS}
+        calls, fails, lines = {}, {}, []
+        words = ("configure retry queue vault policy egress tick snapshot broker index "
+                 "candidate gate review deploy probe").split()
+        for i in range(size):
+            t = rng.choice(pool)
+            ok = rng.random() >= prob[t]
+            calls[t] = calls.get(t, 0) + 1
+            if not ok:
+                fails[t] = fails.get(t, 0) + 1
+            filler = " ".join(rng.choice(words) for _ in range(rng.randint(30, 60)))
+            lines.append(json.dumps({"ts": 1780000000 + i, "event": "tool", "tool": t,
+                                     "summary": f"step {i}: {filler[:80]}", "ok": ok,
+                                     "result": filler if ok else f"error: {filler[:120]} (exit 1)"}))
+        content = "\n".join(lines) + "\n"
+        if not (path.exists() and path.read_text() == content):
+            path.write_text(content)
+        gold = {"total": size, "calls": calls, "fails": fails, "total_fails": sum(fails.values())}
+        return str(path), gold
+
+    def _gold_from(self, data_path):
+        calls, fails, total = {}, {}, 0
+        for ln in open(data_path):
+            try:
+                d = json.loads(ln)
+            except Exception:
+                continue
+            if d.get("event") != "tool":
+                continue
+            total += 1
+            t = d.get("tool", "?")
+            calls[t] = calls.get(t, 0) + 1
+            if d.get("ok") is False:
+                fails[t] = fails.get(t, 0) + 1
+        return data_path, {"total": total, "calls": calls, "fails": fails,
+                           "total_fails": sum(fails.values())}
+
+    def tasks(self, opts):
+        path, gold = self._fixture(opts)
+        harnesses = {"pyexec": ["pyexec"], "rlm": ["rlm"],
+                     "both": ["pyexec", "rlm"]}[opts.get("harness") or "pyexec"]
+        n = opts.get("n")
+        reps = 3 if n in (None, "", 50) else min(max(1, int(n)), 10)   # 50 = the cli default, not a wish for 50 reps
+        return [{"id": f"{h}-count-r{i+1}", "harness": h, "query": self.QUERY,
+                 "file": path, "gold": gold, "max_tokens": 1024}
+                for h in harnesses for i in range(reps)]
+
+    def grade(self, task, text):
+        g = task["gold"]
+        o = strip_reasoning(text)
+        missing = [str(v) for v in ([g["total"], g["total_fails"]] + list(g["fails"].values()))
+                   if str(v) not in o]
+        missing += [t for t in g["fails"] if t not in o]
+        return (not missing), ("exact" if not missing else f"missing:{','.join(missing[:6])}")
+
+    def summarize(self, rows):
+        out = {}
+        for h in sorted({r["task"].split("-")[0] for r in rows}):
+            hr = [r for r in rows if r["task"].startswith(h)]
+            n = max(1, len(hr))
+            out[h] = {"correct": sum(1 for r in hr if r["ok"]), "n": len(hr),
+                      "avg_secs": round(sum(r["secs"] for r in hr) / n, 1),
+                      "avg_tokens": round(sum(r["tokens"] or 0 for r in hr) / n),
+                      "avg_calls": round(sum(r.get("calls") or 0 for r in hr) / n, 1)}
+        return {"harnesses": out, "n": len(rows),
+                "errors": sum(1 for r in rows if r["error"])}
+
+
+ADAPTERS = {"capability": Capability, "gsm8k": GSM8K, "bigdata": BigData}

@@ -32,4 +32,13 @@ fields get one retry with extras stripped (flagged `extras_stripped` in the rows
 - Grading strips reasoning traces first (qwen/gemma/nemotron trace styles) and grades the FINAL
   answer; an unclosed trace is counted as `truncated` (the token budget cut it off).
 - Adapter = `name` + `tasks(opts)` + `grade(task, text)` + `summarize(rows)`
-  (`platform/agentd/eval/adapters.py`). Add a third adapter before inventing any plugin SPI.
+  (`platform/agentd/eval/adapters.py`). The third adapter (`bigdata`) arrived without needing a
+  plugin SPI — it added exactly one runner branch: a task carrying `harness` runs the named tool
+  CLI (`pyexec`/`rlm`) in a subprocess instead of one chat call, and its row gains `calls` +
+  whole-run `tokens` from the scoped SPEND_LOG. That is the pattern for future agentic adapters;
+  still no SPI until an adapter can't be expressed this way.
+- `bigdata` measures the HARNESS, not the model: exact counting over a large synthetic JSONL
+  (deterministic seeded fixture, gold known by construction — no real agent log enters the repo;
+  `--data` points at a local real log instead). `--harness both` races pyexec vs rlm on the same
+  fixture + model; use `--timeout 1800` when rlm is racing. Measured origin: the 2026-08-17 NOOA
+  pilot (pyexec exact-correct at ~2-4k tokens; rlm map-reduce wrong at 638k on the same question).

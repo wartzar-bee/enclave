@@ -6,7 +6,9 @@ Usage:
       [--policy policy.json] [--n 50] [--data rows.json] [--out results.jsonl]
       [--timeout 300] [--record]
 
-Adapters: capability (6-task battery) · gsm8k (external math, exact-match).
+Adapters: capability (6-task battery) · gsm8k (external math, exact-match) · bigdata (HARNESS
+comparison — pyexec vs rlm on exact counting over a large synthetic JSONL; --harness both to
+race them, --n = reps, --timeout 1800 recommended when rlm is in the race).
 --pool resolves from a policy.json `pools` section ($LLM_POLICY or --policy) or the catalog
 `providers` store. --record appends each model's summary to the catalog evidence trail
 (catalog.record_eval) so routing picks can cite their eval. Results jsonl defaults to
@@ -30,8 +32,13 @@ def main():
     ap.add_argument("--base", default="")
     ap.add_argument("--key-env", default="")
     ap.add_argument("--policy", default="")
-    ap.add_argument("--n", type=int, default=50, help="gsm8k: rows to run")
-    ap.add_argument("--data", default="", help="gsm8k: local rows json instead of the HF fetch")
+    ap.add_argument("--n", type=int, default=50, help="gsm8k: rows to run · bigdata: reps per harness")
+    ap.add_argument("--data", default="", help="gsm8k: local rows json · bigdata: local events.jsonl "
+                                              "instead of the synthetic fixture (stays local)")
+    ap.add_argument("--harness", default="", choices=["", "pyexec", "rlm", "both"],
+                    help="bigdata: which harness(es) to run (default pyexec)")
+    ap.add_argument("--seed", type=int, default=1177, help="bigdata: fixture seed")
+    ap.add_argument("--size", type=int, default=1500, help="bigdata: fixture event count")
     ap.add_argument("--out", default="")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--record", action="store_true", help="append summaries to the catalog evidence trail")
@@ -41,7 +48,8 @@ def main():
                                  key_env=args.key_env or None, policy_path=args.policy or None)
     out = args.out or str(pathlib.Path(os.environ.get("AGENT_DIR", ".")) / "state" / "evals" /
                           f"{args.adapter}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.jsonl")
-    opts = {"n": args.n, "data": args.data, "timeout": args.timeout}
+    opts = {"n": args.n, "data": args.data, "timeout": args.timeout,
+            "harness": args.harness, "seed": args.seed, "size": args.size}
     models = [m.strip() for m in args.models.split(",") if m.strip()]
 
     summaries = runner.run(ADAPTERS[args.adapter](), models, ep, out, opts)
@@ -49,7 +57,7 @@ def main():
         if args.record:
             import catalog
             catalog.record_eval(s["model"], s)
-        flag = "" if s["params_source"] == "catalog" else "  [params:DEFAULT — undocumented]"
+        flag = "" if s["params_source"] in ("catalog", "harness") else "  [params:DEFAULT — undocumented]"
         print(json.dumps(s) + flag)
     print(f"rows → {out}")
 
