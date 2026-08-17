@@ -27,6 +27,20 @@ ENV DO_NOT_TRACK=1
 ARG INSTALL_CODEGRAPH=0
 RUN if [ "$INSTALL_CODEGRAPH" = "1" ]; then npm i -g @colbymchenry/codegraph@1.0.1; fi
 
+# Optional NOOA worker harness (opt-in — OFF by default; the base image stays stdlib-only):
+#   docker compose build --build-arg INSTALL_NOOA=1 agent
+# NVIDIA's object-oriented agent harness (Apache-2.0), used by nooa_worker.py as an alternative
+# worker brain for code-over-data tasks. Vetted 2026-08-17 (ENCLAVE-NOOA-EVAL doc): official
+# NVIDIA-NeMo org, no phone-home (OTLP export requires a localhost viewer or explicit
+# OTLP_ENDPOINT), no install hooks, secret-scrubbing defensive; pip-audit clean at these pins.
+# litellm pinned at its CVE-2026-49468-fix floor (also past the yanked/backdoored 1.82.7/8).
+# NOOA executes model-written Python IN-PROCESS — the pod container IS the containment boundary
+# (same doctrine as the agent's own bash tool). Routing doctrine: nooa_worker.py refuses any
+# claude/anthropic model id — Claude tokens come ONLY from the claude CLI pool.
+ARG INSTALL_NOOA=0
+RUN if [ "$INSTALL_NOOA" = "1" ]; then \
+      pip3 install --no-cache-dir --break-system-packages nooa==0.0.8 litellm==1.84.0; fi
+
 # Bake ONLY the Enclave runtime (the layout the scripts assume: W=/workspace). No venture content.
 COPY platform/agentd/  /workspace/platform/agentd/
 COPY tools/            /workspace/tools/
