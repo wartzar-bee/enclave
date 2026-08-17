@@ -311,7 +311,9 @@ TOOL_SCHEMAS = [
      "parameters": _p({"pattern": _S, "path": _S, "glob": _S}, ["pattern"])}},
     {"type": "function", "function": {"name": "qmd", "description": "Semantic recall over the workspace + your memory.",
      "parameters": _p({"query": _S}, ["query"])}},
-    {"type": "function", "function": {"name": "rlm", "description": "Reason over a HUGE file that cannot be read whole (map-reduce on the cheap brain).",
+    {"type": "function", "function": {"name": "rlm", "description": "Summarize/synthesize over a HUGE unstructured file (map-reduce on the cheap brain). For counts/stats over structured data use pyexec — map-reduce cannot count across chunks.",
+     "parameters": _p({"query": _S, "file": _S}, ["query", "file"])}},
+    {"type": "function", "function": {"name": "pyexec", "description": "Compute over a BIG structured file (JSONL/JSON/CSV/log): the cheap brain writes Python against the parsed data. Exact counts/aggregations/filters at ~1/100th of rlm's tokens.",
      "parameters": _p({"query": _S, "file": _S}, ["query", "file"])}},
     {"type": "function", "function": {"name": "escalate", "description": "Ask the stronger external model ONE hard judgment question. Not for routine work.",
      "parameters": _p({"question": _S, "context": _S}, ["question"])}},
@@ -629,8 +631,31 @@ def exec_rlm(agent_dir, inp):
         return f"rlm unavailable: {e}"
 
 
+def exec_pyexec(agent_dir, inp):
+    """Compute over a big structured file by letting the worker brain write Python against the
+    parsed object (pyexec.py — the distilled pass-by-reference idea; measured ~100-300x cheaper
+    than rlm AND correct on counting tasks). Input: {"query": "...", "file": "...path..."}."""
+    query = (inp.get("query") or inp.get("question") or "").strip()
+    if not query:
+        return "pyexec error: provide a 'query'."
+    fp = inp.get("file") or inp.get("file_path")
+    if not fp:
+        return "pyexec error: provide 'file' (a path)."
+    p = pathlib.Path(fp)
+    if not p.is_absolute():
+        p = pathlib.Path(agent_dir) / fp
+    if not p.exists():
+        return f"pyexec error: no such file: {fp}"
+    try:
+        from pyexec import run_pyexec
+        return _truncate(run_pyexec(query, str(p)))
+    except Exception as e:
+        return f"pyexec unavailable: {e}"
+
+
 EXECUTORS = {"bash": exec_bash, "read": exec_read, "write": exec_write, "edit": exec_edit,
-             "glob": exec_glob, "grep": exec_grep, "qmd": exec_qmd, "rlm": exec_rlm}
+             "glob": exec_glob, "grep": exec_grep, "qmd": exec_qmd, "rlm": exec_rlm,
+             "pyexec": exec_pyexec}
 
 
 # ── the harness preamble that teaches the model the tool protocol ───────────────────────────

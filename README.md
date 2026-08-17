@@ -254,7 +254,10 @@ The agent's memory is **one linked vault**, all markdown, all git-trackable, nav
   CPU default). See `docs/MEMORY-PROVIDERS.md` / `docs/MEMORY-MODES.md`.
 - **Code memory (opt-in)** — **codegraph** symbol/call/dependency graph over a repo corpus, three ways:
   in-agent (stdio), shared index, or a network HTTP bridge (`--profile codegraph`). See `docs/CODE-MEMORY.md`.
-- **Reason over huge context** — `rlm` chunk → map → tree-reduce, for blobs too big to read in full.
+- **Reason over huge context** — two tools, split by task shape: `pyexec` (code-over-object: the
+  worker model writes Python against the parsed file — exact counts/aggregations at ~1/100th of
+  map-reduce's tokens) and `rlm` chunk → map → tree-reduce (semantic synthesis over prose; it
+  cannot count across chunks — measured wrong on that, see the 2026-08-17 pilot).
 - _A generic graph engine (Cognee) was evaluated and **rejected** (telemetry + 127 deps); the wiki
   graph + codegraph cover the real needs. See `docs/VETTING.md`._
 
