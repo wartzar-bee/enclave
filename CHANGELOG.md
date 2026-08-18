@@ -6,6 +6,64 @@ move between minor versions — pin a tag if that matters to you.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-18
+
+A worker-tier + eval + cost-safety release. The headline is a new **code-over-data** worker path for
+answering questions about big structured files cheaply (write code against the parsed object, never
+feed the data to the model), a harness-vs-harness eval adapter to keep that path honest, and two
+Claude-cost-leak gates promoted from incident fixes to un-rearmable config/runtime rules. All changes
+are additive or opt-in; the base image stays stdlib-only. CI is 46/46 green at head.
+
+### Added
+- **`pyexec` — stdlib code-over-object big-data tool.** Parse a big structured file (JSONL/JSON/CSV/
+  text) into a Python value once; a cheap worker brain sees only a bounded contract (size, per-key
+  coverage, truncated samples — never the data) and writes code cells that run in a fresh subprocess
+  with the data preloaded; tracebacks feed back, `FINAL:` ends the loop. Replaces the map-reduce
+  `rlm.py` path for counting/aggregation, which structurally can't sum what each chunk never saw.
+  (`platform/agentd/pyexec.py`, wired into `local_agent.py`; `fbd73361`)
+- **`enclave eval bigdata` — harness-vs-harness measurement adapter.** Exact counting over a large
+  seeded synthetic JSONL (deterministic, gold-by-construction; `--data` swaps a local file). `--harness
+  pyexec|rlm|both` races harnesses on the same fixture + model; per-harness summary reports correct/n,
+  avg tokens, avg calls, avg secs. (`platform/agentd/eval/adapters.py`, `docs/EVAL.md`; `adce71b9`)
+- **Optional NOOA worker tier (`INSTALL_NOOA` build-arg, default OFF).** Opt-in pinned install of
+  `nooa==0.0.8` + `litellm==1.84.0` (vetted 2026-08-17: official NVIDIA-NeMo org, no phone-home, no
+  install hooks, pip-audit clean; litellm at its CVE-fix floor, past the yanked 1.82.7/8). Base image
+  stays stdlib-only when unset. `nooa_worker.py` is the code-over-data sibling of `pyexec` for the
+  eval race; NOOA execs model-written Python in-process, so the pod container is the containment
+  boundary (same doctrine as the bash tool). (`Dockerfile.agent`, `platform/agentd/nooa_worker.py`;
+  `9609c310`)
+
+### Changed
+- **Escalation now defaults to `google/gemini-2.5-pro`, not a Claude id.** The `local_agent`
+  escalation endpoint no longer falls back to `anthropic/claude-sonnet-4.6` on the metered OpenRouter
+  base — Claude tokens come only from the claude CLI pool. (`platform/agentd/local_agent.py`; `5f7dd5a6`)
+
+### Fixed
+- **De-armed three retired-model traps (worker tier).** `delegate.py` now resolves `policy.json` at
+  `$TOOLS_ROOT/tools/llm/` (the path compose actually mounts — the old path existed nowhere, so every
+  delegation raised); `monitor/intel.py` drops the hardcoded retired-qwen default (HTTP 410) and now
+  requires both key AND model before reporting the intel layer "on"; `catalog.py` purges the retired
+  qwen id from the nvidia seed + no-claude preset (now `openai/gpt-oss-120b`). (`833afb52`)
+- **NOOA harmony channel-token leak sanitized.** NVIDIA's gpt-oss stochastically emits a tool-call
+  name as `execute_python<|channel|>commentary`; stripping from `<|` in the metrics wrapper restores
+  exact tool-matching (measured: 0/9 → 7/9 exact, 9/9 computed-correct on the harder-task grid).
+  (`platform/agentd/nooa_worker.py`; `3c3eda46`)
+- **CI installs PyYAML.** The plugin suites need PyYAML (the shipped image bakes it) but the workflow
+  ran bare Python, so 4 suites / 16 tests failed in CI while passing locally — red since `aeeb5ee`
+  (2026-08-15). Verified 46/46 green in a clean `python:3.12`. (`.github/workflows/tests.yml`; `00432531`)
+
+### Security
+- **`cfg_llm_routing` preflight check (CRIT) + runtime escalation refusal.** A Claude/anthropic model
+  id pointed at a metered endpoint re-buys tokens the subscription already covers (the $173.70
+  OpenRouter leak, 2026-07-20/21, whose config remnants survived the original fix and re-armed it).
+  Preflight now fires CRIT at boot on `BRAIN=api`+Claude model, `ESCALATION_MODEL` naming Claude off
+  `anthropic.com`, or a provider-path `CHAT_MODEL`; `local_agent` refuses a metered-Claude escalation
+  at runtime and disables it. Class is now un-rearmable. (+7 selftests) (`platform/agentd/preflight.py`,
+  `local_agent.py`; `5f7dd5a6`)
+- **Guard protects `.secrets/gh-app`.** The GitHub App private key (PaS ops tier) is now in the guard's
+  read-blocked secret set — upstreamed from the pas-agents vendored patch so that copy needs no local
+  patches. guard.py selftest 35/35. (`platform/agentd/hooks/guard.py`; `144f2b7f`)
+
 ## [0.6.0] — 2026-08-15
 
 A security + durability + fleet-ops release driven by an external comparative review (enclave vs
