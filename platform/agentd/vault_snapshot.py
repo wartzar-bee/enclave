@@ -99,9 +99,12 @@ def ensure_repo(home):
     if shutil.which("git") is None:
         return None
     if (home / ".git").exists():
-        # keep the hook fresh even on an existing repo
+        # Keep the hook fresh even on an existing repo — by CONTENT, not existence. Written on
+        # existence alone, every vault kept the pattern its repo was born with: a secrets.py fix
+        # shipped, the Python gate passed, and the stale baked hook still blocked the commit
+        # ("nochange" with 715 dirty files, wartzar-bee 2026-08-18).
         hook = home / ".git" / "hooks" / "pre-commit"
-        if not hook.exists():
+        if not hook.exists() or hook.read_text() != _PRECOMMIT:
             hook.write_text(_PRECOMMIT); os.chmod(hook, 0o755)
         return "exists"
     _git(home, "init", "-q")
@@ -116,8 +119,9 @@ def snapshot(home, msg=None):
     """Stage + SCAN + commit. Returns ('ok'|'nochange'|'blocked'|None, hits)."""
     if shutil.which("git") is None:
         return None, []
-    if not (home / ".git").exists():
-        ensure_repo(home)
+    # Unconditional: ensure_repo is idempotent, and calling it only on a MISSING .git is how every
+    # existing vault ended up committing through a hook with a years-stale credential pattern.
+    ensure_repo(home)
     _git(home, "add", "-A")
     hits = scan_staged(home)
     if hits:

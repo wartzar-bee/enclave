@@ -101,12 +101,25 @@ if shutil.which("git"):
         log = subprocess.run(["git", "log", "--oneline"], cwd=home,
                              capture_output=True, text=True).stdout
         ck("e2e-leak-not-committed", "real leak" not in log)
+
+        # 2026-08-18: a STALE baked hook must not outlive a pattern fix. Simulate a vault born
+        # under an older secrets.py (hook greps for a family the Python gate no longer flags):
+        # snapshot() must refresh the hook by content, or the commit dies with "nochange" while
+        # hundreds of files sit dirty — exactly how wartzar-bee's backup stayed frozen AFTER the
+        # scanner fix shipped.
+        (home / "memory" / "leak.md").unlink()
+        hook = home / ".git" / "hooks" / "pre-commit"
+        hook.write_text(V._PRECOMMIT.replace(V._sec.bash_pattern(), "xox[baprs]-[A-Za-z0-9-]{10,}"))
+        (home / "skills" / "vendored.md").write_text('"SLACK_BOT_TOKEN": "xoxb-your-bot-token"\n')
+        r3, hits3 = V.snapshot(home, "docs placeholder")
+        ck("e2e-stale-hook-refreshed", hook.read_text() == V._PRECOMMIT)
+        ck("e2e-placeholder-commits", r3 == "ok" and not hits3)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 else:
     print("(git absent — end-to-end vault checks skipped)")
 
-total = 37 if shutil.which("git") else 33
+total = 39 if shutil.which("git") else 33
 if fails:
     print(f"FAIL ({len(fails)}): " + ", ".join(fails))
     sys.exit(1)

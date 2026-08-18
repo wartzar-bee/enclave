@@ -36,7 +36,11 @@ FORMATS = (
     (r"nvapi-[A-Za-z0-9_-]{20,}", "nvidia"),
     (r"AKIA[0-9A-Z]{16}", "aws-access-key"),
     (r"AIza[0-9A-Za-z_-]{35}", "google-api-key"),
-    (r"xox[baprs]-[A-Za-z0-9-]{10,}", "slack"),
+    # Numeric-first tail: every real Slack token opens with the numeric workspace ID
+    # (xoxb-1234567890123-…); the canonical docs placeholder `xoxb-your-bot-token` has no digits at
+    # all, and as a FORMAT it was unexemptable — one vendored upstream README froze a whole brain
+    # backup (2026-08-18). Plain ERE on purpose: bash_pattern() ships this verbatim, so no lookaheads.
+    (r"xox[baprs]-[0-9]{5,}[A-Za-z0-9-]{4,}", "slack"),
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private-key"),
 )
 _FORMAT_RE = [(re.compile(p), name) for p, name in FORMATS]
@@ -52,10 +56,14 @@ LABEL_VALUE = (
     # SEED/PRIV_KEY/SIGNING_KEY joined 2026-07-29: channel-lab catted MCP_ED25519_SEED_HEX=<64 hex> into
     # its transcript and NOTHING here matched — pure hex also slips looks_random (no uppercase), so a
     # key-material label family is the only net that catches it without flagging every git SHA in prose.
+    # The value class excludes quote characters: with plain \S, `BRAVE_API_KEY:'x',TAVILY_API_KEY:'x'`
+    # captured PAST the closing quote (`x',TAVILY_API_KEY:'x',` — 1-char placeholders welded into one
+    # 8+ char "value") and froze wartzar-bee's brain backup 2026-08-18. A quoted value ends at its
+    # closing quote; a real credential never contains one in this label family.
     r"[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|CREDENTIALS?|SEED(?:_HEX)?|PRIV(?:ATE)?_KEY|SIGNING_KEY)"
-    r"\s*[:=]\s*['\"]?(?P<val>\S{8,})",
+    r"\s*[:=]\s*['\"]?(?P<val>[^\s'\"]{8,})",
     # Authorization header / curl -H form (opaque token, no prefix, no key name)
-    r"(?i)authorization\s*[:=]\s*['\"]?(?:bearer|basic|token)\s+(?P<val>\S{12,})",
+    r"(?i)authorization\s*[:=]\s*['\"]?(?:bearer|basic|token)\s+(?P<val>[^\s'\"]{12,})",
     # Google app-password 4x4 — ONLY behind a password label; the bare shape is ordinary English
     # ("when they were done") and would freeze every prose-heavy vault.
     r"(?i)(?:app[- ]?password|password)\s*[:=]\s*['\"]?(?P<val>[a-z0-9]{4}(?:\s+[a-z0-9]{4}){3})",
@@ -70,7 +78,7 @@ _DOTTED_IDENT = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
 # `token = os.getenv("X")`, `key = load_key(path)`. This blocked one deployment's vault for hours —
 # a fail-closed gate that fires on a false positive stops the backup just as dead as a real leak,
 # so precision here is a availability property, not just tidiness. looks_random() still overrides.
-_CALL = re.compile(r"^[A-Za-z_][\w.]*\s*\(.*\)$")
+_CALL = re.compile(r"^[A-Za-z_][\w.]*\s*\(.*\)[;,]?$")
 _PLACEHOLDER = re.compile(r"(?i)^(?:redacted|placeholder|example|changeme|your[-_]?\w*|dummy|fake"
                           r"|none|null|todo|tbd|x{3,}|\*{3,}|\.{3,}|_{3,}|-{3,})")
 
@@ -93,10 +101,37 @@ def is_reference(val):
     structural, so a bare literal like `3r2s-e726-ct5d-y4ee` still blocks."""
     raw = (val or "").strip()
     v = (val or "").strip("'\"[](){}<>`,;")
+    # Sourcemap/JSON-embedded source carries LITERAL escape sequences: a .js.map line
+    # `VERCEL_OIDC_TOKEN = maybeToken.token;\n  return;` captures `maybeToken.token;\n` — the trailing
+    # backslash-n is two source characters, so the plain strip above never reaches the `;` and the
+    # dotted-identifier rule below can't fire. Peel escape/terminator junk off the END only, then
+    # re-strip: anchored at $, it can never shorten real key material (froze a brain backup 2026-08-18).
+    v = re.sub(r"(?:\\[nrt]|[;,])+$", "", v).strip("'\"[](){}<>`,;")
     if not v or len(v) < 8:
         return True
     if looks_random(v):
         return False
+    # A masked value: `ntn_****` in upstream READMEs. `***` is a redaction convention, never key
+    # material — but _PLACEHOLDER below is start-anchored so a masked TAIL slipped it.
+    if "***" in v:
+        return True
+    # A fill-this-in WORD anywhere in a non-random value: `fc-YOUR_API_KEY`, `ntn_test_token_123`,
+    # `demo-secret`. Bounded on both sides so random tokens that merely embed 'test' as a substring
+    # of a longer run stay caught — and looks_random() above already claimed anything high-entropy.
+    if re.search(r"(?i)(?:^|[\W_])(?:your|example|sample|test|demo|dummy|fake|changeme|placeholder)(?:[\W_]|$)", v):
+        return True
+    # The camelCase/kebab-case twin of the SCREAMING_SNAKE rule below: an identifier-shaped value
+    # that carries a credential-label WORD as its own segment names the secret, it isn't one —
+    # `managedApiKey` (a variable), `gateway-secret`, `my-secret-token`, `ntn_env_token_123` (doc/test
+    # placeholders). Real tokens are high-entropy and were already claimed by looks_random() above.
+    # The label word must be delimited (separator or camelCase hump): a flat mashed run like
+    # `mysupersecrettoken` keeps blocking, because nothing marks it as a NAME rather than a weak
+    # literal (2026-08-18 class).
+    # (?i: is scoped to the label words ONLY — a global (?i) would turn the [a-z](?=[A-Z]) camelCase
+    # hump into "any letter before any letter" and exempt the flat run it exists to keep blocking.
+    if re.fullmatch(r"[A-Za-z][\w\-]*", v) and re.search(
+            r"(?:^|[-_]|[a-z](?=[A-Z]))(?i:api[_-]?key|token|secret|password|passwd|credentials?)(?:[-_]|$)", v):
+        return True
     # Checked against RAW, before the strip above: stripping "()" off `_gen_password()` leaves a bare
     # identifier, so the `"(" in v` test below never fired for a no-argument call. That single gap
     # froze a deployment's brain backup for hours.

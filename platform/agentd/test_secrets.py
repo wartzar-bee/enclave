@@ -95,6 +95,33 @@ for s in POSITIVE + ["password='" + fx("hunter2", "secretvalue") + "'",
 for s in NEGATIVE:
     ck(f"redact keeps prose: {s[:20]}", S.redact(s) == s)
 
+# ── 2026-08-18: vendored-package placeholder classes (froze wartzar-bee's brain backup) ──────
+# Every fixture below is verbatim from files a pod legitimately tracks (its own probe script +
+# unpacked npm tarballs). None is a credential; each froze the fail-closed vault gate.
+for s, why in [
+    ("BRAVE_API_KEY:'x',TAVILY_API_KEY:'x',EXA_API_KEY:'x'", "1-char quoted placeholders welded past the closing quote"),
+    ("env FIRECRAWL_API_KEY=fc-YOUR_API_KEY npx -y firecrawl-mcp", "YOUR placeholder word"),
+    ('"SLACK_BOT_TOKEN": "' + fx("xoxb", "-your-bot-token") + '",', "digit-less slack docs placeholder"),
+    ("const GOOGLE_MAPS_API_KEY = getApiKey();", "call with trailing semicolon"),
+    ("api_key: managedApiKey = session?.[managedOAuthApiKey];", "camelCase identifier naming the key"),
+    (" * Server: MCP_AUTH_TOKEN=my-secret-token", "kebab-case self-describing placeholder"),
+    ('"NOTION_TOKEN": "ntn_****"', "masked tail"),
+    ("process.env.NOTION_TOKEN = 'ntn_test_token_123'", "test-word placeholder"),
+    ("process.env.NOTION_TOKEN = 'ntn_env_token_should_be_ignored'", "snake_case with token segment"),
+    ("authorization: 'Bearer gateway-secret'", "self-describing bearer placeholder"),
+    (r"VERCEL_OIDC_TOKEN = maybeToken.token;\n  return;", "sourcemap literal-escape tail on a dotted ref"),
+]:
+    ck(f"placeholder not flagged ({why})", S.scan_text(s) is None)
+# ...and the exemptions above must NOT widen past the placeholders they name:
+ck("flat weak literal still caught",           # no separator/hump marks it as a NAME
+   S.scan_text(fx("GITHUB_TOKEN=", "mysupersecrettoken")) is not None)
+ck("real slack (numeric-first) still caught",
+   S.scan_text(fx("xoxb-", "1234567890123-4567890123456-Ab1Cd2Ef3Gh4Ij5Kl6")) is not None)
+ck("quoted real token still caught",           # value class stops at the quote, not before entropy
+   S.scan_text("API_KEY='" + fx("hVn3PqX9", "sLm2ZkW8rTbY4cD") + "'") is not None)
+ck("entropy overrides identifier shape",       # looks_random precedes every 08-18 exemption
+   S.scan_text(fx("DEVTO_SECRET=", "managedApiKey9Zq3Xv71LmPw")) is not None)
+
 if fails:
     print(f"FAIL ({len(fails)}): " + ", ".join(fails))
     sys.exit(1)
