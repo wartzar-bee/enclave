@@ -21,7 +21,10 @@ it falls back to a single-shot completion with the recent thread replayed as tex
 Env:
   CHAT_RESPONDER=off     disable (agentloop checks this before importing)
   CHAT_MODEL             override the chat model (default: the UI picker / the agent's MODEL — same as the agent)
-  CHAT_TURN_TIMEOUT      seconds per chat turn (default 150)
+  CHAT_TURN_TIMEOUT      seconds a turn may make NO PROGRESS before it is killed (default 150). The
+                         clock RESETS on every stream event, so a turn that keeps working keeps running.
+  CHAT_TURN_MAX          absolute ceiling for one turn, never extended (default 900). On hitting either
+                         limit the operator's message is HANDED TO THE WORK QUEUE, not discarded.
 """
 import os, sys, json, time, re, pathlib, subprocess, threading, select, urllib.request, urllib.error
 
@@ -84,17 +87,37 @@ def _tool_brief(name, inp):
     return json.dumps(inp)[:90] if inp else ""
 
 
-def _run_streaming(cmd, cwd, timeout, stop_file, log):
+def _hard_max(timeout):
+    """Absolute per-turn ceiling (CHAT_TURN_MAX, default 900s), never below the stall budget."""
+    try:
+        v = int(os.environ.get("CHAT_TURN_MAX", "900"))
+    except ValueError:
+        v = 900
+    return max(v, int(timeout))
+
+
+def _run_streaming(cmd, cwd, timeout, stop_file, log, hard_max=None):
     """Run `claude -p --output-format stream-json --verbose`, LOGGING each tool call live so the operator
-    can trace what the agent does during a turn. Honors stop_file + timeout. Returns "STOPPED" |
-    None (timeout/spawn-fail) | (rc, result_text, session_id, stderr_tail)."""
+    can trace what the agent does during a turn. Honors stop_file + a TWO-CLOCK budget:
+
+      • `timeout` (CHAT_TURN_TIMEOUT) is a STALL budget, not a turn budget — every stream event resets it.
+        A turn that is genuinely working (tool calls, tokens) keeps its extension; only a turn that goes
+        quiet dies on it. The flat cap it replaces killed productive turns mid-research (6 web calls at
+        ~25s each blew 150s) and threw the operator's ask away.
+      • `hard_max` (CHAT_TURN_MAX) is the absolute ceiling and is NEVER extended, so chat still cannot
+        become an unbounded work tick.
+
+    Returns "STOPPED" | "TIMEOUT" (either clock — caller hands the ask to the work queue) |
+    None (spawn-fail) | (rc, result_text, session_id, stderr_tail)."""
     try:
         p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     except Exception as e:
         log(f"chat spawn failed: {e}"); return None
-    deadline = time.time() + timeout
     result, session_id, n_tools = None, None, 0
     result_ev, seen_model, t0 = None, None, time.time()   # chat spend metering (2026-07-04 fix #6)
+    hard_max = _hard_max(timeout) if hard_max is None else max(int(hard_max), int(timeout))
+    deadline = t0 + timeout            # STALL clock — reset by every stream event below
+    hard_deadline = t0 + hard_max      # absolute ceiling — never extended
     actfile = pathlib.Path(cwd) / "state" / "chat-activity"   # live progress the web UI polls during a turn
     steps = []
     def _act(s):
@@ -111,12 +134,17 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
     while True:
         if stop_file.exists():
             _kill(); log("chat turn stopped by operator"); return "STOPPED"
-        if time.time() > deadline:
+        now = time.time()
+        if now > deadline or now > hard_deadline:
             # preserve the accumulated tool trace so the operator can review what happened (the live
             # actfile gets cleared on _kill; chat_loop reads this to render a collapsible block).
             try: (pathlib.Path(cwd) / "state" / "chat-last-trace.md").write_text("\n".join(steps[-40:]))
             except Exception: pass
-            _kill(); log(f"chat turn timed out after {timeout}s ({n_tools} tool calls so far)"); return None
+            why = (f"hit the {hard_max}s ceiling (CHAT_TURN_MAX)" if now > hard_deadline
+                   else f"stalled {timeout}s with no progress (CHAT_TURN_TIMEOUT)")
+            _kill()
+            log(f"chat turn {why} after {int(now - t0)}s ({n_tools} tool calls so far) — handing to work queue")
+            return "TIMEOUT"
         try:
             rl, _, _ = select.select([p.stdout], [], [], 0.5)
         except Exception:
@@ -132,6 +160,7 @@ def _run_streaming(cmd, cwd, timeout, stop_file, log):
             ev = json.loads(line)
         except Exception:
             continue
+        deadline = min(time.time() + timeout, hard_deadline)   # PROGRESS — extend the stall clock
         t = ev.get("type")
         if t == "assistant":
             m = (ev.get("message", {}) or {}).get("model")
@@ -431,7 +460,9 @@ def _answer_claude(agent_dir, conv_id, msg, images, model, timeout, log):
         r = run(None)                                           # retry fresh in the SAME turn (seeded w/ history)
         if r == "STOPPED":
             return "STOPPED"
-    if not isinstance(r, tuple):                                # timeout / spawn-fail
+    if r == "TIMEOUT":                            # out of budget — chat_loop hands the ask to the work plane
+        return "TIMEOUT"
+    if not isinstance(r, tuple):                                # spawn-fail
         return None
     rc, result, session_id, err = r
     if sf and session_id:
@@ -635,6 +666,44 @@ def _promote_directive(agent_dir, directive, log):
         return None
 
 
+def _trace_block(agent_dir):
+    """The tool trace a killed turn left behind, as a fenced block (collapsible in the UI) — so the
+    operator can see exactly what the turn did before it ran out. Consumes the file."""
+    tracef = pathlib.Path(agent_dir) / "state" / "chat-last-trace.md"
+    try:
+        tr = tracef.read_text().strip()
+    except OSError:
+        return ""
+    try: tracef.unlink()
+    except OSError: pass
+    return ("\n\n```trace\n" + tr + "\n```") if tr else ""
+
+
+def _handoff_directive(agent_dir, conv_id, text, log):
+    """Turn an operator chat message that ran out of turn budget into ONE work-loop directive line.
+    The work plane is tick-paced and unbounded, so the ask gets FINISHED there instead of evaporating
+    (the old behaviour: a ⚠️ line and the request thrown away). A long message is written to
+    state/chat-handoff/ verbatim and the directive points at it — inbox lines are single-line."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    ref = ""
+    if len(text) > 600:
+        try:
+            d = pathlib.Path(agent_dir) / "state" / "chat-handoff"
+            d.mkdir(parents=True, exist_ok=True)
+            name = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{conv_id or 'chat'}.md"
+            (d / name).write_text(text + "\n")
+            ref = f" FULL request (verbatim, incl. any long report the operator pasted): state/chat-handoff/{name}."
+            log(f"chat handoff saved: state/chat-handoff/{name} ({len(text)} chars)")
+        except Exception as e:
+            log(f"chat handoff save failed: {e}")
+    head = " ".join(text.split())[:400]
+    return (f"From the operator in chat (conv {conv_id or '-'}), where the turn ran out of chat time before "
+            f"finishing — DO IT HERE, across as many ticks as it needs, then post the result back to that "
+            f"chat thread: {head}{'…' if len(head) >= 400 else ''}{ref}")
+
+
 def chat_loop(agent_dir, log=print):
     agent_dir = pathlib.Path(agent_dir)
     chat_inbox = agent_dir / "state" / "chat-inbox.jsonl"
@@ -685,6 +754,21 @@ def chat_loop(agent_dir, log=print):
                         reply = _answer_api(_api_prompt(agent_dir, conv_id, text, images), model, timeout, log)
                 if reply == "STOPPED":
                     _write_reply(reply_file, conv_id, "_(stopped)_")
+                elif reply == "TIMEOUT":
+                    # A turn that runs out of budget must NOT lose the operator's ask. Chat is the
+                    # real-time plane (bounded by design); the work loop is tick-paced and unbounded —
+                    # so hand the message over there and say so, instead of a dead-end ⚠️.
+                    confirm = None
+                    if os.environ.get("CHAT_PROMOTE", "1") != "0":
+                        confirm = _promote_directive(agent_dir, _handoff_directive(agent_dir, conv_id, text, log), log)
+                    msg = ("⚠️ That turn ran past the chat time limit — chat is the real-time plane, so a "
+                           "deep-research or build-sized ask can't finish inside one turn.")
+                    msg += ("\n\n" + confirm + " The work loop will finish it across ticks and post the "
+                            "result back here." if confirm else
+                            "\n\n_(and it could not be queued automatically — re-send it to the work queue "
+                            "with `enclave send`.)_")
+                    _write_reply(reply_file, conv_id, msg + _trace_block(agent_dir))
+                    log("chat turn out of budget → handed to the work queue")
                 elif reply:
                     # Promote a work directive (if the model emitted one) into inbox.md so the work loop
                     # obeys it — strip the hidden block first so the operator never sees the XML.
@@ -702,19 +786,9 @@ def chat_loop(agent_dir, log=print):
                             _set_title(agent_dir, conv_id, ti)
                             log(f"chat titled: {ti}")
                 else:
-                    msg = ("⚠️ The turn timed out or the agent failed to start (see `enclave logs`). "
-                           "Tip: long tasks (deep research, big builds) belong on the WORK QUEUE "
-                           "(`enclave send` / inbox), not a single chat turn — they run across ticks.")
-                    tracef = agent_dir / "state" / "chat-last-trace.md"
-                    try:
-                        tr = tracef.read_text().strip()
-                    except OSError:
-                        tr = ""
-                    if tr:
-                        msg += "\n\n```trace\n" + tr + "\n```"   # collapsible block in the UI — review what it did
-                        try: tracef.unlink()
-                        except OSError: pass
-                    _write_reply(reply_file, conv_id, msg)
+                    # NOT a timeout any more (that returns "TIMEOUT"): the turn failed to start.
+                    msg = "⚠️ The agent failed to start that turn (see `enclave logs`)."
+                    _write_reply(reply_file, conv_id, msg + _trace_block(agent_dir))
         except Exception as e:
             log(f"chat loop error: {e}")
         time.sleep(POLL_SECS)

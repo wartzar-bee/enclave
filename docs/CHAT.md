@@ -72,8 +72,24 @@ conversation times out while another answers first). So the responder writes a s
 | `CHAT_MODEL` | the agent's model | override just the chat model |
 | `CHAT_BASE` | the brain's endpoint | run chat on a *different* endpoint than the work brain |
 | `CHAT_ALLOW_WRITES` | unset (read-only) | `1` re-enables Bash/Write/Edit in chat turns |
-| `CHAT_TURN_TIMEOUT` | 150 | seconds per chat turn before it's killed (a fallback reply is sent) |
+| `CHAT_TURN_TIMEOUT` | 150 | seconds a turn may make **no progress** before it's killed — the clock RESETS on every stream event, so a working turn keeps running |
+| `CHAT_TURN_MAX` | 900 | absolute ceiling for one turn, never extended (floored at `CHAT_TURN_TIMEOUT`) |
 | `CHAT_MAX_TOKENS` | 1024 | max tokens for the api/local single-shot path |
+
+## A turn that runs out of budget is handed to the work queue
+
+Chat is the **real-time** plane and is bounded on purpose; the work loop is tick-paced and unbounded. So
+the budget is two clocks, not one: `CHAT_TURN_TIMEOUT` is a **stall** budget that every stream event
+resets (a turn doing real tool work keeps its extension), and `CHAT_TURN_MAX` is the ceiling that
+progress can never push past. The flat single cap this replaces killed productive turns mid-research
+— and then **threw the operator's message away**.
+
+When either clock fires, the responder now promotes the operator's own message into `inbox.md` as a
+`[tier:top][chat]` directive (same path as `<promote-directive>`), so the work loop finishes the ask
+across ticks and posts back to the thread. A message longer than 600 chars is written verbatim to
+`state/chat-handoff/<ts>-<cid>.md` and the directive points at that file (inbox lines are single-line).
+Set `CHAT_PROMOTE=0` to disable the handoff. The reply the operator sees says it was queued, and still
+carries the collapsible tool trace of what the turn managed to do.
 
 ## Dashboard visibility for every brain
 

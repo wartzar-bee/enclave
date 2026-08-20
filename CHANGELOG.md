@@ -6,6 +6,21 @@ move between minor versions — pin a tag if that matters to you.
 
 ## [Unreleased]
 
+### Fixed
+- **Secret-gate false-positive class cleared + vault hooks self-refresh.** Five precision fixes to the
+  secret scanner, each pinned by a verbatim fixture from the files that froze a brain-backup snapshot:
+  label-value capture stops at a closing quote (so `BRAVE_API_KEY:'x'` no longer welds 1-char
+  placeholders into an 8+ char "value"); the Slack FORMAT requires its real numeric-first tail, so the
+  docs placeholder `xoxb-your-bot-token` stops matching (plain ERE — the shipped `bash_pattern` carries
+  FORMATS verbatim, no lookaheads); `_CALL` tolerates a trailing `;` (`getApiKey();`); `is_reference`
+  now peels literal `\n`/`;` tails (sourcemap-embedded source), treats `***` masks, fill-in words
+  (`your`/`test`/`example`/…), and delimited credential-label identifiers (`managedApiKey`,
+  `gateway-secret`, `ntn_env_token_123`) as references — all gated **behind** `looks_random` so entropy
+  still wins and flat runs like `mysupersecrettoken` still block. Separately, `vault_snapshot.ensure_repo`
+  now refreshes the baked pre-commit hook by CONTENT and runs on every snapshot, so a vault born under an
+  older pattern stops blocking commits after a scanner fix ships. Suites: secrets + vault 39/39 + hooks +
+  local_agent green. (`platform/agentd/secrets.py`, `vault_snapshot.py`; `2da10113`)
+
 ## [0.7.0] — 2026-08-18
 
 A worker-tier + eval + cost-safety release. The headline is a new **code-over-data** worker path for

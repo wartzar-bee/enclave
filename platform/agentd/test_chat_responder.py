@@ -14,6 +14,7 @@ Hermetic — builds a temp fleet, never touches the network (no LLM call is invo
 """
 import json
 import os
+import time
 import pathlib
 import sys
 
@@ -233,6 +234,63 @@ def main():
     check("_answer_api local hits the LOCAL base (not OpenRouter)", "8081" in captured.get("url", ""))
     check("_answer_api local sends a bearer token (no missing-auth 401)", bool(captured.get("auth")))
     check.eq("_answer_api returns the model content", out, "ok")
+    _clear_env()
+
+    # ------------------------------------------------- turn budget: progress EXTENDS, ceiling doesn't
+    # The flat 150s cap killed productive turns mid-research and threw the operator's ask away
+    # (2026-08-19: 1 WebFetch + 5 WebSearches on financial-advisor). CHAT_TURN_TIMEOUT is now a STALL
+    # budget reset by every stream event; CHAT_TURN_MAX is the absolute ceiling.
+    _clear_env()
+    emitter = str(HERE / "_fake_stream.py")   # written below, removed after
+    pathlib.Path(emitter).write_text(
+        "import json, sys, time\n"
+        "n, gap, tail = int(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])\n"
+        "time.sleep(tail)\n"
+        "for i in range(n):\n"
+        "    print(json.dumps({'type':'assistant','message':{'model':'m','content':"
+        "[{'type':'tool_use','name':'WebSearch','input':{'query':'q'}}]}}), flush=True)\n"
+        "    time.sleep(gap)\n"
+        "print(json.dumps({'type':'result','result':'done','session_id':'s1'}), flush=True)\n")
+    stop = home / "state" / "nonexistent-stop"
+    quiet = lambda *a: None
+    try:
+        # 5 events, 0.3s apart (~1.5s total) with a 1s STALL budget: each gap is under budget, so the
+        # turn survives — the old flat 1s cap would have killed it at 1s.
+        r = C._run_streaming([sys.executable, emitter, "5", "0.3", "0"], str(home), 1, stop, quiet, hard_max=30)
+        check("progress extends the turn (5 slow events outlive a 1s stall budget)", isinstance(r, tuple))
+        check.eq("...and the result still comes back", r[1] if isinstance(r, tuple) else None, "done")
+
+        # silence longer than the stall budget → killed, and it says TIMEOUT (not None = spawn-fail)
+        r2 = C._run_streaming([sys.executable, emitter, "1", "0", "2.5"], str(home), 1, stop, quiet, hard_max=30)
+        check.eq("a STALLED turn is killed on CHAT_TURN_TIMEOUT", r2, "TIMEOUT")
+
+        # continuous progress still cannot outlive CHAT_TURN_MAX
+        t0 = time.time()
+        r3 = C._run_streaming([sys.executable, emitter, "100", "0.2", "0"], str(home), 1, stop, quiet, hard_max=3)
+        check.eq("the hard ceiling is never extended by progress", r3, "TIMEOUT")
+        check("...and it fires at the ceiling, not after the 20s of work", time.time() - t0 < 8)
+    finally:
+        pathlib.Path(emitter).unlink(missing_ok=True)
+
+    check.eq("_hard_max defaults to 900", C._hard_max(150), 900)
+    os.environ["CHAT_TURN_MAX"] = "60"
+    check.eq("_hard_max never drops below the stall budget", C._hard_max(150), 150)
+    os.environ.pop("CHAT_TURN_MAX")
+
+    # ------------------------------------------------- a timed-out ask is HANDED OVER, not dropped
+    long_msg = "here is a report from chatgpt, do your own research.\n" + ("x" * 900)
+    d = C._handoff_directive(home, "c123", long_msg, quiet)
+    check("handoff is ONE line (inbox lines are single-line)", "\n" not in d)
+    check("handoff tells the work loop to finish it across ticks", "ticks" in d and "chat" in d.lower())
+    saved = sorted((home / "state" / "chat-handoff").glob("*.md"))
+    check("a long message is saved VERBATIM, not truncated into the directive", bool(saved))
+    check("...and the directive points at that file",
+          bool(saved) and saved[-1].name in d and saved[-1].read_text().strip() == long_msg.strip())
+    confirm = C._promote_directive(home, d, quiet)
+    inbox = (home / "inbox.md").read_text()
+    check("the handoff lands in inbox.md as a top-priority chat directive",
+          C.CHAT_DIR_TAG in inbox and "across as many ticks" in inbox)
+    check("...and the operator gets told it was queued", bool(confirm) and "Queued" in confirm)
     _clear_env()
 
     raise SystemExit(check.report())
