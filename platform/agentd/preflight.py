@@ -36,12 +36,15 @@ def _run(cmd, timeout=25, inp=None):
         return 1, str(e)
 
 
-def _http(url, timeout=6):
+def _http(url, timeout=6, headers=None):
     # tolerant of self-signed HTTPS — the exact trap that caused the false "server down" diagnosis.
     ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
     try:
-        with urllib.request.urlopen(url, timeout=timeout, context=ctx) as r:
+        req = urllib.request.Request(url, headers=headers or {})
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
             return r.status, r.read(1024).decode("utf-8", "ignore")
+    except urllib.error.HTTPError as e:          # 401/403/429 are ANSWERS, not failures — a probe
+        return e.code, ""                        # that reports them as 0 cannot tell dead from down
     except Exception as e:
         return 0, str(e)
 
@@ -83,8 +86,33 @@ def probe_codegraph(env):
 
 
 def probe_image(env):
+    """Does image generation actually WORK — not "is there a key file on disk".
+
+    2026-08-20: this probe returned `p.exists()`. Through the whole stretch where the OpenRouter key
+    was answering 401 on every gen.py call, the pod's capability board still read `image: ok,
+    "openrouter key present"` — so the false alarm AND the false all-clear were both invisible, and a
+    resolved key blocker stayed quoted as open for days. Now it authenticates the key against
+    OpenRouter (free endpoint, no generation spend) and reports what it actually found."""
     p = pathlib.Path("/workspace/.secrets/openrouter.env")
-    return p.exists(), ("openrouter key present (gen.py)" if p.exists() else "no /workspace/.secrets/openrouter.env")
+    if not p.exists():
+        return False, "no /workspace/.secrets/openrouter.env"
+    key = ""
+    try:
+        for line in p.read_text().splitlines():
+            line = line.strip().lstrip("export ").strip()
+            if line.startswith("OPENROUTER_API_KEY="):
+                key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    except Exception as e:
+        return False, f"openrouter.env unreadable: {e}"
+    if not key:
+        return False, "openrouter.env has no OPENROUTER_API_KEY"
+    st, _ = _http("https://openrouter.ai/api/v1/auth/key", 10, headers={"Authorization": f"Bearer {key}"})
+    if st == 200:
+        return True, "openrouter key AUTHENTICATES (gen.py can generate)"
+    if st == 401:
+        return False, "openrouter key present but DEAD (401) — gen.py will fail on every call; refresh it"
+    return False, f"openrouter auth probe inconclusive (status={st}) — treat image gen as unverified"
 
 
 def probe_deploy_key(env):

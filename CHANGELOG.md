@@ -7,6 +7,15 @@ move between minor versions — pin a tag if that matters to you.
 ## [Unreleased]
 
 ### Fixed
+- **`preflight.probe_image` verifies the key WORKS, not that a file exists.** It returned
+  `p.exists()`, so through the whole stretch where stoneforge's OpenRouter key answered 401 on every
+  `gen.py` call the capability board still read `image: ok, "openrouter key present"` — the false alarm
+  and the false all-clear were equally invisible, and a resolved key blocker stayed quoted as open for
+  days. It now authenticates against OpenRouter's free `/auth/key` endpoint (no generation spend):
+  200 → AUTHENTICATES, 401 → present but DEAD with the refresh instruction, otherwise → inconclusive.
+  `_http` gains `headers=` and an `HTTPError` branch so 401/403/429 report as themselves instead of
+  collapsing to 0 — a probe that cannot tell "dead" from "down" diagnoses neither. Verified live in a
+  running pod. (`platform/agentd/preflight.py`)
 - **Secret-gate false-positive class cleared + vault hooks self-refresh.** Five precision fixes to the
   secret scanner, each pinned by a verbatim fixture from the files that froze a brain-backup snapshot:
   label-value capture stops at a closing quote (so `BRAVE_API_KEY:'x'` no longer welds 1-char
