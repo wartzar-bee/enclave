@@ -9,11 +9,14 @@ import os, sys, json, subprocess, tempfile, pathlib
 HOOK = str(pathlib.Path(__file__).with_name("compactor.py"))
 
 
-def run(ev, enforce=False, env_extra=None, agent_dir=None):
+def run(ev, enforce=False, env_extra=None, agent_dir=None, mode=None):
     env = dict(os.environ)
     env.pop("COMPACT_ENFORCE", None)
+    env.pop("COMPACT_MODE", None)
     if enforce:
         env["COMPACT_ENFORCE"] = "1"
+    if mode:
+        env["COMPACT_MODE"] = mode
     if agent_dir:
         env["AGENT_DIR"] = str(agent_dir)
     if env_extra:
@@ -21,6 +24,22 @@ def run(ev, enforce=False, env_extra=None, agent_dir=None):
     p = subprocess.run([sys.executable, HOOK], input=json.dumps(ev).encode(),
                        capture_output=True, env=env)
     return p.returncode, p.stderr.decode()
+
+
+def run_out(ev, agent_dir=None, mode=None, env_extra=None):
+    """Same protocol, but hand back stdout — spill mode answers with a JSON body."""
+    env = dict(os.environ)
+    env.pop("COMPACT_ENFORCE", None)
+    env.pop("COMPACT_MODE", None)
+    if mode:
+        env["COMPACT_MODE"] = mode
+    if agent_dir:
+        env["AGENT_DIR"] = str(agent_dir)
+    if env_extra:
+        env.update(env_extra)
+    p = subprocess.run([sys.executable, HOOK], input=json.dumps(ev).encode(),
+                       capture_output=True, env=env)
+    return p.returncode, p.stdout.decode(), p.stderr.decode()
 
 
 def bash(cmd):
@@ -103,6 +122,68 @@ def main():
             rec = json.loads(logp.read_text().splitlines()[-1])
             check("log record has mode=report", rec["mode"] == "report")
             check("log record names the tool", rec["tool"] == "Bash")
+
+        # --- SPILL mode: the call is RESHAPED, not refused (Tier 2, docs/CONTEXT-COMPACTOR.md) ---
+        rc, out, _ = run_out(bash("cat big.json"), agent_dir=ad, mode="spill")
+        check("spill allows (exit 0)", rc == 0)
+        body = json.loads(out) if out.strip() else {}
+        hso = body.get("hookSpecificOutput", {})
+        check("spill returns PreToolUse updatedInput", hso.get("hookEventName") == "PreToolUse"
+              and "updatedInput" in hso)
+        check("spill decides allow", hso.get("permissionDecision") == "allow")
+        newcmd = hso.get("updatedInput", {}).get("command", "")
+        check("spill keeps the original command", "cat big.json" in newcmd)
+        check("spill redirects into state/.compact", "/state/.compact/" in newcmd)
+        check("spill preserves the exit status", "(exit $__rc)" in newcmd)
+        check("spill names the locator to the model", "Nothing was lost" in newcmd)
+
+        rc2, out2, _ = run_out(bash("cat big.json"), agent_dir=ad, mode="spill")
+        cmd2 = json.loads(out2)["hookSpecificOutput"]["updatedInput"]["command"]
+        check("spill paths never collide", cmd2 != newcmd)
+
+        # the rewrite must actually WORK in a real shell: full output on disk, bounded preview
+        # on stdout, original exit status preserved.
+        r = subprocess.run(["bash", "-c", newcmd], capture_output=True, cwd=str(ad),
+                           env={**os.environ, "PATH": os.environ.get("PATH", "")})
+        check("rewritten command succeeds", r.returncode == 0)
+        stdout = r.stdout.decode(errors="replace")
+        check("preview is bounded", len(stdout) < 6000)
+        check("preview carries the elision marker", "[compactor]" in stdout and "bytes) is in" in stdout)
+        spills = sorted((ad / "state" / ".compact").glob("*.txt"))
+        check("spill file holds the FULL output", any(f.stat().st_size == 200_000 for f in spills))
+
+        # a failing command keeps its non-zero status through the wrapper
+        rc3, out3, _ = run_out(bash("cat /nonexistent-xyz"), agent_dir=ad, mode="spill")
+        failcmd = json.loads(out3)["hookSpecificOutput"]["updatedInput"]["command"]
+        r3 = subprocess.run(["bash", "-c", failcmd], capture_output=True, cwd=str(ad))
+        check("rewritten command preserves failure status", r3.returncode != 0)
+
+        # a trailing comment must not swallow the wrapper
+        rc4, out4, _ = run_out(bash("cat big.json  # look at the whole thing"), agent_dir=ad, mode="spill")
+        c4 = json.loads(out4)["hookSpecificOutput"]["updatedInput"]["command"]
+        r4 = subprocess.run(["bash", "-c", c4], capture_output=True, cwd=str(ad))
+        check("trailing comment survives the rewrite", r4.returncode == 0 and b"[compactor]" in r4.stdout)
+
+        # a large no-limit Read becomes a bounded Read
+        rc5, out5, _ = run_out(read(str(big)), agent_dir=ad, mode="spill")
+        ui = json.loads(out5)["hookSpecificOutput"]["updatedInput"]
+        check("spill bounds a large Read", ui.get("limit") == 400 and ui.get("file_path") == str(big))
+
+        # a backgrounded command has no safe rewrite → spill falls back to enforce, never to allow
+        rc6, out6, err6 = run_out(bash("find / -name '*.py' &"), agent_dir=ad, mode="spill")
+        check("spill falls back to block when it cannot rewrite", rc6 == 2 and "compactor" in err6)
+
+        # bounded calls are still untouched in spill mode
+        rc7, out7, _ = run_out(bash("cat big.json | head -50"), agent_dir=ad, mode="spill")
+        check("spill leaves disciplined calls alone", rc7 == 0 and out7.strip() == "")
+
+        # spill mode is recorded as itself in the log
+        rec = json.loads((ad / "state" / "compact.log").read_text().splitlines()[-1])
+        check("log record has mode=spill", rec["mode"] == "spill")
+
+        # legacy spelling still selects enforce
+        rc8, _ = run(bash("cat big.json"), enforce=True, agent_dir=ad)
+        check("COMPACT_ENFORCE=1 still enforces", rc8 == 2)
 
         # --- robustness: malformed input fails open ---
         p = subprocess.run([sys.executable, HOOK], input=b"not json", capture_output=True)

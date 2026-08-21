@@ -1,8 +1,9 @@
 # Within-tick context compactor — scope
 
-**Status:** Tier-1 SHIPPED (`hooks/compactor.py` PreToolUse deny+steer, `COMPACT_ENFORCE`
-report/enforce, `hooks/test_compactor.py`); Tier-2 (rtk rules engine, `policies/compact.toml`) never
-built — treat §A as backlog. Sibling to [`CONTEXT-AND-TICKS.md`](CONTEXT-AND-TICKS.md) (which covers
+**Status:** Tier-1 SHIPPED (`hooks/compactor.py` PreToolUse deny+steer, report/enforce).
+**Tier-2 SHIPPED 2026-08-21 as `COMPACT_MODE=spill`** — the `updatedInput` rewrite of A.2, default
+OFF and unmeasured (see §A.5). The rtk rules engine / `policies/compact.toml` half of Tier-2 is still
+unbuilt — treat that part of §A as backlog. Sibling to [`CONTEXT-AND-TICKS.md`](CONTEXT-AND-TICKS.md) (which covers
 *between-tick* fixed cost); this covers the gap that doc leaves open: **within-tick bloat**, the #1 live
 cost driver on forgepod today.
 
@@ -102,8 +103,13 @@ The compactor is a **`PreToolUse` shaper**, in two tiers:
   + the prompt discipline already in `tick.txt` for those.
 
 Net: **Bash is the big win** (the hot tool — `Bash×9`/tick) and gets true compaction; Read/Grep get
-gated + disciplined. Verify `updatedInput` support on our pinned Claude Code version during build; if
-absent, Tier-1 (deny+steer) + the `sf-compact` wrapper still delivers most of the saving.
+gated + disciplined.
+
+**`updatedInput` support: VERIFIED 2026-08-21.** Present in the pinned pod CLI (220 occurrences in
+`claude` **2.1.170** inside the live `wartzar-bee` pod) and on the host (2.1.238). Documented shape:
+`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{…}}}`
+— `updatedInput` applies with or without a `permissionDecision`; we state `allow` so no later
+ask-rule re-prompts on our own rewrite. The `sf-compact` fallback is therefore unnecessary.
 
 ### A.3 Where it lives
 
@@ -125,6 +131,48 @@ absent, Tier-1 (deny+steer) + the `sf-compact` wrapper still delivers most of th
 - **Idempotent + cheap** — pure-Python regex, no network, no LLM, sub-ms; it must not add latency.
 - **Honest** — when output is truncated, the elision marker states how much was cut and where the full
   copy is, so the agent (and a human reading the transcript) knows nothing was silently dropped.
+### A.5 `COMPACT_MODE=spill` — what shipped (2026-08-21)
+
+Three modes now, selected by `COMPACT_MODE` (`COMPACT_ENFORCE=1` remains the legacy spelling of
+`enforce`, and `console.py` still emits it):
+
+| mode | on a context-bombing call |
+|---|---|
+| `report` (default) | log to `state/compact.log`, allow |
+| `enforce` | exit 2 + steer; the agent must retry in a leaner form |
+| `spill` | **rewrite and run it once** — full output to `state/.compact/<ts>-<hash>.txt`, a bounded preview back to the model, plus the locator |
+
+Bash rewrite (newline-separated so a trailing `#comment` cannot swallow the closing brace;
+`(exit $__rc)` re-raises the original status without exiting the tool's shell):
+
+```
+{
+<original command>
+} > state/.compact/<id>.txt 2>&1
+__rc=$?; __sz=$(wc -c < …); head -c $COMPACT_PREVIEW_BYTES …
+echo "[compactor] <reason>: full output ($__sz bytes) is in <path>; the preview above is only its
+first N bytes. Nothing was lost — grep/sed -n/pyexec.py THAT FILE for the rest, do not cat it."
+(exit $__rc)
+```
+
+A large no-limit `Read` instead gets an injected `limit` (`COMPACT_READ_LIMIT`, default 400) — the
+file is already its own locator, so nothing is copied. A call with no safe rewrite (e.g. a
+backgrounded `… &`, where redirecting would change its semantics) **falls back to `enforce`, never to
+`report`**: spill is stricter than report, never looser.
+
+**Why this shape.** A refusal costs a whole turn *and* depends on the agent complying; a rewrite costs
+nothing and cannot be ignored. Adopted from DeepSeek Harness's `spill-policy` — which places the same
+idea *post*-execute, impossible here (A.2) — as the one mechanism worth taking from that harness
+(`ENCLAVE-DEEPSEEK-HARNESS-EVAL-2026-08-21.md`). The consumer already exists: a spill file is exactly
+what `pyexec.py` wants.
+
+**Not yet measured.** Ship-then-measure: `COMPACT_ENFORCE=1` vs `COMPACT_MODE=spill` on the same
+agent — refusal-retry turns, `cache_read`/tick, subscription-quota %. Do not promote the default
+until that run exists.
+
+Env: `COMPACT_MODE`, `COMPACT_PREVIEW_BYTES` (4096), `COMPACT_READ_LIMIT` (400),
+`COMPACT_MAX_READ_BYTES` (65536). Tests: `hooks/test_compactor.py` (45 checks, including executing
+the rewritten command in a real shell and asserting the full output landed on disk).
 
 ---
 
@@ -188,8 +236,10 @@ currently mid-file) so it's read first.
 2. **PreToolUse context-guard (Tier 1)** — `compactor.py` deny+steer for context-bombing calls, wired
    like `delegation_guard`. **Report-only first** (log would-deny to `state/compact.log`), size the
    saving for one tick, then `COMPACT_ENFORCE=1`. Host-mounted hook → live next tick, no rebuild.
-3. **Bash-output compactor (Tier 2)** — `sf-compact` wrapper + `compact.toml` rules (rtk schema);
-   gate un-wrapped verbose Bash via the Tier-1 hook. The biggest structural win (Bash is the hot tool).
+3. ~~**Bash-output compactor (Tier 2)** — `sf-compact` wrapper + `compact.toml` rules (rtk schema)~~
+   → **superseded and SHIPPED as `COMPACT_MODE=spill`** (§A.5): `updatedInput` turned out to be
+   available on the pinned CLI, so the wrapper the agent had to remember to use was never needed.
+   Remaining Tier-2 backlog: the per-tool `compact.toml` rules engine (spill is content-agnostic).
 4. **Move `tick.txt` CONTEXT RULES to the top** (B6) — trivial, do alongside #1.
 5. **Bake into the product** — templates + `bin/enclave` default-writer, default report-only
    (conservative), operator publishes the image. Other agents inherit on rebuild.
