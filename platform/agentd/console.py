@@ -72,8 +72,10 @@ MON_LAUNCH = os.environ.get("ENCLAVE_MONITOR_LAUNCH", "")  # command to (re)star
 # applied LIVE = next tick, no container recreate. (MODEL is dual-homed with .env, needs a restart →
 # NOT a quick-fix; switch the model in the Config tab, which recreates the container.)
 DIAG_FIX = {
-    "context_explosion": ({"COMPACT_ENFORCE": "1"}, "Enable compactor"),
-    "prompt_creep":      ({"COMPACT_ENFORCE": "1"}, "Enable compactor"),
+    # spill, not enforce: measured 2026-08-21, 75% of what the compactor gates was never a context
+    # bomb, so enforce burns a refused turn per false positive while spill costs ~190 bytes.
+    "context_explosion": ({"COMPACT_MODE": "spill"}, "Enable compactor (spill)"),
+    "prompt_creep":      ({"COMPACT_MODE": "spill"}, "Enable compactor (spill)"),
     "duration_spike":    ({"MAX_TURNS": "40"}, "Cap turns/tick"),
     "wake_spike":        ({"CONTINUOUS_COOLDOWN": "600"}, "Slow tick cadence"),
 }

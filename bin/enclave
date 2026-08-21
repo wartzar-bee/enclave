@@ -686,6 +686,14 @@ def cmd_init(args):
                      "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/guard.py"}]}]
             if _dg:
                 _pre.append({"matcher": "Write|Edit|MultiEdit", "hooks": _dg})
+            # compactor: the within-tick context guard. Default mode is `report` (log to
+            # state/compact.log, always allow), so wiring it costs nothing until the agent sets
+            # COMPACT_MODE=enforce|spill. Wired BY CONSTRUCTION for the same reason event_log is:
+            # it was shipped into every pod's hooks dir and wired on exactly ONE of five live pods,
+            # so the only fleet data about context bombs came from one agent by accident.
+            if (home / ".claude" / "hooks" / "compactor.py").exists():
+                _pre.append({"matcher": "Bash|Read",
+                    "hooks": [{"type": "command", "command": "python3 /agent/.claude/hooks/compactor.py"}]})
             # ctx_budget PreToolUse: once spend nears the package budget, BLOCK the work tools so the
             # agent can only finalize its handoff + finish (cost discipline; pairs with the PostToolUse warn).
             if (home / ".claude" / "hooks" / "ctx_budget.py").exists():

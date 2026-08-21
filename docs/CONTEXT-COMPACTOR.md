@@ -178,8 +178,10 @@ the rewritten command in a real shell and asserting the full output landed on di
 ### A.6 MEASURED, 2026-08-21 — and the Read branch was measuring the wrong thing
 
 First real measurement of this hook since it shipped. Substrate: `stoneforge`'s `state/compact.log`
-— **2,568 gates over 20 days** (2026-06-26 → 08-21), the only agent in the fleet where the hook is
-actually wired (`financial-advisor` and `wartzar-bee` have no `compact.log` at all).
+— **2,568 gates over 20 days** (2026-06-26 → 08-21). At the time of measurement stoneforge was the
+only running agent with the hook in its `.claude/settings.json`; `financial-advisor` and
+`wartzar-bee` had neither the wiring nor a `compact.log`. (That is no longer true — see "What this
+changes": the hook is now wired by construction.)
 
 **Finding 1 — 87% of gates are `Read`, and 99.5% of those are images.** 2,241 Read gates; 2,230 were
 `.png`/`.jpg`; **11 were text**. The Read branch gates on *file bytes*, which is a valid proxy for
@@ -215,10 +217,19 @@ they would have produced then. 112 of 327 Bash gates were excluded (truncated at
 `detail` cap, or not read-only enough to replay). No live A/B of turn counts exists, because
 `enforce` has not run anywhere since June.
 
-**What this changes.** `spill` is the mode that should eventually be the default and `enforce` should
-not — but the first order of business is that the hook is wired on exactly one of five running
-agents, and its dominant branch was mis-aimed. Fix the aim (done), wire it wider in `report`, then
-promote `spill`.
+**What this changes.**
+1. The Read branch's aim is fixed (`VISUAL_EXT`).
+2. **The hook is now wired by construction**, the same fix `event_log` needed after the 27.5h
+   blind-fleet incident: added to all three templates, to the `bin/enclave` default settings writer,
+   and to `settings_migrate.ADD_HOOKS` so every already-deployed pod self-heals at tick boot. Only a
+   hook whose default is inert belongs in `ADD_HOOKS`, and `report` is inert. Note the deployment
+   path is live: pods mount the framework read-only and re-run `settings_migrate.py` every tick
+   boot, so this reached `financial-advisor` within one tick of the file being saved.
+3. `console.py`'s `context_explosion` / `prompt_creep` remediations now set `COMPACT_MODE=spill`
+   rather than `COMPACT_ENFORCE=1` — on this evidence, enforce is the wrong remedy.
+
+`report` stays the default mode. Promote `spill` to default only after the wider wiring has produced
+`compact.log` data from more than one workload.
 
 Artifacts: `scratchpad/spill-measure/` (`compact.log`, `replay.txt`, `replay-results.jsonl`,
 `analysis1-4.txt`).
