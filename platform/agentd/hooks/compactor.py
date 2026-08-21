@@ -33,6 +33,7 @@ import os, sys, json, re, time, pathlib, hashlib, shlex
 MAX_READ_BYTES = int(os.environ.get("COMPACT_MAX_READ_BYTES", "65536"))
 PREVIEW_BYTES = int(os.environ.get("COMPACT_PREVIEW_BYTES", "4096"))
 READ_LIMIT = int(os.environ.get("COMPACT_READ_LIMIT", "400"))
+SPILL_TTL_DAYS = float(os.environ.get("COMPACT_SPILL_TTL_DAYS", "7"))  # 0 disables pruning
 
 
 def _mode():
@@ -82,10 +83,30 @@ def _log(reason, tool, detail):
         pass  # logging must never break a tick
 
 
+def _prune_spills(d):
+    """Best-effort retention. Spill files are unbounded by construction — a single `cat` of a huge
+    log writes the whole thing to disk — and these pods run for days, so without this the win is
+    paid for in disk. Age-based, cheapest possible, and never allowed to raise: a failed prune must
+    not stop the call it was about to reshape."""
+    if SPILL_TTL_DAYS <= 0:
+        return
+    cutoff = time.time() - SPILL_TTL_DAYS * 86400
+    try:
+        for f in d.iterdir():
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _spill_path(detail):
     """A fresh, collision-proof spill file under state/.compact/ (docs/CONTEXT-COMPACTOR.md §A.3)."""
     d = _agent_dir() / "state" / ".compact"
     d.mkdir(parents=True, exist_ok=True)
+    _prune_spills(d)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     tag = hashlib.sha1(f"{detail}{os.getpid()}{time.time()}".encode()).hexdigest()[:8]
     return d / f"{stamp}-{tag}.txt"

@@ -171,8 +171,12 @@ the mode comparison came out decisively for spill: 75% of what this hook gates w
 bomb, so `enforce` would have burned 161 wasted turns to save nothing. Default still `report` until
 the hook is wired on more than one agent.
 
+Spill files are pruned by age on every spill (`COMPACT_SPILL_TTL_DAYS`, default 7, `0` disables).
+They are unbounded by construction — one `cat` of a huge log writes the whole thing — and these pods
+run for days, so without retention the context win is simply paid for in disk.
+
 Env: `COMPACT_MODE`, `COMPACT_PREVIEW_BYTES` (4096), `COMPACT_READ_LIMIT` (400),
-`COMPACT_MAX_READ_BYTES` (65536). Tests: `hooks/test_compactor.py` (45 checks, including executing
+`COMPACT_MAX_READ_BYTES` (65536), `COMPACT_SPILL_TTL_DAYS` (7). Tests: `hooks/test_compactor.py` (45 checks, including executing
 the rewritten command in a real shell and asserting the full output landed on disk).
 
 ### A.6 MEASURED, 2026-08-21 — and the Read branch was measuring the wrong thing

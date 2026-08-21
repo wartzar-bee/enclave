@@ -185,6 +185,20 @@ def main():
         rc8, _ = run(bash("cat big.json"), enforce=True, agent_dir=ad)
         check("COMPACT_ENFORCE=1 still enforces", rc8 == 2)
 
+        # --- spill files are pruned by age, so days-long pods do not fill their disk ---
+        sd = ad / "state" / ".compact"
+        sd.mkdir(parents=True, exist_ok=True)
+        stale = sd / "stale.txt"; stale.write_text("old")
+        os.utime(stale, (0, 0))  # epoch 0 => far older than any TTL
+        fresh = sd / "fresh.txt"; fresh.write_text("new")
+        run_out(bash("cat big.json"), agent_dir=ad, mode="spill")
+        check("prunes a stale spill file", not stale.exists())
+        check("keeps a fresh spill file", fresh.exists())
+        stale2 = sd / "stale2.txt"; stale2.write_text("old"); os.utime(stale2, (0, 0))
+        run_out(bash("cat big.json"), agent_dir=ad, mode="spill",
+                env_extra={"COMPACT_SPILL_TTL_DAYS": "0"})
+        check("TTL=0 disables pruning", stale2.exists())
+
         # --- visual reads are NEVER gated: byte size is not their context cost ---
         png = ad / "shot.png"
         png.write_bytes(b"\x89PNG" + b"x" * 600_000)
