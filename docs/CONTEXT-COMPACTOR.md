@@ -160,6 +160,13 @@ file is already its own locator, so nothing is copied. A call with no safe rewri
 backgrounded `… &`, where redirecting would change its semantics) **falls back to `enforce`, never to
 `report`**: spill is stricter than report, never looser.
 
+**Ordering note (security-relevant).** `guard.py` runs before `compactor.py` in the PreToolUse array,
+so guard adjudicates the ORIGINAL command and the rewritten one is not re-adjudicated. The rewrite is
+therefore deliberately minimal and fixed-shape: it appends a redirect into the agent's own
+`state/.compact/`, a `head -c`, an echo and `(exit $__rc)`, and never touches the agent's own argv.
+Keep it that way — any future rewrite that could add a *capability* to the command would be a guard
+bypass by construction.
+
 **Why this shape.** A refusal costs a whole turn *and* depends on the agent complying; a rewrite costs
 nothing and cannot be ignored. Adopted from DeepSeek Harness's `spill-policy` — which places the same
 idea *post*-execute, impossible here (A.2) — as the one mechanism worth taking from that harness
