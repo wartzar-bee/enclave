@@ -185,6 +185,19 @@ def main():
         rc8, _ = run(bash("cat big.json"), enforce=True, agent_dir=ad)
         check("COMPACT_ENFORCE=1 still enforces", rc8 == 2)
 
+        # --- visual reads are NEVER gated: byte size is not their context cost ---
+        png = ad / "shot.png"
+        png.write_bytes(b"\x89PNG" + b"x" * 600_000)
+        jpg = ad / "ref.JPG"
+        jpg.write_bytes(b"x" * 900_000)
+        for name, f in [("png", png), ("uppercase .JPG", jpg)]:
+            rc, _ = run(read(str(f)), enforce=True, agent_dir=ad)
+            check(f"enforce never blocks a visual read: {name}", rc == 0)
+            rcs, outs, _ = run_out(read(str(f)), agent_dir=ad, mode="spill")
+            check(f"spill never rewrites a visual read: {name}", rcs == 0 and outs.strip() == "")
+        rc, _ = run(read(str(big)), enforce=True, agent_dir=ad)
+        check("a large TEXT read is still gated", rc == 2)
+
         # --- robustness: malformed input fails open ---
         p = subprocess.run([sys.executable, HOOK], input=b"not json", capture_output=True)
         check("malformed stdin → allow", p.returncode == 0)

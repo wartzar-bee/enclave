@@ -166,13 +166,62 @@ idea *post*-execute, impossible here (A.2) — as the one mechanism worth taking
 (`ENCLAVE-DEEPSEEK-HARNESS-EVAL-2026-08-21.md`). The consumer already exists: a spill file is exactly
 what `pyexec.py` wants.
 
-**Not yet measured.** Ship-then-measure: `COMPACT_ENFORCE=1` vs `COMPACT_MODE=spill` on the same
-agent — refusal-retry turns, `cache_read`/tick, subscription-quota %. Do not promote the default
-until that run exists.
+**Measured 2026-08-21 — see §A.6.** 40.6% less context than no hook on the replayed Bash gates, and
+the mode comparison came out decisively for spill: 75% of what this hook gates was never a context
+bomb, so `enforce` would have burned 161 wasted turns to save nothing. Default still `report` until
+the hook is wired on more than one agent.
 
 Env: `COMPACT_MODE`, `COMPACT_PREVIEW_BYTES` (4096), `COMPACT_READ_LIMIT` (400),
 `COMPACT_MAX_READ_BYTES` (65536). Tests: `hooks/test_compactor.py` (45 checks, including executing
 the rewritten command in a real shell and asserting the full output landed on disk).
+
+### A.6 MEASURED, 2026-08-21 — and the Read branch was measuring the wrong thing
+
+First real measurement of this hook since it shipped. Substrate: `stoneforge`'s `state/compact.log`
+— **2,568 gates over 20 days** (2026-06-26 → 08-21), the only agent in the fleet where the hook is
+actually wired (`financial-advisor` and `wartzar-bee` have no `compact.log` at all).
+
+**Finding 1 — 87% of gates are `Read`, and 99.5% of those are images.** 2,241 Read gates; 2,230 were
+`.png`/`.jpg`; **11 were text**. The Read branch gates on *file bytes*, which is a valid proxy for
+text and a meaningless one for a vision read: a 587 KB PNG (the median gated file) costs ~1–2k
+tokens, not 587 KB of tokens. The "1,604 MB of context avoided" that falls out of summing those file
+sizes is not a real number.
+
+**Finding 2 — when enforce was briefly on (2026-06-26..28), it blocked 172 image reads.** On an art
+agent. The hook was stopping stoneforge from looking at its own QA renders (`wildlands.png`,
+`skull-reels-verify.png`, `emberfall-boot.png`, …). 173 of the 222 enforce-mode gates were Reads and
+172 of those were images. **Fixed:** `VISUAL_EXT` is now exempt from gating *and* from reshaping —
+injecting a line `limit` into an image Read would have been worse than the block.
+
+**Finding 3 — the Bash gate is right but far too eager, which is the case FOR spill.** 215 of the 327
+gated Bash commands were untruncated and safe to replay; re-run inside the pod, all 215 measured:
+
+| | bytes |
+|---|---|
+| raw, no hook | 755,044 |
+| under `spill` (4096 preview + ~190 B marker) | 448,341 — **40.6% less context** |
+| under `enforce` | 0 bytes of output, and **215 refused turns** |
+
+Real output: p50 **1,186 B**, mean 3,511 B, p90 7,486 B, max 54,294 B. **Only 54 of 215 (25%) ever
+exceeded the 4096-byte preview** — i.e. three quarters of what this hook calls a "context bomb"
+isn't one. That 75% is exactly where the two modes diverge: `spill` costs those calls ~190 bytes of
+marker each (30,590 B total, 4.1% of raw); `enforce` costs them **161 wasted turns**. A wrong spill
+is nearly free; a wrong refusal is a whole turn plus the agent's compliance. p90 = 7,486 B also says
+4096 is a well-placed preview — it bounds the tail without shredding the ordinary call.
+
+**Honest caveats.** One agent, one workload. Replay is not the original moment — the repo moved
+under these commands over 8 weeks, so 6 returned zero bytes and the rest are approximations of what
+they would have produced then. 112 of 327 Bash gates were excluded (truncated at the log's 300-char
+`detail` cap, or not read-only enough to replay). No live A/B of turn counts exists, because
+`enforce` has not run anywhere since June.
+
+**What this changes.** `spill` is the mode that should eventually be the default and `enforce` should
+not — but the first order of business is that the hook is wired on exactly one of five running
+agents, and its dominant branch was mis-aimed. Fix the aim (done), wire it wider in `report`, then
+promote `spill`.
+
+Artifacts: `scratchpad/spill-measure/` (`compact.log`, `replay.txt`, `replay-results.jsonl`,
+`analysis1-4.txt`).
 
 ---
 

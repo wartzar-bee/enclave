@@ -174,10 +174,21 @@ def _check_bash(inp, cmd):
               rewrite=lambda: _bash_spill_input(inp, cmd, reason))
 
 
+# Files whose CONTEXT cost is not their BYTE cost. A 600 KB PNG is a vision read worth ~1-2k
+# tokens, not 600 KB of tokens — gating it on file size is measuring the wrong thing, and
+# `limit`/`offset` are meaningless on it. Measured 2026-08-21: 2,230 of stoneforge's 2,241 Read
+# gates (99.5%) were .png/.jpg, and during the one window where enforce was on (2026-06-26..28)
+# this hook BLOCKED 172 image reads — i.e. it stopped an art agent from looking at its own QA
+# renders. See docs/CONTEXT-COMPACTOR.md §A.6.
+VISUAL_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tiff", ".tif", ".pdf"}
+
+
 def _check_read(inp):
     fp = inp.get("file_path") or ""
     if not fp or inp.get("limit"):  # an explicit limit is already the disciplined form
         return
+    if os.path.splitext(fp)[1].lower() in VISUAL_EXT:
+        return  # never gate or reshape a visual read (see VISUAL_EXT)
     try:
         size = os.path.getsize(fp)
     except OSError:
