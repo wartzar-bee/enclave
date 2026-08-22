@@ -49,7 +49,17 @@ def load_config(home):
 
 
 def goal_open_count(home, cfg):
-    """Count open items in the NEWEST goal file. None = no goal file yet (not the same as 0)."""
+    """Count open items in the NEWEST goal file. Returns (count, path, matched) — or None if no file.
+
+    `matched` says the metric FOUND something, which is not the same as the count being > 0. It exists
+    because exact-substring matching failed in the worst direction: a goal file written with
+    `**DIFFERS**` inside other emphasis matched nothing, counted 0, and 0 means goal_reached means
+    GREEN. A formatting slip read as success. Caller must never treat 0 as "reached" on the strength of
+    the count alone.
+
+    Matching is therefore forgiving: markdown emphasis stripped, case-insensitive, whole-word. The
+    metric describes the OPERATOR'S prose, and prose drifts — the parser bends, or the signal lies.
+    """
     pat = cfg.get("goal_file")
     if not pat:
         return None
@@ -61,7 +71,15 @@ def goal_open_count(home, cfg):
         text = pathlib.Path(hits[-1]).read_text(errors="replace")
     except OSError:
         return None
-    return sum(1 for l in text.splitlines() if token in l and not l.lstrip().startswith("#")), hits[-1]
+    bare = re.sub(r"[*_`~]", "", token).strip().lower()
+    rx = re.compile(r"(?<![0-9a-z])" + re.escape(bare) + r"(?![0-9a-z])")
+    n = 0
+    for l in text.splitlines():
+        if l.lstrip().startswith("#"):
+            continue
+        if rx.search(re.sub(r"[*_`~]", "", l).lower()):
+            n += 1
+    return n, hits[-1], n > 0
 
 
 def newest_proposal(home, cfg):
@@ -153,15 +171,19 @@ def compute(home, n=12, advance_cursor=True):
             except Exception:
                 pass
     goal = goal_open_count(home, cfg)
-    goal_n, goal_f = (goal if goal else (None, None))
+    goal_n, goal_f, matched_now = (goal if goal else (None, None, False))
     # Per-tick goal history is not recorded, so the metric-drop credit applies to the NEWEST tick
     # only (we compare against the previous invocation via a tiny cursor file).
     cur = home / "state" / ".progress-cursor.json"
-    prev_goal = None
+    prev_goal, metric_seen = None, False
     try:
-        prev_goal = json.loads(cur.read_text()).get("goal_open")
+        _c = json.loads(cur.read_text())
+        prev_goal, metric_seen = _c.get("goal_open"), bool(_c.get("metric_seen"))
     except Exception:
         pass
+    # "the metric matched at some point" is sticky. Without it, 0 is ambiguous between GOAL MET and
+    # METRIC BROKEN — and the ambiguity resolved to green, which is the wrong way for a detector to fail.
+    metric_ok = metric_seen or matched_now
     verdicts = []
     for i, r in enumerate(records):
         last = i == len(records) - 1
@@ -169,7 +191,7 @@ def compute(home, n=12, advance_cursor=True):
                                      prev_goal if last else None))
     if advance_cursor:
         try:
-            cur.write_text(json.dumps({"goal_open": goal_n}))
+            cur.write_text(json.dumps({"goal_open": goal_n, "metric_seen": metric_ok}))
         except OSError:
             pass
     stall_n = int(cfg.get("stall_ticks", 3))
@@ -178,7 +200,11 @@ def compute(home, n=12, advance_cursor=True):
     prop_f, prop_pending = newest_proposal(home, cfg)
     return {"config": "ok", "goal_open": goal_n, "goal_file": goal_f,
             "verdicts": verdicts, "stalled": stalled,
-            "goal_reached": goal_n == 0, "cause": why[0], "detail": why[1],
+            # goal_reached requires the metric to have PROVEN it can match. A metric that never
+            # matched anything is not a met goal; it is an instrument reading zero because it is broken.
+            "goal_reached": bool(goal_n == 0 and metric_ok),
+            "metric": "ok" if metric_ok else "unmatched",
+            "cause": why[0], "detail": why[1],
             "proposal_file": prop_f, "proposal_pending": prop_pending}
 
 

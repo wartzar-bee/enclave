@@ -501,3 +501,45 @@ def test_proposal_pending_self_clears():
 
 
 test_proposal_pending_self_clears()
+
+
+def test_goal_metric_cannot_fail_green():
+    """The metric is matched against OPERATOR PROSE, so it must bend (emphasis/case) and, when it
+    matches nothing, must NEVER report the goal as reached. 0-open and 0-because-broken are different."""
+    import json as _j, pathlib as _pl, tempfile as _tf, time as _t
+    from monitor import progress as _pr
+    from monitor import playbooks as _pb
+
+    def home(goal_text, metric="**DIFFERS**"):
+        d = _pl.Path(_tf.mkdtemp()) / "h"; (d / "state").mkdir(parents=True)
+        (d / "state" / "tick-scorecard.jsonl").write_text(_j.dumps({"ts": "x"}) + "\n")
+        (d / "state" / "progress-config.json").write_text(_j.dumps(
+            {"focus": ["work/**"], "goal_file": "state/GOAL.md", "goal_metric": metric}))
+        (d / "state" / "GOAL.md").write_text(goal_text)
+        return d
+
+    # emphasis/case drift must still count — this is the real ruling that counted 0
+    for txt in ("**DIFFERS** #8 scale\n", "**#8 — DIFFERS, understated**\n",
+                "- differs: #8 scale\n", "`DIFFERS` #8\n"):
+        r = _pr.compute(str(home(txt)), advance_cursor=False)
+        assert r["goal_open"] == 1, f"metric must survive prose drift: {txt!r} -> {r['goal_open']}"
+
+    # a metric that matches nothing must NOT read as a met goal
+    broken = home("- item one\n- item two\n", metric="NOSUCHTOKEN")
+    r = _pr.compute(str(broken), advance_cursor=False)
+    assert r["goal_open"] == 0 and r["metric"] == "unmatched", r
+    assert r["goal_reached"] is False, "0 from a never-matching metric MUST NOT read as goal reached"
+    snap, ctx = {"up": True, "tick": "running"}, {"now": _t.time()}
+    assert _pb.BY_KEY["progress_blind"].match({}, str(broken), snap, ctx), \
+        "an unmatched metric must ALARM, not sit silent at zero"
+
+    # a metric that HAS matched, now at zero, is a genuinely met goal
+    ok = home("**DIFFERS** x\n")
+    _pr.compute(str(ok))                                   # advances cursor, records metric_seen
+    (ok / "state" / "GOAL.md").write_text("all closed\n")  # operator closes everything
+    r = _pr.compute(str(ok), advance_cursor=False)
+    assert r["goal_open"] == 0 and r["goal_reached"] is True, f"genuinely-closed goal must read reached: {r}"
+    print("ok: goal metric bends to prose, and a broken metric alarms instead of reading green")
+
+
+test_goal_metric_cannot_fail_green()

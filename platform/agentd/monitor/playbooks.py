@@ -690,9 +690,22 @@ def _progblind_match(diag, home, snap, ctx):
         return False
     if not _jsonl_tail(home, "state/tick-scorecard.jsonl", 1):
         return False
-    return _prog(home).get("config") == "missing"
+    r = _prog(home)
+    # Two ways to be L4-blind: no config at all, or a goal_metric that matches NOTHING in the goal
+    # file. The second is nastier — it counts 0 open, and 0 used to mean "goal reached", so a broken
+    # instrument read as success. Both are "cannot grade", so both alarm here.
+    return r.get("config") == "missing" or r.get("metric") == "unmatched"
 
 def _progblind_diag(diag, home, snap, ctx):
+    r = _prog(home)
+    if r.get("metric") == "unmatched":
+        return {"cause": "goal_metric matches NOTHING in the goal file — the open-item count reads 0 "
+                         "because the instrument is broken, not because the goal is met",
+                "confidence": "high",
+                "evidence": f"goal_file={r.get('goal_file')}; metric never matched a line",
+                "recommendation": "fix goal_metric in state/progress-config.json to match how the goal "
+                                  "file is actually written, or fix the goal file's wording.",
+                "source": "deterministic"}
     return {"cause": "pod produces ticks but has no state/progress-config.json — L4 cannot tell "
                      "whether any of them move the goal; it reads as green while drifting",
             "confidence": "high",
