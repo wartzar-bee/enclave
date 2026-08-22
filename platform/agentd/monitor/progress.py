@@ -64,6 +64,32 @@ def goal_open_count(home, cfg):
     return sum(1 for l in text.splitlines() if token in l and not l.lstrip().startswith("#")), hits[-1]
 
 
+def newest_proposal(home, cfg):
+    """The agent's own PROPOSAL file (its self-graded verdict) vs the operator's DISPOSAL (goal_file).
+
+    Returns (path, pending) where pending means the newest proposal is NEWER than the goal file — i.e.
+    the agent has graded itself and no human has ruled on it yet. Self-clears the moment the operator
+    edits the goal file, so it needs no cursor and no 'seen' state of its own.
+
+    Configured via progress-config "proposal_glob". Absent = the agent has no proposal step; not a fault.
+    """
+    pat = cfg.get("proposal_glob")
+    if not pat:
+        return None, False
+    hits = globmod.glob(str(pathlib.Path(home) / pat))
+    if not hits:
+        return None, False
+    newest = max(hits, key=os.path.getmtime)
+    goal = cfg.get("goal_file")
+    ghits = sorted(globmod.glob(str(pathlib.Path(home) / goal)), key=os.path.getmtime) if goal else []
+    if not ghits:                       # no disposal file at all -> an ungraded proposal IS pending
+        return newest, True
+    try:
+        return newest, os.path.getmtime(newest) > os.path.getmtime(ghits[-1])
+    except OSError:
+        return newest, False
+
+
 def _in_focus(path, focus):
     # scorecard paths are agent-relative or absolute; match on both the path and its tail
     return any(fnmatch.fnmatch(path, g) or fnmatch.fnmatch("/" + path, g) for g in focus)
@@ -149,9 +175,11 @@ def compute(home, n=12, advance_cursor=True):
     stall_n = int(cfg.get("stall_ticks", 3))
     stalled = len(verdicts) >= stall_n and "forward" not in verdicts[-stall_n:]
     why = attribution(home, verdicts, records)
+    prop_f, prop_pending = newest_proposal(home, cfg)
     return {"config": "ok", "goal_open": goal_n, "goal_file": goal_f,
             "verdicts": verdicts, "stalled": stalled,
-            "goal_reached": goal_n == 0, "cause": why[0], "detail": why[1]}
+            "goal_reached": goal_n == 0, "cause": why[0], "detail": why[1],
+            "proposal_file": prop_f, "proposal_pending": prop_pending}
 
 
 def _selftest():

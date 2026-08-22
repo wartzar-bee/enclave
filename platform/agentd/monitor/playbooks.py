@@ -706,11 +706,34 @@ _progress_blind = Playbook(
     _progblind_match, _progblind_diag, intent=lambda *a: None, safe_to_autofix=False)
 
 
+# (17) proposal_pending — the agent graded ITSELF and no human has ruled on it. Deliberately its own
+# playbook and not folded into no_progress: a pod can be moving forward AND owe a disposal. Dedup is
+# free — the cause names the file, so a NEW proposal is a new alert and the same one never repeats.
+def _proposal_match(diag, home, snap, ctx):
+    if not snap.get("up") or _paused(home, snap):
+        return False
+    return _prog(home).get("proposal_pending") is True
+
+def _proposal_diag(diag, home, snap, ctx):
+    r = _prog(home)
+    f = pathlib.Path(r.get("proposal_file") or "?").name
+    return {"cause": f"agent-written verdict {f} is newer than the operator's disposal — awaiting a human ruling",
+            "confidence": "high",
+            "evidence": f"{f} > {pathlib.Path(r.get('goal_file') or '?').name}; open items: {r.get('goal_open')}",
+            "recommendation": "read the proposal and rule on it in the goal file — a self-graded verdict "
+                              "can be zeroed by omission, so the count alone is not evidence.",
+            "source": "deterministic"}
+
+_proposal_pending = Playbook(
+    "proposal_pending", "Self-graded verdict awaiting operator disposal", "low",
+    _proposal_match, _proposal_diag, intent=lambda *a: None, safe_to_autofix=False)
+
+
 ALL = [_memory_path_broken, _delegation_loop, _context_bloat,
        _container_down, _up_but_unreachable, _stalled, _kill_line,
        _zero_product, _churn_spike, _off_directive, _wander_rate,
        _self_certification, _scorecard_blind, _events_dark,
-       _no_progress, _progress_blind]
+       _no_progress, _progress_blind, _proposal_pending]
 
 BY_KEY = {p.key: p for p in ALL}
 

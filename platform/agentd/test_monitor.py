@@ -465,3 +465,39 @@ def test_l4_progress_playbooks():
 
 
 test_l4_progress_playbooks()
+
+
+def test_proposal_pending_self_clears():
+    """A self-graded verdict awaiting a human ruling. Asserts the SELF-CLEARING property: it needs no
+    cursor and no 'seen' state — ruling in the goal file is what silences it."""
+    import json as _j, os as _os, pathlib as _pl, tempfile as _tf, time as _t
+    from monitor import playbooks as _pb
+    snap, ctx = {"up": True, "tick": "running"}, {"now": _t.time()}
+    pp = _pb.BY_KEY["proposal_pending"]
+
+    d = _pl.Path(_tf.mkdtemp()) / "home"; (d / "state" / "qa").mkdir(parents=True)
+    (d / "state" / "tick-scorecard.jsonl").write_text(_j.dumps({"ts": "x"}) + "\n")
+    (d / "state" / "progress-config.json").write_text(_j.dumps(
+        {"focus": ["work/**"], "goal_file": "state/qa/OPEN.md", "goal_metric": "DIFFERS",
+         "proposal_glob": "state/qa/REF-*.md"}))
+    goal = d / "state" / "qa" / "OPEN.md"; goal.write_text("- DIFFERS x\n")
+    prop = d / "state" / "qa" / "REF-t1.md"; prop.write_text("MATCHES\n")
+
+    _os.utime(goal, (1000, 1000)); _os.utime(prop, (2000, 2000))
+    assert pp.match({}, str(d), snap, ctx), "proposal newer than the disposal MUST flag"
+
+    _os.utime(goal, (3000, 3000))          # operator rules on it
+    assert not pp.match({}, str(d), snap, ctx), "ruling in the goal file MUST self-clear it"
+
+    prop2 = d / "state" / "qa" / "REF-t2.md"; prop2.write_text("MATCHES\n")
+    _os.utime(prop2, (4000, 4000))
+    assert pp.match({}, str(d), snap, ctx), "a NEW proposal after a ruling MUST flag again"
+    assert "REF-t2.md" in pp.diagnose({}, str(d), snap, ctx)["cause"], \
+        "cause must name the file — that IS the dedup key, so a new proposal is a new alert"
+
+    (d / "state" / "paused").write_text("")
+    assert not pp.match({}, str(d), snap, ctx), "a paused pod owes nothing"
+    print("ok: proposal_pending flags a self-graded verdict and self-clears on the operator's ruling")
+
+
+test_proposal_pending_self_clears()
