@@ -58,7 +58,11 @@ PRESETS = {
     "no-claude-nvidia": {"BRAIN": "api",
                          "BRAIN_API_BASE": "https://integrate.api.nvidia.com/v1",
                          "BRAIN_API_KEY_ENV": "NVIDIA_API_KEY",
-                         "BRAIN_MODEL": "qwen/qwen3-next-80b-a3b-instruct",
+                         # 2026-08-22: was qwen/qwen3-next-80b-a3b-instruct — NVIDIA RETIRED it
+                         # 2026-07-27 (HTTP 410). catalog.SEED was fixed then; THIS copy was not,
+                         # so the fallback path still seeded a dead model. test_fleet_config now
+                         # asserts the two tables agree — see _PRESET_SEED_NOTE below.
+                         "BRAIN_MODEL": "openai/gpt-oss-120b",
                          "ESCALATION_MODEL": "minimaxai/minimax-m3",
                          "SUPERVISE": "off"},
 }

@@ -44,6 +44,21 @@ move between minor versions — pin a tag if that matters to you.
   something.
 
 ### Added
+- **Within-tick context compactor — a PreToolUse hook that reshapes a context-bombing tool call instead of
+  letting its output pile into the transcript.** The live cost driver on a long tick is not the context
+  window (that auto-compacts) but `cache_read` accumulation: every tool call's output is appended and the
+  whole transcript is re-sent every subsequent turn, so a 76-turn tick re-reads a 5.6M-token blob and the
+  read is the whole bill. The new **`COMPACT_MODE=spill`** (Tier-2) doesn't refuse an oversized call — it
+  **rewrites** it to run once, write the full output to a spill file under `state/.compact/`, and return a
+  bounded preview, so the call still succeeds but only the preview enters context (a refusal costs a whole
+  turn and depends on the agent complying; a rewrite costs nothing and cannot be ignored). Thresholds
+  `COMPACT_MAX_READ_BYTES` (65536), `COMPACT_PREVIEW_BYTES` (4096), `COMPACT_READ_LIMIT` (400 lines); spill
+  files auto-pruned after `COMPACT_SPILL_TTL_DAYS` (7, `0` disables). Three modes — `report` (log + allow),
+  `enforce` (block + steer, the legacy `COMPACT_ENFORCE=1` spelling), `spill` (rewrite + allow) — default
+  OFF and **fail-open**: any error allows the call, so the compactor can never wedge a tick. Visual reads
+  are never gated (99.5% of Read gates were images), and it is wired by construction on every pod rather
+  than by template accident; its rewrite is not re-adjudicated by the guard. Regression coverage:
+  `platform/agentd/hooks/test_compactor.py`. (`platform/agentd/hooks/compactor.py`, `docs/CONTEXT-COMPACTOR.md`)
 - **L4 progress verdicts reach the fleet monitor.** `monitor/progress.py` shipped tested and pushed
   with **zero callers** — only its own docstring and its test referenced it. Two playbooks
   (`no_progress`, `progress_blind`) put its verdicts on the existing dedup/policy/notify path.
@@ -52,7 +67,38 @@ move between minor versions — pin a tag if that matters to you.
   agent's self-graded verdict file is newer than the operator's disposal file. Self-clears on a
   ruling, so it carries no cursor and no state of its own.
 
+### Changed
+- **Chat turns are budgeted by PROGRESS, and a turn that runs out is handed to the work queue instead of
+  discarded.** `CHAT_TURN_TIMEOUT` (150s) was a flat wall-clock kill: a chat turn doing real research —
+  1 `WebFetch` + 5 `WebSearch` calls at ~25s each — was killed mid-flight and the operator's message was
+  thrown away, leaving only a ⚠️ line. It is now a **stall** budget that every stream event resets, with a
+  new absolute ceiling `CHAT_TURN_MAX` (900s, floored at the stall budget) that progress can never extend
+  — so a working turn keeps working, a hung turn still dies in 150s, and chat still cannot become an
+  unbounded work tick. On either clock the responder promotes the operator's message into `inbox.md` as a
+  `[tier:top][chat]` directive (long messages saved verbatim to `state/chat-handoff/`, directive points at
+  the file), so the tick-paced work loop finishes the ask and posts back to the thread; `CHAT_PROMOTE=0`
+  opts out. `_run_streaming` now returns `"TIMEOUT"` (was `None`) so out-of-budget is distinguishable from
+  spawn-failure, and the old catch-all "timed out or failed to start" reply is now a true start-failure
+  message. Tests: `test_chat_responder.py` 71/71 (progress-extends, stall-kills, ceiling-holds, handoff
+  lands in inbox). (`platform/agentd/chat_responder.py`, `docs/CHAT.md`)
+
 ### Fixed
+- **`progress` — an unset `goal_file` is `n/a`, not a broken metric.** Making a never-matching
+  `goal_metric` report `unmatched` also made "no goal file configured at all" fire `progress_blind`
+  on a correctly-configured pod — a legitimate state (no directive has defined one yet) read as a
+  broken instrument. Three states now: `n/a`, `ok`, `unmatched`. `goal_reached` likewise requires a
+  configured goal; unconfigured is not achieved. Found the first time the check ran against a SECOND
+  agent, not by a unit test. (`platform/agentd/monitor/progress.py`)
+- **Two monitor alerts that fired on healthy pods.** `churn_spike` claimed a pod was "spinning on its
+  own files INSTEAD OF producing" on a tick that shipped SIXTEEN product files — it counted per-file
+  rewrites with no reference to output, so producing could not falsify a finding whose whole claim was
+  about not producing. It is now proportional: real output must at least match the worst single file's
+  rewrite count. `stalled` fired on a pod minutes after a deliberate resume, because a paused pod's
+  tick age spans the entire pause; that playbook is `safe_to_autofix=restart`, so in autofix mode it
+  would have restarted a healthy pod someone had just brought back, and only an empty
+  `autofix_allowlist` stopped it. It now measures from `state/.resumed-at` when present — not a
+  permanent exemption: resumed 7h ago with still no tick is a real stall. Both found by watching the
+  monitor run against live pods, not by test. (`platform/agentd/monitor/`)
 - **A goal metric can no longer fail green.** `goal_metric` was an exact substring match against
   prose a human writes, and `goal_reached` was `goal_open == 0` — so a ruling whose emphasis drifted
   matched nothing, counted zero, and read as GOAL MET. Matching now strips markdown emphasis, is
@@ -65,8 +111,6 @@ move between minor versions — pin a tag if that matters to you.
 - **The scorecard selftest counts what it ran.** It printed a hardcoded `(12/12)` — unchanged after
   two checks were added, which is indistinguishable from a test that never executed. Now `24/24`;
   the literal had been wrong by 2×.
-
-### Fixed
 - **`preflight.probe_image` verifies the key WORKS, not that a file exists.** It returned
   `p.exists()`, so through the whole stretch where the game-dev pod's OpenRouter key answered 401 on every
   `gen.py` call the capability board still read `image: ok, "openrouter key present"` — the false alarm

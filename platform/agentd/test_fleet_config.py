@@ -112,5 +112,20 @@ ok(any(f.name.endswith(".dotenv") for f in hist4), "history snapshots .env too")
 # audit log written
 ok(pathlib.Path(os.environ["ENCLAVE_FLEET_AUDIT"]).exists(), "audit log written")
 
+
+# ── preset seed sync ────────────────────────────────────────────────────────────────────────────
+# fleet_config.PRESETS and catalog.SEED["presets"] are TWO COPIES of one table with nothing keeping
+# them in sync — which is exactly how the retired qwen/qwen3-next-80b id (NVIDIA HTTP 410, 2026-07-27)
+# survived in the fallback seed for weeks after catalog.py dropped it. Same shape as delegate.py's
+# stale KIND_MODEL table and .publish-audit-allow's missing enforcer. This IS the enforcer.
+import catalog as _cat
+_a, _b = fc.PRESETS, _cat.SEED["presets"]
+ok(set(_a) == set(_b),
+   f"preset NAMES diverged: only in fleet_config={set(_a) - set(_b)}, only in catalog={set(_b) - set(_a)}")
+for _n in sorted(set(_a) & set(_b)):
+    ok(_a[_n] == _b[_n],
+       f"preset '{_n}' diverged: fleet_config={_a[_n]} vs catalog={_b[_n]}")
+
 print(f"\n{'OK' if F == 0 else 'FAILED'} {P} passed, {F} failed")
 sys.exit(1 if F else 0)
+

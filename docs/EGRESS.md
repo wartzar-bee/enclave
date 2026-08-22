@@ -7,10 +7,14 @@ connections to IPs that didn't come from an allowed name are dropped. `U=$host; 
 URLs, custom resolvers (`dig @8.8.8.8`), and direct-IP connects all fail.
 
 Sidecar: [OpenSandbox egress](https://github.com/opensandbox-group/OpenSandbox/tree/main/components/egress)
-(Apache-2.0). Source-reviewed and behavior-verified 2026-08-15 (see the operator's
-ENCLAVE-OPENSANDBOX-EVAL doc); pinned by image digest in `docker-compose.egress.yml`; cosign-verifiable.
+(Apache-2.0). Source-reviewed and behavior-verified 2026-08-15 against the four probes in *Verify*
+below (reproduce them yourself before trusting it); pinned by image digest in
+`docker-compose.egress.yml` and cosign-verifiable against the upstream signature.
 
 ## Enable (per deployment)
+
+Requires **Docker Compose v2.24+** — the agent service uses the `!reset` override tag
+(`extra_hosts: !reset []`); older Compose fails the merge with an opaque YAML error.
 
 ```sh
 cd <deployment>                                        # the dir with docker-compose.yml + .env
