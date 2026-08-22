@@ -24,7 +24,7 @@ jobs:
   gitleaks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0     # REQUIRED: a shallow clone silently scans almost nothing
       - name: gitleaks (full history, all refs)
@@ -35,7 +35,7 @@ jobs:
   codeql:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: github/codeql-action/init@6d786de4d6f3531a740e445b53a42b622bbbace8 # v3
         with:
           languages: python, javascript
@@ -44,7 +44,7 @@ jobs:
   publish-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # .publish-audit-allow had NO enforcer for its whole life — an allowlist for a scanner that did
       # not exist. This is the scanner. It fails closed if the allow file goes missing.
       - run: python3 tools/publish_audit.py
