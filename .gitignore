@@ -30,3 +30,7 @@ RESUME-DELEGATION.md
 # override carries per-deployment mounts and sidecar wiring. Neither belongs in the public tree.
 egress-policy.json
 docker-compose.override.yml
+
+# Operator-supplied private terms for tools/publish_audit.py. Naming the private things it
+# protects, it must never be published — the scanner would become the leak.
+.publish-audit-deny

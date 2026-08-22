@@ -23,18 +23,13 @@ services:
     container_name: ${AGENT_ID:-enclave-agent}
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # NOT read_only: the agent legitimately writes /agent, /work and /tmp; a read-only rootfs would
+    # need a tmpfs for each. Tracked, not done — the remaining gap in this service's hardening.
     # Resource ceilings (2026-07-04): an uncapped agent container can exhaust the HOST (RAM freeze /
     # fork bomb / CPU starvation of sibling bridges). Generous for real work, fatal for runaways.
     mem_limit: ${AGENT_MEM_LIMIT:-8g}
     cpus: ${AGENT_CPUS:-4}
     pids_limit: ${AGENT_PIDS_LIMIT:-512}
-    # Container hardening. NOT read_only: the agent legitimately writes /agent, /work and /tmp, and a
-    # read-only rootfs would need tmpfs for each — tracked, not done. no-new-privileges + cap_drop are
-    # free: nothing in the runtime needs setuid escalation or a Linux capability.
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     extra_hosts: ["host.docker.internal:host-gateway"]   # reach host tools on Linux too
     env_file:                                             # CLAUDE_CODE_OAUTH_TOKEN (BRAIN=claude) — optional so api/local don't need it
       - path: ${SECRETS_DIR:-./secrets}/anthropic.env

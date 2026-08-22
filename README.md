@@ -5,19 +5,26 @@ OpenAI-compatible and local brains). Run an autonomous agent in a hardened conta
 credentials and a local web chat — `docker compose up`, talk to it in your browser.
 
 > Note on defaults: the container boundary (dropped capabilities, no-new-privileges, read-only
-> secret mounts, no inbound ports) is **always** enforced. The network egress allowlist is
-> **report-only** until you set `GUARD_EGRESS_ENFORCE=1`, and agents run with `PERMISSION=dangerous`
-> by default (the tool guard still fires — see [SECURITY.md](SECURITY.md)).
+> secret mounts, no inbound ports) is **always** enforced. `enclave new` now also scaffolds
+> **kernel-level egress default-deny** and generates a web-chat token; the text-matched allowlist
+> remains advisory and bypassable, so treat it as an audit trail, not a wall. Agents run with
+> `PERMISSION=dangerous` by default — it is required for unattended autonomy, and preflight's
+> `containment` check warns when its boundaries (scoped `SECRETS_DIR`, kernel egress) are missing.
+> See [SECURITY.md](SECURITY.md).
 
 **What "constrained" means here, precisely** (read this before you trust it with anything):
 - **Architectural, always on** — the agent runs with `--cap-drop=ALL --security-opt=no-new-privileges`
   and no inbound ports; it reads exactly the mounts you gave it and a **read-only** `secrets/`. It
   cannot see the rest of your disk, and a prompt injection does not change that.
-- **Policy, report-only by DEFAULT** — the egress allowlist
+- **Policy, advisory** — the text-matched egress allowlist
   (`platform/agentd/hooks/policies/default-egress.json`) **logs** disallowed hosts rather than
-  blocking them until you set **`GUARD_EGRESS_ENFORCE=1`**. We ship it off so a first run doesn't
-  fail in a way you can't diagnose; run it **on** for anything real. Verify which mode you are in:
+  blocking them until you set **`GUARD_EGRESS_ENFORCE=1`** — and even enforcing, it is defeated by
+  indirection (`U=$host; curl $U`), so it is an audit trail. Verify the mode:
   `grep enforce home/state/egress-policy.log`.
+- **The real network wall** — `docker-compose.egress.yml`: a sidecar owning the agent's netns with a
+  DNS proxy + nftables default-deny that command-string tricks cannot walk around. `enclave new`
+  scaffolds it (policy file + `EGRESS_TOKEN`); `--unsafe-network` opts out. It used to be a 4-step
+  manual ritual, which meant in practice it was off everywhere — the activation cost *was* the hole.
 
 So: the container boundary is enforced by the kernel, the *network* boundary is enforced only when
 you turn it on.
@@ -184,10 +191,16 @@ It's a real Claude-Code conversation in the browser — only the UI differs:
   `CHAT_RESPONDER=off`. **Full reference: `docs/CHAT.md`.**
 
 ## Why it's safe (verifiable by reading code, not trusting us)
-- **Container isolation** — `--cap-drop=ALL --security-opt=no-new-privileges`; no inbound ports on the agent.
+- **Container isolation** — `--cap-drop=ALL --security-opt=no-new-privileges`; no inbound ports on
+  the agent. The chat UI refuses to start on a non-loopback bind without `WEB_CHAT_TOKEN`.
+- **No credential has ever been committed** — verified 2026-08-22 across all 325 commits, every ref
+  and tag (`gitleaks git . --log-opts="--all"`); gitleaks + CodeQL + a publish audit now run in CI.
 - **PreToolUse guard** (`platform/agentd/hooks/guard.py`) — fires even under `--dangerously-skip-permissions`;
   blocks `git`, foreign-secret reads, and (opt-in profiles) cloud writes / production mutations.
-- **Scoped secrets** — a read-only `./secrets/` mount; the agent can't reach anything else.
+- **Scoped secrets** — a read-only `SECRETS_DIR` mount (default `./secrets/`); the agent can't reach
+  the rest of your disk. Note what `:ro` does and does not buy: it stops WRITES, never reads, so the
+  agent can read every file in that directory. Point `SECRETS_DIR` at a per-agent folder holding only
+  that agent's credentials — the mount is only as scoped as the directory is.
 - **Scoped knowledge** — semantic search is fronted by a per-agent gateway with a collection allowlist.
 - **Brain-agnostic** — `BRAIN=claude | api | local | optimize`; same container, same guard, one env var.
   `optimize` is the adaptive cost router: it runs Claude (free at the margin) while the 5h/7d cap has

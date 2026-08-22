@@ -72,5 +72,27 @@ def main():
     raise SystemExit(1 if failed else 0)
 
 
+def test_fail_closed():
+    """The chat UI is full control of a PERMISSION=dangerous agent. It bound 0.0.0.0 unconditionally
+    and the token defaulted to empty, with NOTHING cross-checking the two — the only thing between a
+    non-loopback WEB_CHAT_BIND and an open door was the Docker publish. These assert the gate itself,
+    because the manual check that first verified it does not survive the next refactor."""
+    ok = True
+    for bind, expect in [("127.0.0.1:8888", True), ("localhost:8888", True), ("::1:8888", True),
+                         ("127.0.1.1:8888", True), ("0.0.0.0:8888", False),
+                         ("192.168.1.10:8888", False), ("", False), (None, False)]:
+        got = W._loopback_only(bind)
+        if got is not expect:
+            print(f"FAIL _loopback_only({bind!r}) = {got}, want {expect}"); ok = False
+    # unset must read as EXPOSED: absent evidence of loopback is not evidence of loopback, and the
+    # whole point of the gate is the case where someone changed the bind.
+    if W._loopback_only(None) or W._loopback_only(""):
+        print("FAIL unset/blank bind must not be treated as loopback"); ok = False
+    print(("ok" if ok else "FAIL") + ": web_chat fail-closed bind classification")
+    return ok
+
+
 if __name__ == "__main__":
+    if not test_fail_closed():
+        raise SystemExit(1)
     main()

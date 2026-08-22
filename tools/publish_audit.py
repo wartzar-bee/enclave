@@ -17,18 +17,44 @@ import json, pathlib, re, subprocess, sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ALLOW = ROOT / ".publish-audit-allow"
 
-# Studio-specifics that must never appear in the public tree. Each is a leak of the private side.
+# GENERIC leak classes only. The private terms deliberately do NOT live here: this file is PUBLIC,
+# so a hardcoded list of private pod names, fleet roots and company names would publish exactly what
+# it is meant to protect — the scanner would be the leak. (It was, on first write. Caught by running
+# the scanner on itself.)
+#
+# Private terms come from `.publish-audit-deny` (gitignored, operator-supplied): one regex per line,
+# `#` comments. Absent = generic checks still run and the scanner says the private list is off, so a
+# fresh clone is honest about what it did and did not check rather than silently passing.
 PATTERNS = {
-    # wartzar-bee is deliberately absent: it is the GitHub org that OWNS this repo, so it belongs in
-    # clone URLs, issue links and the toolkit section. Flagging it would be flagging the repo's address.
-    "pod-name":      r"\b(stoneforge|logan-cross|goodnight-tales|ideas-scout|channel-lab|"
-                     r"agent-pas-ops|market-sentinel|financial-advisor)\b",
-    # `/Users/you/`, `/Users/me/`, `/Users/<name>/` are documentation placeholders, not a real checkout.
+    # `/Users/you|me|user/` and `/Users/<...>` are documentation placeholders, not a real checkout.
     "operator-path": r"/Users/(?!you/|me/|user/|<)[a-z0-9._-]+/|/home/(?!agent/|user/)[a-z0-9._-]+/Dev/",
-    "company":       r"\b(peter\s*(&|and)\s*sons|peterandsons|spinart|pas-agents|PaS-repositories)\b",
-    "private-repo":  r"\b(agent-workspace|~/Dev/private)\b",
 }
+DENY_FILE = ROOT / ".publish-audit-deny"
+
+
+def load_deny():
+    """Operator's private terms. Returns (patterns, present)."""
+    if not DENY_FILE.exists():
+        return {}, False
+    out = {}
+    for i, line in enumerate(DENY_FILE.read_text(errors="replace").splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            re.compile(line)
+        except re.error:
+            continue
+        out[f"private:{i}"] = line
+    return out, True
+
+
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "dist", "build"}
+# This scanner's OWN test must contain the strings it detects in order to test that it detects them.
+# Narrow, explicit, and by exact path — NOT a wildcard for "tests", because a real leak in a test file
+# is still a published leak. (The same self-reference bit .gitleaksignore: documenting a false positive
+# by quoting it made the documentation the next finding.)
+SKIP_EXACT = {"platform/agentd/test_publish_audit.py"}
 SKIP_SUFFIX = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".pdf", ".zip", ".woff", ".woff2"}
 
 
@@ -56,7 +82,8 @@ def tracked_files():
         if not rel:
             continue
         p = ROOT / rel
-        if p.suffix.lower() in SKIP_SUFFIX or set(pathlib.PurePath(rel).parts) & SKIP_DIRS:
+        if (p.suffix.lower() in SKIP_SUFFIX or rel in SKIP_EXACT
+                or set(pathlib.PurePath(rel).parts) & SKIP_DIRS):
             continue
         yield rel, p
 
@@ -64,8 +91,9 @@ def tracked_files():
 def audit():
     allow = load_allow()
     if allow is None:
-        return None, []
-    rx = {k: re.compile(v, re.I) for k, v in PATTERNS.items()}
+        return None, [], False
+    deny, deny_present = load_deny()
+    rx = {k: re.compile(v, re.I) for k, v in {**PATTERNS, **deny}.items()}
     violations = []
     for rel, p in tracked_files():
         try:
@@ -83,11 +111,11 @@ def audit():
                     violations.append({"file": rel, "line": i, "kind": kind,
                                        "match": m.group(0)[:60], "text": line.strip()[:120]})
                     break
-    return allow, violations
+    return allow, violations, deny_present
 
 
 def main():
-    allow, violations = audit()
+    allow, violations, deny_present = audit()
     if allow is None:
         print("publish-audit: .publish-audit-allow missing or unparseable — FAILING CLOSED", file=sys.stderr)
         return 2
@@ -103,7 +131,8 @@ def main():
         print("\nFix them — do NOT add them to .publish-audit-allow. That file is for this product's "
               "own vocabulary, not for excusing a real leak (see its header).")
     else:
-        print(f"publish-audit: clean ({len(allow)} allow-rules applied)")
+        note = "" if deny_present else "  [no .publish-audit-deny — private-term check OFF]"
+        print(f"publish-audit: clean ({len(allow)} allow-rules applied){note}")
     return 1 if violations else 0
 
 

@@ -6,6 +6,66 @@ move between minor versions — pin a tag if that matters to you.
 
 ## [Unreleased]
 
+### ⚠ BREAKING
+- **`web_chat` refuses to start on a non-loopback bind with an empty `WEB_CHAT_TOKEN`** — including
+  when `WEB_CHAT_BIND` is unset, because absent evidence of loopback is not evidence of loopback.
+  The server binds `0.0.0.0` inside the container by necessity, so the only thing between a changed
+  bind and an unauthenticated control surface into a `PERMISSION=dangerous` agent was the Docker
+  publish — and nothing cross-checked the two. **A deployment whose `docker-compose.yml` predates
+  this must refresh it** so `WEB_CHAT_BIND` reaches the container; otherwise the gate sees it unset
+  and refuses. Fix either way: set `WEB_CHAT_TOKEN`, or publish on `127.0.0.1`.
+
+### Security
+- **`enclave new` generates a web-chat token** instead of defaulting to empty. `--token ""` still
+  opts out explicitly.
+- **`SECRETS_DIR` scopes the credential mount.** `:ro` stops writes, never reads — a compromised
+  agent reads every file it can see, so "scoped credentials" was only ever true if the *directory*
+  was scoped. Default stays `./secrets` for compatibility; `SECRETS_SCOPE` declares what an agent
+  needs.
+- **Kernel egress default-deny is scaffolded by `enclave new`** (`--unsafe-network` opts out). It was
+  never "off by default" — it was off unless you performed a four-step ritual, and that activation
+  cost was the vulnerability.
+- **`preflight.cfg_containment`** — `PERMISSION=dangerous` is KEPT (an approval-gated unattended pod
+  deadlocks; `cfg_permission` already errors without it). Instead this asserts the boundaries that
+  make it survivable and warns while either is missing.
+- **`.claude` volume reclassified as credential-bearing** — it holds Claude Code OAuth state, not
+  just chat threads. Never snapshot or export it with agent state.
+- **`tools/publish_audit.py`** — `.publish-audit-allow` had shipped with **no enforcer**; grep found
+  exactly one reference to it, itself. An allowlist for a scanner that does not exist reads as a
+  working control, which is worse than none. This is the scanner, in CI, failing closed if the allow
+  file goes missing. Private terms load from a gitignored `.publish-audit-deny`: hardcoding them
+  would publish the very names the scanner protects.
+- **Supply chain** — GitHub Actions SHA-pinned, `ubuntu:24.04` pinned by digest, `pyyaml`/`requests`
+  version-pinned, Dependabot added, CodeQL + gitleaks workflows added. `egress-policy.json` and
+  `docker-compose.override.yml` are now gitignored (deployment-local; they name internal hosts).
+- **Verified: no credential has ever been committed** — 325 commits, every ref and tag. The two hits
+  are false positives (a deliberately-fake key in `secret_scan.py`'s own selftest fixture; the word
+  "credential" in README prose), pinned by fingerprint in `.gitleaksignore` so a *new* finding means
+  something.
+
+### Added
+- **L4 progress verdicts reach the fleet monitor.** `monitor/progress.py` shipped tested and pushed
+  with **zero callers** — only its own docstring and its test referenced it. Two playbooks
+  (`no_progress`, `progress_blind`) put its verdicts on the existing dedup/policy/notify path.
+  `no_progress` is deliberately unremediable: a restart cannot fix working on the wrong thing.
+- **`proposal_pending`** — a new optional `progress-config` field `proposal_glob`. Pending = the
+  agent's self-graded verdict file is newer than the operator's disposal file. Self-clears on a
+  ruling, so it carries no cursor and no state of its own.
+
+### Fixed
+- **A goal metric can no longer fail green.** `goal_metric` was an exact substring match against
+  prose a human writes, and `goal_reached` was `goal_open == 0` — so a ruling whose emphasis drifted
+  matched nothing, counted zero, and read as GOAL MET. Matching now strips markdown emphasis, is
+  case-insensitive and whole-word; a metric that has never matched reports `unmatched` and fires
+  `progress_blind` instead of reading green.
+- **`state/plan.md` is the PLAN GATE, not churn** — the fourth framework-mandated file mistaken for
+  spinning. A plan rewritten many times *within* one tick still trips `CHURN_TICK_FIRE`.
+- **`progress.compute(advance_cursor=False)`** — pollers no longer consume the goal-drop credit
+  before the agent's own tick can be graded with it.
+- **The scorecard selftest counts what it ran.** It printed a hardcoded `(12/12)` — unchanged after
+  two checks were added, which is indistinguishable from a test that never executed. Now `24/24`;
+  the literal had been wrong by 2×.
+
 ### Fixed
 - **`preflight.probe_image` verifies the key WORKS, not that a file exists.** It returned
   `p.exists()`, so through the whole stretch where the game-dev pod's OpenRouter key answered 401 on every
