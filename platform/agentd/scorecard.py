@@ -280,8 +280,14 @@ def collect(base, t0, now=None):
     # 10-tick window and left demopod as the last pod showing churn_spike, on a file it was
     # instructed to write. Three bookkeeping files have now been mistaken for churn; the rule is: if
     # the FRAMEWORK asks for it once per tick, its cadence is compliance, not spinning.
+    # state/plan.md is the FOURTH file to be mistaken for churn, and it fits the rule above exactly:
+    # the PLAN GATE in tick.txt ("write/update state/plan.md — goal · approach · touch-list") makes one
+    # write per tick compliance. stoneforge alarmed on evidence that was literally {plan.md: 1} while it
+    # was executing a correct multi-tick plan. A plan REWRITTEN many times inside one tick is still
+    # churn — CHURN_TICK_FIRE catches that; it is the once-per-tick cadence that is not.
     BOOKKEEPING = {"state/tick-status.json", "state/.heartbeat", "state/recall.md",
-                   "state/effective-config.json", "state/handoff.md", "state/chat-reply.md"}
+                   "state/effective-config.json", "state/handoff.md", "state/chat-reply.md",
+                   "state/plan.md"}
     churn_all = {}
     for p, n in ev_writes.items():
         if kpi and _match_any(base, p, kpi):
@@ -480,9 +486,13 @@ def summary(base, n=20):
 
 # ── selftest: fixtures replay a real recorded day ──────────────────────────────
 def _selftest():
-    fails = []
+    fails, ran = [], []
 
     def check(name, cond):
+        # `ran` exists because the summary used to print a HARDCODED "(12/12)" — it said 12/12 after
+        # two checks were added, which is exactly what a test that never executed looks like. A count
+        # that cannot move is not a count.
+        ran.append(name)
         if not cond:
             fails.append(name)
 
@@ -550,6 +560,16 @@ def _selftest():
         rec4 = collect(b4, t4)
         check("chat-reply.md is compliance, not churn", "state/chat-reply.md" not in rec4["churn"])
         check("chat-reply.md alone does not raise the alarm", rec4["churn_alarm"] is False)
+        # plan.md — the FOURTH. The tick.txt PLAN GATE mandates it once per tick, so the cadence is
+        # compliance; stoneforge alarmed on evidence that was literally {plan.md: 1}.
+        b5 = b / "_plan"; (b5 / "state").mkdir(parents=True)
+        (b5 / "state" / "scorecard-config.json").write_text(json.dumps({"kpi_artifacts": ["content/**/*.md"]}))
+        t5 = int(time.time()) - 60
+        for i in range(9):
+            _ev(b5, t5 + 5 + i, "Write", "state/plan.md")
+        rec5 = collect(b5, t5)
+        check("plan.md once-per-tick is compliance, not churn", "state/plan.md" not in rec5["churn"])
+        check("plan.md alone does not raise the alarm", rec5["churn_alarm"] is False)
         check("handoff.md alone does not raise the alarm", rec2["churn_alarm"] is False)
         # …but rollup.md must STILL be caught: rewriting it instead of producing is the pathology.
         b3 = b / "_rollup"; (b3 / "state").mkdir(parents=True)
@@ -593,7 +613,8 @@ def _selftest():
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "evidence": "y | verify PASSED: test -f x"}]))
         rec = collect(b, t0)
         check("done-verified", rec["work_done"] == 1 and rec["work_done_verified"] == 1)
-    print(("selftest FAIL: " + ", ".join(fails)) if fails else "selftest OK (12/12)")
+    print(("selftest FAIL (%d/%d): " % (len(ran) - len(fails), len(ran)) + ", ".join(fails))
+          if fails else "selftest OK (%d/%d)" % (len(ran), len(ran)))
     return 1 if fails else 0
 
 
