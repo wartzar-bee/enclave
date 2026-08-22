@@ -315,6 +315,47 @@ def _continue_loop(d, ticks, external=False, work=True):
     return lp
 
 
+def test_pace_from_estimate_is_pure_and_conservative():
+    """A big estimate sprints at the floor; a small or missing one changes nothing."""
+    from agentloop import pace_from_estimate as pfe
+    assert pfe(120, 120, 900, 30) == 120          # mid-job → floor
+    assert pfe(30, 120, 900, 30) == 120           # exactly at the threshold
+    assert pfe(5, 120, 900, 30) == 900            # nearly done → ordinary cooldown
+    for bad in (None, "", "abc", 0, -10, {}):     # no usable estimate → caller unchanged
+        assert pfe(bad, 120, 900, 30) is None
+
+
+def test_estimate_sprints_a_mid_job_pod_at_the_floor():
+    """The loop could pace but never SIZE: six hours of queued work and one loose end both idled
+    CONTINUOUS_COOLDOWN. A productive pod declaring real work left now re-fires at MIN_COOLDOWN."""
+    with tempfile.TemporaryDirectory() as d:
+        lp = _continue_loop(d, [{"product": 5, "tooling": 0}])
+        write_status(d, {"status": "continue", "remaining_min": 180})
+        t = time.time()
+        lp._after(0)
+        assert t + lp.min_cooldown - 2 <= lp.next_heartbeat <= t + lp.min_cooldown + 2
+
+
+def test_estimate_cannot_outrank_the_scorer():
+    """The 2026-07-22 invariant holds: claiming three hours of work while shipping nothing still
+    decays. An estimate is a self-declaration, and self-declarations never beat the measurement."""
+    with tempfile.TemporaryDirectory() as d:
+        lp = _continue_loop(d, [{"product": 0, "tooling": 0}] * 3)
+        write_status(d, {"status": "continue", "remaining_min": 180})
+        t = time.time()
+        lp._after(0)
+        assert lp.next_heartbeat >= t + lp.cont_cooldown * 2 - 2
+
+
+def test_small_estimate_leaves_the_ordinary_cooldown_alone():
+    with tempfile.TemporaryDirectory() as d:
+        lp = _continue_loop(d, [{"product": 5, "tooling": 0}])
+        write_status(d, {"status": "continue", "remaining_min": 3})
+        t = time.time()
+        lp._after(0)
+        assert t + lp.cont_cooldown - 2 <= lp.next_heartbeat <= t + lp.cont_cooldown + 2
+
+
 def test_declared_continue_decays_after_three_unproductive_ticks():
     """demopod's own status line said it was "fully outward-blocked" pending an operator action
     and it still fired every 15 min; scoutpod ran 10 scorer-confirmed zero-product ticks at full

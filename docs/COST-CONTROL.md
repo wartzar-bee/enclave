@@ -55,6 +55,16 @@ Warm-session nets in `runtime.sh` (pre-tick): occupancy floor (`CTX_HARD_TOKENS`
 marker `{since, waiting_on}`, waking instantly on inbox/comms. Blocked exists so an agent waiting on
 something external never busy-waits paid ticks (8 consecutive Opus "still blocked" ticks motivated it).
 
+**Work estimation / sprint pacing (2026-08-22).** The loop could always pace but never SIZE: six hours
+of queued work and one loose end both idled `CONTINUOUS_COOLDOWN` (15m), which is the "works a minute,
+rests half an hour" rhythm. A `continue` may now carry the agent's own estimate of the work LEFT on the
+job it is mid-way through: `{"status":"continue","remaining_min":180}`. At or above
+`SPRINT_ESTIMATE_MIN` (default 30) the loop re-fires at `MIN_COOLDOWN` instead of the cooldown; below
+it, nothing changes. Absent or unparseable → existing behaviour, so this can only make a pod faster
+while it is genuinely mid-job, never slower, and never below the floor. The estimate is a
+self-declaration and does **not** outrank the scorer — a pod claiming three hours and shipping nothing
+still decays (`pace_from_estimate` is pure and unit-tested; the streak override is applied after it).
+
 ## Metering coverage
 Work ticks (`usage_capture.py`) AND chat turns (`chat_responder.py`, `reason="chat"`) append to
 `state/usage.jsonl` — chat used to be invisible spend. The capture also closes

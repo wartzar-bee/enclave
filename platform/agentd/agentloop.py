@@ -50,6 +50,36 @@ def due(now, next_heartbeat, inbox_changed, comms_pending, defer_until):
     return None
 
 
+def pace_from_estimate(remaining_min, min_cooldown, cont_cooldown, sprint_min):
+    """PURE sprint pacing (unit-tested, 2026-08-22 work estimation): how long to wait before the next
+    tick, given the agent's own estimate of the work REMAINING on the job it is in the middle of.
+
+    The loop could always pace, but never SIZE. Every cooldown was a fixed constant, so a pod with six
+    hours of queued work and a pod with one loose end both idled CONTINUOUS_COOLDOWN (15m default)
+    between ticks — the observed "works for a minute, rests for half an hour" rhythm on a pod that was
+    mid-build. The docstring's own answer was "for a genuine budgeted build-sprint set
+    CONTINUOUS_COOLDOWN lower deliberately": a manual, per-agent, easily-forgotten step that no live
+    pod had ever taken.
+
+    Contract: the tick writes `remaining_min` into state/tick-status.json alongside `continue`. A
+    substantial estimate means the agent is mid-job, so re-fire at the FLOOR and let it work; a small
+    or absent one keeps the ordinary cooldown. Returns None when there is no usable estimate, so the
+    caller keeps its existing behaviour — this can only ever make a pod faster while it is genuinely
+    mid-job, never slower, and never below MIN_COOLDOWN.
+
+    The estimate is the agent's claim and is deliberately NOT trusted on its own: the caller still
+    applies the unproductive-streak override on top, so a pod that claims six hours of work and ships
+    nothing still decays (the 2026-07-22 invariant — a self-declaration must not outrank the scorer).
+    """
+    try:
+        rem = float(remaining_min)
+    except (TypeError, ValueError):
+        return None
+    if rem <= 0:
+        return None
+    return min_cooldown if rem >= sprint_min else cont_cooldown
+
+
 def wake_gate(has_work, blocked, last_fire_age, max_staleness):
     """PURE heartbeat gate (unit-tested, 2026-07-26 adaptive ticks): should a HEARTBEAT wake spend a
     paid model boot? Directive wakes (inbox/comms/startup) are never gated — only the timer is.
@@ -129,6 +159,9 @@ class Loop:
         self.cont_cooldown = int(os.environ.get("CONTINUOUS_COOLDOWN", "900"))  # 'continue'/backlog → next tick (15m)
         self.min_cooldown = int(os.environ.get("MIN_COOLDOWN", "300"))          # hard floor (no hot spin) — 5m
         self.default_pace = int(os.environ.get("DEFAULT_PACE", "600"))          # tick wrote no status
+        # Work estimation (2026-08-22): a `continue` carrying remaining_min >= this is a SPRINT —
+        # the agent says it is mid-job, so re-fire at the floor instead of the 15-min cooldown.
+        self.sprint_min = int(os.environ.get("SPRINT_ESTIMATE_MIN", "30"))       # minutes of work left
         # Adaptive ticks (2026-07-26): heartbeat wake gate + warm re-fire. The gate makes the timer
         # conditional (see wake_gate); the ceiling guarantees a real tick at least this often.
         self.wake_gate_on = os.environ.get("WAKE_GATE", "on") != "off"
@@ -426,6 +459,12 @@ class Loop:
         elif st.get("status") == "continue":
             self._clear_blocked_marker()
             cd = max(self.min_cooldown, int(st.get("cooldown_s") or self.cont_cooldown))
+            sprint_cd = pace_from_estimate(st.get("remaining_min"), self.min_cooldown,
+                                           self.cont_cooldown, self.sprint_min)
+            if sprint_cd is not None and sprint_cd < cd:
+                self.log(f"sprint: ~{st.get('remaining_min')}min of work left (>= {self.sprint_min}) "
+                         f"→ pacing at the floor {sprint_cd}s instead of {cd}s")
+                cd = sprint_cd
             if self._warm_refire_ok():
                 # Lean live session: re-fire inside the prompt-cache TTL so runtime.sh's
                 # WARM_SESSION=auto resumes it nearly free (see __init__ comment for why this
