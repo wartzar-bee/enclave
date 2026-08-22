@@ -28,7 +28,7 @@ import sys, os, json, re, datetime, pathlib
 
 # Everything this hook writes lands in git-committed, qmd-recalled memory — run it ALL through the
 # framework's one redactor (same definition the secret_scan gate + vault scan use). Without this,
-# a token inlined in a Bash command is transcribed verbatim into memory/activity/ (channel-lab
+# a token inlined in a Bash command is transcribed verbatim into memory/activity/ (the distribution pod
 # leaked TELEGRAPH_TOKEN exactly this way, 2026-07-28) and the vault gate then blocks all backups.
 # Load the framework's secrets.py BY FILE PATH — its module name (`secrets`) collides with Python's
 # stdlib, and a plain `import secrets` on a bad/missing path silently binds the stdlib module (no
@@ -144,7 +144,7 @@ def _headline(rollup, final):
 
     `final` is read BEFORE `rollup`, and the order is the whole point. The rollup's newest line is
     the PREVIOUS tick's logged conclusion, so preferring it made every implicit decision a copy of
-    the one before, stamped with the current time — measured on financial-advisor 2026-08-04, 13 of
+    the one before, stamped with the current time — measured on the finance pod 2026-08-04, 13 of
     the last 20 entries were the prior tick's text and the chain accreted until the 500-char cap.
     A log that attributes old decisions to new ticks is worse than a sparse one: it reads as
     activity and it corrupts the unevidenced-rate signal decisions_report.py exists to produce.

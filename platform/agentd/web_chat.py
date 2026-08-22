@@ -1431,17 +1431,42 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, 404)
 
 
+def _loopback_only(bind):
+    """Is the PUBLISHED bind loopback-only? Anything else reaches the network.
+
+    The server binds 0.0.0.0 inside the container by necessity (Docker publishes to it), so the
+    container-side bind tells us nothing. WEB_CHAT_BIND is the host-side publish and IS the real
+    exposure. Unset/blank is treated as EXPOSED, not safe: absent evidence of loopback is not
+    evidence of loopback, and this gate exists precisely for the case where someone changed it.
+    """
+    host = (bind or "").rsplit(":", 1)[0].strip().strip("[]")
+    if not host:
+        return False
+    return host in ("127.0.0.1", "localhost", "::1") or host.startswith("127.")
+
+
 def main():
     _migrate_legacy()
     try:
         _last_reply_mtime[0] = REPLY_FILE.stat().st_mtime
     except OSError:
         pass
+    # FAIL CLOSED: an unauthenticated chat UI is a full control surface into an agent that ships with
+    # PERMISSION=dangerous. Loopback publishing was the only thing standing between a non-loopback
+    # WEB_CHAT_BIND and an open door, and nothing cross-checked the two. Refuse rather than serve.
+    bind = os.environ.get("WEB_CHAT_BIND", "")
+    if not TOKEN and not _loopback_only(bind):
+        sys.stderr.write(
+            f"[web_chat] REFUSING TO START: WEB_CHAT_BIND={bind or '<unset>'} is not loopback and "
+            f"WEB_CHAT_TOKEN is empty.\n"
+            f"  An unauthenticated chat UI is full control of this agent, which runs PERMISSION=dangerous.\n"
+            f"  Fix: set WEB_CHAT_TOKEN=$(openssl rand -hex 24) in agent.env, or publish on 127.0.0.1.\n")
+        return 2
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    auth = "token-protected" if TOKEN else "OPEN (no token — set WEB_CHAT_TOKEN)"
+    auth = "token-protected" if TOKEN else "no token (loopback-only publish)"
     print(f"[web_chat] {AGENT_NAME} chat UI on http://0.0.0.0:{PORT}/ ({auth})", flush=True)
     srv.serve_forever()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

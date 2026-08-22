@@ -197,7 +197,7 @@ def _check_bash(inp, cmd):
 
 # Files whose CONTEXT cost is not their BYTE cost. A 600 KB PNG is a vision read worth ~1-2k
 # tokens, not 600 KB of tokens — gating it on file size is measuring the wrong thing, and
-# `limit`/`offset` are meaningless on it. Measured 2026-08-21: 2,230 of stoneforge's 2,241 Read
+# `limit`/`offset` are meaningless on it. Measured 2026-08-21: 2,230 of the game-dev pod's 2,241 Read
 # gates (99.5%) were .png/.jpg, and during the one window where enforce was on (2026-06-26..28)
 # this hook BLOCKED 172 image reads — i.e. it stopped an art agent from looking at its own QA
 # renders. See docs/CONTEXT-COMPACTOR.md §A.6.

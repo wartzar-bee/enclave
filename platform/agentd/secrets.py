@@ -53,7 +53,7 @@ LABEL_VALUE = (
     r"|seed(?:[_-]hex)?|priv(?:ate)?[_-]?key|signing[_-]?key)"
     r"\s*[:=]\s*['\"]?(?P<val>[A-Za-z0-9_\-./+=]{12,})",
     # env-assignment: an uppercase credential name takes any non-space value (passwords carry punctuation).
-    # SEED/PRIV_KEY/SIGNING_KEY joined 2026-07-29: channel-lab catted MCP_ED25519_SEED_HEX=<64 hex> into
+    # SEED/PRIV_KEY/SIGNING_KEY joined 2026-07-29: the distribution pod catted MCP_ED25519_SEED_HEX=<64 hex> into
     # its transcript and NOTHING here matched — pure hex also slips looks_random (no uppercase), so a
     # key-material label family is the only net that catches it without flagging every git SHA in prose.
     # The value class excludes quote characters: with plain \S, `BRAVE_API_KEY:'x',TAVILY_API_KEY:'x'`
@@ -149,7 +149,7 @@ def is_reference(val):
     # A doc/template placeholder in ANGLE BRACKETS: `Authorization: token <GITEA_TOKEN>`,
     # `<trunk-token>`, `<your-api-key>` — the universal "fill this in" convention in the HTTP-header
     # examples an account-provisioning pod writes constantly. A real credential never begins with a
-    # literal `<identifier>`; blocking these false-froze channel-lab's brain backup (2026-07-25).
+    # literal `<identifier>`; blocking these false-froze the distribution pod's brain backup (2026-07-25).
     if re.match(r"^<[A-Za-z_][\w\- ]*>", raw):
         return True
     # A bare SCREAMING_SNAKE env-var NAME used as a placeholder value: `header api-key:DEVTO_API_KEY`,

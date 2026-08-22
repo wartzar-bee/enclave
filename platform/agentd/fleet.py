@@ -372,7 +372,7 @@ def _state(home):
     return s
 
 
-# Human labels per fleet root, e.g. ENCLAVE_FLEET_LABELS='{"pas-agents":"Peter & Sons"}'.
+# Human labels per fleet root, e.g. ENCLAVE_FLEET_LABELS='{"my-fleet":"Production"}'.
 # Defaults to the root's folder name, which is already meaningful.
 try:
     FLEET_LABELS = json.loads(os.environ.get("ENCLAVE_FLEET_LABELS", "") or "{}")

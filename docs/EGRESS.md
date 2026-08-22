@@ -61,12 +61,12 @@ add the specific host to `egress-policy.json` and restart the egress service.
 - The guard's text-matching egress stays on as an audit layer (it logs *commands*; the sidecar
   logs *connections*) — they compose.
 
-## Phase 2 — credential vault (optional; live on financial-advisor 2026-08-15)
+## Phase 2 — credential vault (optional; live on the finance pod 2026-08-15)
 
 The same sidecar can hold a credential in memory and inject it into outbound HTTPS at a
 transparent mitmproxy, so **the agent never holds the real secret** (its env carries a
 placeholder; the vault deletes-and-replaces the Authorization header at the proxy). HTTP/HTTPS
-only (postgres/other ports bypass the mitm). Recipe (see fleet/financial-advisor for a working
+only (postgres/other ports bypass the mitm). Recipe (see fleet/the finance pod for a working
 example):
 - Sidecar: add `OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT=true`, a shared volume on
   `/opt/opensandbox` (it exports `mitmproxy-ca-cert.pem` there per generation), and caps

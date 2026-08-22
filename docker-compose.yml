@@ -28,9 +28,16 @@ services:
     mem_limit: ${AGENT_MEM_LIMIT:-8g}
     cpus: ${AGENT_CPUS:-4}
     pids_limit: ${AGENT_PIDS_LIMIT:-512}
+    # Container hardening. NOT read_only: the agent legitimately writes /agent, /work and /tmp, and a
+    # read-only rootfs would need tmpfs for each — tracked, not done. no-new-privileges + cap_drop are
+    # free: nothing in the runtime needs setuid escalation or a Linux capability.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     extra_hosts: ["host.docker.internal:host-gateway"]   # reach host tools on Linux too
     env_file:                                             # CLAUDE_CODE_OAUTH_TOKEN (BRAIN=claude) — optional so api/local don't need it
-      - path: ./secrets/anthropic.env
+      - path: ${SECRETS_DIR:-./secrets}/anthropic.env
         required: false
     # BRAIN=api/local read their key (OPENROUTER_API_KEY/…) directly from the mounted /workspace/.secrets/*.env
     environment:
@@ -42,12 +49,19 @@ services:
       - INTERVAL_SECONDS=${INTERVAL_SECONDS:-86400}
       - PERMISSION=${PERMISSION:-dangerous}
       - TOOLS_ROOT=/workspace
+      - SECRETS_SCOPE=${SECRETS_SCOPE:-}     # declared filenames this agent needs; blank = unscoped (warned)
       - WORK_DIR=/work                       # in-container path of the project working folder (set the HOST path via WORK_DIR in .env)
     volumes:
       - ./home:/agent                        # agent HOME (rw): its brain — CLAUDE.md, memory, skills, inbox, work queue, state
       - ${WORK_DIR:-./home/work}:/work       # project WORKING FOLDER (rw): where the agent does + saves real work. Set WORK_DIR in .env to a host repo; defaults to home/work (inside the vault). Index it for fresh recall — see docs/WORK-DIR.md.
-      - ./secrets:/workspace/.secrets:ro     # scoped credentials (read-only)
-      - enclave-agent-claude:/home/agent/.claude  # persist Claude Code chat SESSIONS across image rebuilds (thread continuity)
+      # SECRETS_DIR is the blast radius. `:ro` stops WRITES, never READS — a compromised agent can
+      # read every file it can see, so "scoped credentials" is only true if the DIRECTORY is scoped.
+      # Point this at a per-agent dir holding ONLY that agent's credentials; ./secrets (the shared
+      # pile) is the compatible default, and preflight's `containment` check nags while it is in use.
+      - ${SECRETS_DIR:-./secrets}:/workspace/.secrets:ro
+      # CREDENTIAL-BEARING. Claude Code persists OAuth/credential state here, not just chat threads.
+      # Treat it as a secret store: never snapshot, export, or copy it alongside agent state.
+      - enclave-agent-claude:/home/agent/.claude
     restart: unless-stopped
 
   web-chat:
@@ -72,6 +86,9 @@ services:
       - WORK_DIR=/work
       - WEB_CHAT_PORT=8888
       - WEB_CHAT_TOKEN=${WEB_CHAT_TOKEN:-}
+      # The HOST-side publish, passed in so web_chat can fail closed: an empty token is only safe
+      # while this is loopback. Default matches the ports: entry below — change both together.
+      - WEB_CHAT_BIND=${WEB_CHAT_BIND:-127.0.0.1:8888}
       - TRANSCRIBE_URL=${TRANSCRIBE_URL:-}     # optional server-side STT (else browser Web Speech)
       - TTS_URL=${TTS_URL:-}                   # optional server-side TTS (else browser speechSynthesis)
       - TTS_VOICE=${TTS_VOICE:-}
@@ -156,4 +173,5 @@ services:
 
 volumes:
   qmd-index:        # disposable qmd vector index (rebuildable from the wiki via QMD_MODE=reembed)
-  enclave-agent-claude:   # persists /home/agent/.claude (Claude Code sessions) so chat threads survive image rebuilds
+  enclave-agent-claude:   # /home/agent/.claude — Claude Code SESSIONS *and* OAuth credential state.
+                          # Credential-bearing: excluded from state snapshots/exports by policy.

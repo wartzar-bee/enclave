@@ -50,7 +50,9 @@ Flags for non-interactive init (CI / scripted):
                    http://codegraph:18184/mcp. Twin of qmd.
   --qmd URL        a knowledge-search qmd MCP gateway URL (blank = none)
   --work-dir PATH  the host project tree the agent works in (mounted rw at /work; blank = home/work)
-  --bind 127.0.0.1:8888  --port 8888  --token TOK (optional web-UI ?token= gate)  --yes  --force
+  --bind 127.0.0.1:8888  --port 8888  --token TOK (web-UI ?token= gate; auto-generated if omitted)
+  --unsafe-network  skip kernel egress default-deny scaffolding (dev/throwaway pods only)
+  --yes  --force
   --allow-unknown-model   accept a Claude model id not in the known-good set (e.g. a newer release)
 Flags for run:
   --no-open   don't auto-open the browser
@@ -58,6 +60,7 @@ Flags for run:
   --pull      pull prebuilt images from the registry instead of building (see ENCLAVE_*_IMAGE in .env)
 """
 import sys, os, re, json, time, pathlib, subprocess, shutil, getpass, urllib.request
+from secrets import token_hex as _token_hex   # NOT `import secrets`: cmd_init binds a local `secrets` path, which would shadow the module and UnboundLocalError at runtime
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent  # bin/ -> repo root
@@ -390,6 +393,38 @@ def _mount_framework(image_only):
     ))
     print(f"  framework → live-mounted {path} (read-only); framework fixes land on restart, no rebuild")
 
+def _scaffold_egress(unsafe):
+    """Turn kernel egress default-DENY on for a new deployment, or say plainly that it is off.
+
+    Egress enforcement was never really "off by default" — it was off unless you performed a 4-step
+    ritual (copy a policy, mint a token, copy an override or hand-merge it into an existing one,
+    restart, run probes). A control with that activation cost is off everywhere, forever, which is
+    exactly what the security review found. The ritual is the bug, so `enclave new` performs it.
+
+    The text-matching guard stays advisory and bypassable by indirection; this is the kernel-level
+    default-deny that actually holds. Opt out with --unsafe-network (dev/throwaway pods).
+    """
+    if unsafe:
+        print("  egress → NOT enforced (--unsafe-network). The guard's allowlist is text-matched and\n"
+              "          bypassable; this pod can reach the whole internet. Do not give it real credentials.")
+        return
+    tmpl = REPO / "templates" / "egress-policy.json"
+    if not tmpl.is_file():
+        print("  egress → template missing (templates/egress-policy.json) — NOT enforced")
+        return
+    pol = DEPLOY / "egress-policy.json"
+    if not pol.exists():
+        _write(pol, tmpl.read_text())
+    envf = DEPLOY / ".env"
+    cur = envf.read_text() if envf.exists() else ""
+    if "EGRESS_TOKEN=" not in cur:
+        with envf.open("a") as fh:
+            fh.write(f"\nEGRESS_TOKEN={_token_hex(24)}\n")
+    print("  egress → kernel default-deny scaffolded (egress-policy.json + EGRESS_TOKEN).\n"
+          "          EDIT egress-policy.json to ONLY what this agent needs, then activate the sidecar:\n"
+          "          append docker-compose.egress.yml's services to docker-compose.override.yml (docs/EGRESS.md).")
+
+
 def _apply_spec_extras(spec, home, secrets, envf):
     """Apply the spec fields that aren't plain init flags to the freshly-scaffolded deployment."""
     mission = (spec.get("mission") or "").strip()
@@ -575,7 +610,12 @@ def cmd_init(args):
         _check_claude_model(model, _has(args, "--allow-unknown-model"))
     bind = _flag(args, "--bind") or _ask("Web chat bind (host:port)", default=f"127.0.0.1:{_free_port()}", yes=yes)
     port = _flag(args, "--port") or (bind.split(":")[-1] if ":" in bind else "8888")
-    token = _flag(args, "--token", "")  # web UI ?token= gate (optional)
+    # The chat UI is a full control surface into an agent that runs PERMISSION=dangerous, so it is
+    # token-gated BY DEFAULT and the token is generated, not asked for. It used to default to empty,
+    # which was safe only for as long as nobody changed the bind off loopback — and the bind IS a
+    # prompt two lines up. `--token ""` still opts out explicitly (web_chat then refuses to serve on
+    # a non-loopback bind).
+    token = _flag(args, "--token") if _has(args, "--token") else _token_hex(24)
     # Working folder: the host project tree the agent operates on + saves into (mounted rw at /work).
     # Blank → ./home/work (inside the vault). Point it at a real repo to make that the working folder.
     work_dir = _flag(args, "--work-dir") or _ask(
@@ -886,6 +926,7 @@ def cmd_init(args):
     #   --image-only → mount THIS canonical checkout (a fix here propagates to every pod built from it)
     #   full copy    → REPO is the deployment itself, so the relative path keeps the folder movable
     _mount_framework(image_only)
+    _scaffold_egress(_has(args, "--unsafe-network"))
 
     # 7b) spec extras (mission/kpi → CLAUDE.md, interval, scoped-secret placeholders, guardrails)
     if spec:

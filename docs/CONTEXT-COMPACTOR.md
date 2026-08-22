@@ -188,9 +188,9 @@ the rewritten command in a real shell and asserting the full output landed on di
 
 ### A.6 MEASURED, 2026-08-21 — and the Read branch was measuring the wrong thing
 
-First real measurement of this hook since it shipped. Substrate: `stoneforge`'s `state/compact.log`
-— **2,568 gates over 20 days** (2026-06-26 → 08-21). At the time of measurement stoneforge was the
-only running agent with the hook in its `.claude/settings.json`; `financial-advisor` and
+First real measurement of this hook since it shipped. Substrate: the game-dev pod's `state/compact.log`
+— **2,568 gates over 20 days** (2026-06-26 → 08-21). At the time of measurement the game-dev pod was the
+only running agent with the hook in its `.claude/settings.json`; the finance pod and
 `wartzar-bee` had neither the wiring nor a `compact.log`. (That is no longer true — see "What this
 changes": the hook is now wired by construction.)
 
@@ -201,7 +201,7 @@ tokens, not 587 KB of tokens. The "1,604 MB of context avoided" that falls out o
 sizes is not a real number.
 
 **Finding 2 — when enforce was briefly on (2026-06-26..28), it blocked 172 image reads.** On an art
-agent. The hook was stopping stoneforge from looking at its own QA renders (`wildlands.png`,
+agent. The hook was stopping the game-dev pod from looking at its own QA renders (`wildlands.png`,
 `skull-reels-verify.png`, `emberfall-boot.png`, …). 173 of the 222 enforce-mode gates were Reads and
 172 of those were images. **Fixed:** `VISUAL_EXT` is now exempt from gating *and* from reshaping —
 injecting a line `limit` into an image Read would have been worse than the block.
@@ -235,7 +235,7 @@ they would have produced then. 112 of 327 Bash gates were excluded (truncated at
    and to `settings_migrate.ADD_HOOKS` so every already-deployed pod self-heals at tick boot. Only a
    hook whose default is inert belongs in `ADD_HOOKS`, and `report` is inert. Note the deployment
    path is live: pods mount the framework read-only and re-run `settings_migrate.py` every tick
-   boot, so this reached `financial-advisor` within one tick of the file being saved.
+   boot, so this reached the finance pod within one tick of the file being saved.
 3. `console.py`'s `context_explosion` / `prompt_creep` remediations now set `COMPACT_MODE=spill`
    rather than `COMPACT_ENFORCE=1` — on this evidence, enforce is the wrong remedy.
 

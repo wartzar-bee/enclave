@@ -2,7 +2,7 @@
 """progress.py — L4 WORK-PROGRESS verdicts: does each tick move the CURRENT GOAL forward?
 
 The gap this closes (2026-08-22): L2's scorecard classifies writes (product/tooling/self_state) and
-L3's diagnostics watches resources — but product-writes are not progress. Observed on stoneforge:
+L3's diagnostics watches resources — but product-writes are not progress. Observed on the game-dev pod:
 three ticks of audio re-theming and font swaps all counted `product` while every one of the six
 art defects the operator had just named sat untouched, and the agent then declared "un-gated work
 EXHAUSTED". Nothing in the stack compared the ACTIONS TAKEN to the DIRECTIVE GIVEN. This module
@@ -15,7 +15,7 @@ Config, not code — `state/progress-config.json` in the agent home:
     "goal_metric": "DIFFERS",                        # count of lines containing this = open items
     "stall_ticks": 3                                 # consecutive non-forward ticks => stalled
   }
-The goal file is one the DIRECTIVE itself defined (stoneforge's REF-DIFF acceptance step), so the
+The goal file is one the DIRECTIVE itself defined (the game-dev pod's REF-DIFF acceptance step), so the
 agent and the monitor read the same truth. Goal reached = metric count 0.
 
 Verdicts per tick (one of, in priority order):

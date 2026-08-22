@@ -282,7 +282,7 @@ def collect(base, t0, now=None):
     # the FRAMEWORK asks for it once per tick, its cadence is compliance, not spinning.
     # state/plan.md is the FOURTH file to be mistaken for churn, and it fits the rule above exactly:
     # the PLAN GATE in tick.txt ("write/update state/plan.md — goal · approach · touch-list") makes one
-    # write per tick compliance. stoneforge alarmed on evidence that was literally {plan.md: 1} while it
+    # write per tick compliance. the game-dev pod alarmed on evidence that was literally {plan.md: 1} while it
     # was executing a correct multi-tick plan. A plan REWRITTEN many times inside one tick is still
     # churn — CHURN_TICK_FIRE catches that; it is the once-per-tick cadence that is not.
     BOOKKEEPING = {"state/tick-status.json", "state/.heartbeat", "state/recall.md",
@@ -561,7 +561,7 @@ def _selftest():
         check("chat-reply.md is compliance, not churn", "state/chat-reply.md" not in rec4["churn"])
         check("chat-reply.md alone does not raise the alarm", rec4["churn_alarm"] is False)
         # plan.md — the FOURTH. The tick.txt PLAN GATE mandates it once per tick, so the cadence is
-        # compliance; stoneforge alarmed on evidence that was literally {plan.md: 1}.
+        # compliance; the game-dev pod alarmed on evidence that was literally {plan.md: 1}.
         b5 = b / "_plan"; (b5 / "state").mkdir(parents=True)
         (b5 / "state" / "scorecard-config.json").write_text(json.dumps({"kpi_artifacts": ["content/**/*.md"]}))
         t5 = int(time.time()) - 60

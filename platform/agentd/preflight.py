@@ -224,6 +224,30 @@ def cfg_permission(env):
     return None
 
 
+def cfg_containment(env):
+    """PERMISSION=dangerous is CORRECT for unattended autonomy (cfg_permission errors without it) —
+    but it is only safe INSIDE hard boundaries. The external review's chain: prompt injection ->
+    dangerous -> read every credential in the mounted secrets dir -> report-only egress -> the
+    credential leaves. Each layer has a mitigation; the DEFAULT had none of them on at once.
+
+    So this does not fight `dangerous`. It asserts the boundaries that make it survivable, and it
+    fires only when dangerous is actually in force — the mode is the trigger, not the finding.
+    """
+    if env.get("PERMISSION", "acceptEdits").lower() != "dangerous":
+        return None
+    weak = []
+    if not env.get("EGRESS_ENFORCE") and not env.get("OPENSANDBOX_EGRESS_MODE"):
+        weak.append("egress is advisory (text-matched, bypassable) — no kernel default-deny sidecar")
+    if (env.get("SECRETS_SCOPE", "") or "").strip() in ("", "all", "*"):
+        weak.append("the WHOLE secrets dir is mounted — every credential is readable, not just this "
+                    "agent's brain key")
+    if not weak:
+        return None
+    return ("warn", "PERMISSION=dangerous without its containment: " + "; ".join(weak) +
+                    ". Fix by activating docker-compose.egress.yml and setting SECRETS_SCOPE, or "
+                    "accept this explicitly for a throwaway/dev pod.")
+
+
 def cfg_persistence(env):
     """Building into ephemeral storage is lost on restart (the /work wipe). The persistent build dir is
     DECLARED as WORK_PERSIST and must live under the pod's persistent home ($AGENT_DIR — always a mount).
@@ -342,7 +366,7 @@ def cfg_llm_routing(env):
                     ". Fix the deployment override; do not re-point Claude at OpenRouter.")
 
 
-CONFIG_CHECKS = {"cost": cfg_cost, "permission": cfg_permission,
+CONFIG_CHECKS = {"cost": cfg_cost, "permission": cfg_permission, "containment": cfg_containment,
                  "persistence": cfg_persistence, "warm_session": cfg_warm_session,
                  "observability": cfg_observability, "llm_routing": cfg_llm_routing}
 
@@ -403,6 +427,14 @@ def _selftest():
     ck("perm silent: dangerous", cfg_permission({"PERMISSION":"dangerous","AGENT_NEEDS":"network,exec"}) is None)
     # perm: nothing declared → can't judge, stays silent (no false positive)
     ck("perm silent: no needs declared", cfg_permission({"PERMISSION":"acceptEdits"}) is None)
+    ck("containment fires: dangerous, no egress, whole secrets dir",
+       cfg_containment({"PERMISSION":"dangerous"})[0]=="warn")
+    ck("containment silent: not dangerous", cfg_containment({"PERMISSION":"acceptEdits"}) is None)
+    ck("containment silent: egress enforced + scoped secrets",
+       cfg_containment({"PERMISSION":"dangerous","OPENSANDBOX_EGRESS_MODE":"dns+nft",
+                        "SECRETS_SCOPE":"anthropic.env"}) is None)
+    ck("containment names BOTH gaps when both are open",
+       len(cfg_containment({"PERMISSION":"dangerous"})[1].split(";"))>=2)
     # persistence: WORK_PERSIST outside the home → WARN; under home → silent; unset → silent
     ck("persist fires: WORK_PERSIST outside home", cfg_persistence({"WORK_PERSIST":"/work/x","AGENT_DIR":"/agent"}) and cfg_persistence({"WORK_PERSIST":"/work/x","AGENT_DIR":"/agent"})[0]=="warn")
     ck("persist silent: under home", cfg_persistence({"WORK_PERSIST":"/agent/work","AGENT_DIR":"/agent"}) is None)

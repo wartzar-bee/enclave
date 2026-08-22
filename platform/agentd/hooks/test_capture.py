@@ -148,7 +148,7 @@ finally:
 
 
 # --- implicit decisions must describe THIS tick, not the previous one -------------------------
-# financial-advisor, 2026-08-04: 13 of the last 20 logged decisions were the prior tick's text,
+# the finance pod, 2026-08-04: 13 of the last 20 logged decisions were the prior tick's text,
 # re-stamped, because _headline read the rollup (whose newest line IS the last logged decision)
 # before the agent's own closing text. The chain accreted until the 500-char cap.
 
@@ -172,7 +172,7 @@ ck("an explicit decision is not marked implicit", r[0]["implicit"] is False)
 
 
 # `final` is every assistant text block joined, so scanning it FORWARDS records the agent's opening
-# sentence as its decision. Live on financial-advisor 2026-08-04: "I'll start by checking the
+# sentence as its decision. Live on the finance pod 2026-08-04: "I'll start by checking the
 # preflight capabilities and inbox/handoff state before running today's cycle."
 r = C.extract_decisions("I'll start by checking capabilities.\nRan the cycle.\nNo orders proposed.",
                         [], "", TS, AGENT)

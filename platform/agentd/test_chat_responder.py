@@ -238,7 +238,7 @@ def main():
 
     # ------------------------------------------------- turn budget: progress EXTENDS, ceiling doesn't
     # The flat 150s cap killed productive turns mid-research and threw the operator's ask away
-    # (2026-08-19: 1 WebFetch + 5 WebSearches on financial-advisor). CHAT_TURN_TIMEOUT is now a STALL
+    # (2026-08-19: 1 WebFetch + 5 WebSearches on the finance pod). CHAT_TURN_TIMEOUT is now a STALL
     # budget reset by every stream event; CHAT_TURN_MAX is the absolute ceiling.
     _clear_env()
     emitter = str(HERE / "_fake_stream.py")   # written below, removed after

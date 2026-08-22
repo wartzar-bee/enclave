@@ -13,7 +13,7 @@ and exits non-zero if ANY pod is confirmed stale. Run it before flipping egress 
 a pod without the tightened policy would go from report-only straight to bricked-egress.
 
 Usage:
-  propagation_check.py --fleet-root ~/Dev/agent-workspace/fleet   # audit every <root>/*/home
+  propagation_check.py --fleet-root ~/my-fleet   # audit every <root>/*/home
   propagation_check.py --home /path/to/home [--home ...]          # audit specific homes
   propagation_check.py --selftest
 Exit: 0 = all present (or only unknowns), 1 = at least one pod confirmed STALE.

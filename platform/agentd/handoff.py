@@ -5,7 +5,7 @@ You (a pod) can't push, route to another pod, or fire an operator-gated action â
 actor FIRES. The canonical way to hand something off is ONE typed envelope, not a bespoke filename:
 
     python3 platform/agentd/handoff.py emit \
-        --to channel-lab --type distribution-help \
+        --to the distribution pod --type distribution-help \
         --title "Prove a Medium publish path for tokenscope" \
         --payload '{"product":"tokenscope","goal":"validated recipe","audience":"devs on agent cost"}'
 

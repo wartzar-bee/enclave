@@ -1,0 +1,51 @@
+name: security
+
+# The repo had NO commit-side secret scanning — in CI or locally. `platform/agentd/hooks/secret_scan.py`
+# looks like it covers this but does not: it is a PreToolUse hook that stops an AGENT writing a
+# credential into its own memory inside a pod. It never sees a commit to this repo.
+#
+# Full history, not just the diff: a secret that lived for one commit and was deleted is still
+# compromised. Verified clean at 325 commits on 2026-08-22 (2 hits, both false positives: a fake key
+# in secret_scan.py's own selftest fixture, and the word "credential" in README prose).
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"     # history can only be re-proven clean by re-scanning it
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0     # REQUIRED: a shallow clone silently scans almost nothing
+      - name: gitleaks (full history, all refs)
+        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+  codeql:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: github/codeql-action/init@6d786de4d6f3531a740e445b53a42b622bbbace8 # v3
+        with:
+          languages: python, javascript
+      - uses: github/codeql-action/analyze@6d786de4d6f3531a740e445b53a42b622bbbace8 # v3
+
+  publish-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # .publish-audit-allow had NO enforcer for its whole life — an allowlist for a scanner that did
+      # not exist. This is the scanner. It fails closed if the allow file goes missing.
+      - run: python3 tools/publish_audit.py
+

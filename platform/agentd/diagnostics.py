@@ -264,7 +264,7 @@ def _anomalies(records, now, window):
     # duration_spike, cost_spike, cache_churn, tool_failures, compaction_churn) and wake_spike even
     # alerts on waking MORE often. Nothing here has ever detected a pod doing TOO LITTLE, so a pod
     # that ticks for 60s and then idles 40 minutes reads as perfectly healthy on every dashboard —
-    # which is exactly how stoneforge sat at CONTINUOUS_COOLDOWN=2400 for weeks while looking green
+    # which is exactly how the game-dev pod sat at CONTINUOUS_COOLDOWN=2400 for weeks while looking green
     # (2026-08-22). Cheap and unambiguous: sum the ticks' own duration over the wall-clock span they
     # cover. Low duty cycle is nearly always a cooldown misconfiguration, not a slow agent.
     stamps = [t for t in (parse_ts(r.get("ts")) for r in records) if t]

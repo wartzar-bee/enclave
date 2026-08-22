@@ -4,13 +4,17 @@
 #
 # Per-agent run: mount the agent's home dir -> /agent, its scoped secrets -> /workspace/.secrets.
 # The agent reaches optional host tools (qmd / gcloud bridge) via host.docker.internal.
-FROM ubuntu:24.04
+# Pinned BY DIGEST, not tag: `ubuntu:24.04` is mutable, so "the same image" rebuilt next month is a
+# different image. Dependabot (docker ecosystem) keeps this current. Update tag + digest together.
+FROM ubuntu:24.04@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip nodejs npm git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 # Minimal python deps the runtime uses (no content-creation libs).
-RUN pip3 install --no-cache-dir --break-system-packages pyyaml requests
+# Version-pinned for the same reason as the base image: an unpinned dep makes the shipped runtime
+# unreproducible and silently absorbs whatever upstream published that morning.
+RUN pip3 install --no-cache-dir --break-system-packages pyyaml==6.0.2 requests==2.32.3
 # Pinned Claude CLI (BRAIN=claude). Fail loud — a missing CLI = a dead agent.
 RUN npm i -g @anthropic-ai/claude-code@2.1.170
 ENV PATH=/usr/local/bin:$PATH

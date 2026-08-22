@@ -1,0 +1,10 @@
+# Actions are SHA-pinned (mutable tags are a supply-chain hole in a repo whose selling point is
+# secure autonomous execution). Pins only stay current if something updates them — that is this file.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: "/"
+    schedule: { interval: weekly }

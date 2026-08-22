@@ -8,7 +8,7 @@ move between minor versions — pin a tag if that matters to you.
 
 ### Fixed
 - **`preflight.probe_image` verifies the key WORKS, not that a file exists.** It returned
-  `p.exists()`, so through the whole stretch where stoneforge's OpenRouter key answered 401 on every
+  `p.exists()`, so through the whole stretch where the game-dev pod's OpenRouter key answered 401 on every
   `gen.py` call the capability board still read `image: ok, "openrouter key present"` — the false alarm
   and the false all-clear were equally invisible, and a resolved key blocker stayed quoted as open for
   days. It now authenticates against OpenRouter's free `/auth/key` endpoint (no generation spend):
@@ -85,7 +85,7 @@ are additive or opt-in; the base image stays stdlib-only. CI is 46/46 green at h
   at runtime and disables it. Class is now un-rearmable. (+7 selftests) (`platform/agentd/preflight.py`,
   `local_agent.py`; `5f7dd5a6`)
 - **Guard protects `.secrets/gh-app`.** The GitHub App private key (PaS ops tier) is now in the guard's
-  read-blocked secret set — upstreamed from the pas-agents vendored patch so that copy needs no local
+  read-blocked secret set — upstreamed from a downstream vendored patch so that copy needs no local
   patches. guard.py selftest 35/35. (`platform/agentd/hooks/guard.py`; `144f2b7f`)
 
 ## [0.6.0] — 2026-08-15

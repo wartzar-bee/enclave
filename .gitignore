@@ -24,3 +24,9 @@ RESUME-DELEGATION.md
 
 # installed plugins are runtime state, not source (examples/plugins/ IS tracked)
 /plugins/
+
+# Deployment-local, scaffolded by `enclave init`/`new` into the checkout when it IS the deployment.
+# egress-policy.json names the hosts a specific agent may reach — internal endpoints included; the
+# override carries per-deployment mounts and sidecar wiring. Neither belongs in the public tree.
+egress-policy.json
+docker-compose.override.yml

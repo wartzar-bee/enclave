@@ -1,0 +1,14 @@
+# Verified false positives, 2026-08-22. Pinned by fingerprint so CI is GREEN when nothing is wrong —
+# a scanner that reports the same two findings forever is one nobody reads, and the next real hit
+# would land in noise. Each line was read in context before being listed.
+
+# A deliberately-fake OpenRouter key in the secret scanner's OWN selftest fixture, asserting that the
+# scanner catches provider-prefixed keys. (The literal is NOT quoted here — doing so made this very
+# file the third finding, which is a neat demonstration of why the pin exists.)
+545ae4c4485c5c72c1fbe6357bbc72107ae9124d:platform/agentd/hooks/secret_scan.py:generic-api-key:78
+platform/agentd/hooks/secret_scan.py:generic-api-key:111
+home/.claude/hooks/secret_scan.py:generic-api-key:111
+
+# The English word "credential" in README prose: "Brain credential: the `claude` CLI …".
+22c2594d276c935b80c813a86032496bb9c07bcc:README.md:generic-api-key:13
+README.md:generic-api-key:31
