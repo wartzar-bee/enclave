@@ -640,10 +640,77 @@ _events_dark = Playbook(
 
 # The per-agent runbook (bridge_down is a FLEET-level check the daemon runs separately — it has no
 # single agent home to escalate into; full inbox surfacing is D2).
+# (15/16) L4 WORK-PROGRESS — does a tick move the CURRENT GOAL, and if not, why? The detector lives in
+# monitor/progress.py; it shipped with tests but NO caller, so its verdicts reached nobody until these
+# two playbooks put them on the existing dedup/policy/escalate/notify path.
+def _paused(home, snap):
+    if snap.get("tick") == "paused":
+        return True
+    try:
+        return bool(home and (pathlib.Path(home) / "state" / "paused").exists())
+    except Exception:
+        return False
+
+def _prog(home):
+    """Pure read — never advances the cursor (that credit belongs to the agent's own tick)."""
+    try:
+        from . import progress
+        return progress.compute(home, advance_cursor=False) if home else {}
+    except Exception:
+        return {}
+
+def _noprog_match(diag, home, snap, ctx):
+    if not snap.get("up") or _paused(home, snap):
+        return False
+    return _prog(home).get("stalled") is True
+
+def _noprog_diag(diag, home, snap, ctx):
+    r = _prog(home)
+    v = r.get("verdicts") or []
+    return {"cause": f"no tick moved the current goal forward in the last {len(v)} ticks "
+                     f"({r.get('cause','?')})",
+            "confidence": "med",
+            "evidence": f"verdicts={','.join(v[-6:]) or 'none'}; goal_file={r.get('goal_file') or '?'}; "
+                        f"{r.get('detail','')}",
+            "recommendation": "read the agent's plan.md against its goal file — this is a DIRECTION "
+                              "problem (wrong work, or blocked), not a wedged loop; a restart will not fix it.",
+            "source": "deterministic"}
+
+# NOT safe_to_autofix and no intent BY DESIGN: 'working on the wrong thing' has no mechanical remedy,
+# and the restart that fixes `stalled` would destroy context here for nothing.
+_no_progress = Playbook(
+    "no_progress", "Ticks are running but the goal is not moving", "medium",
+    _noprog_match, _noprog_diag, intent=lambda *a: None, safe_to_autofix=False)
+
+
+def _progblind_match(diag, home, snap, ctx):
+    # A working pod (it has a scorecard) that L4 cannot grade at all. Distinct from scorecard_blind,
+    # which is about L2 state/scorecard-config.json; this is state/progress-config.json.
+    if not snap.get("up") or _paused(home, snap):
+        return False
+    if not _jsonl_tail(home, "state/tick-scorecard.jsonl", 1):
+        return False
+    return _prog(home).get("config") == "missing"
+
+def _progblind_diag(diag, home, snap, ctx):
+    return {"cause": "pod produces ticks but has no state/progress-config.json — L4 cannot tell "
+                     "whether any of them move the goal; it reads as green while drifting",
+            "confidence": "high",
+            "evidence": "progress.compute() returned config=missing",
+            "recommendation": 'write state/progress-config.json {"focus":[globs],"goal_file":...,'
+                              '"goal_metric":...} so ticks can be graded against the current goal.',
+            "source": "deterministic"}
+
+_progress_blind = Playbook(
+    "progress_blind", "Pod is unmeasured by L4 (no progress-config)", "low",
+    _progblind_match, _progblind_diag, intent=lambda *a: None, safe_to_autofix=False)
+
+
 ALL = [_memory_path_broken, _delegation_loop, _context_bloat,
        _container_down, _up_but_unreachable, _stalled, _kill_line,
        _zero_product, _churn_spike, _off_directive, _wander_rate,
-       _self_certification, _scorecard_blind, _events_dark]
+       _self_certification, _scorecard_blind, _events_dark,
+       _no_progress, _progress_blind]
 
 BY_KEY = {p.key: p for p in ALL}
 

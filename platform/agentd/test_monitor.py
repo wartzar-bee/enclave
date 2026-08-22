@@ -429,3 +429,39 @@ def test_stalled_spares_wake_gate_parked():
 
 
 test_stalled_spares_wake_gate_parked()
+
+
+def test_l4_progress_playbooks():
+    """The L4 detector shipped with tests but NO caller for a week. These assert the WIRING: that
+    progress verdicts actually reach the playbook layer, that the two failure modes are told apart,
+    that a paused pod is spared, and that polling never advances the agent's goal cursor."""
+    import json as _j, pathlib as _pl, tempfile as _tf, time as _t
+    from monitor import playbooks as _pb
+    snap, ctx = {"up": True, "tick": "running"}, {"now": _t.time()}
+    noprog, blind = _pb.BY_KEY["no_progress"], _pb.BY_KEY["progress_blind"]
+
+    d = _pl.Path(_tf.mkdtemp()) / "home"; (d / "state").mkdir(parents=True)
+    (d / "state" / "tick-scorecard.jsonl").write_text(_j.dumps({"ts": "x", "reason": "tick"}) + "\n")
+    assert blind.match({}, str(d), snap, ctx), "ticking pod with no progress-config must flag L4-blind"
+    assert not noprog.match({}, str(d), snap, ctx), "unconfigured is BLIND, not stalled — never both"
+
+    (d / "state" / "progress-config.json").write_text(_j.dumps(
+        {"focus": ["work/**"], "goal_file": "state/GOAL.md", "goal_metric": "DIFFERS"}))
+    (d / "state" / "GOAL.md").write_text("- DIFFERS thing\n")
+    (d / "state" / "tick-scorecard.jsonl").write_text("\n".join(
+        _j.dumps({"ts": str(i), "writes": {"product": 0}, "product_paths": [],
+                  "churn": {"state/x": 1}}) for i in range(6)) + "\n")
+    assert noprog.match({}, str(d), snap, ctx), "6 off-goal ticks MUST flag no_progress"
+    assert not blind.match({}, str(d), snap, ctx), "configured pod is not blind"
+    assert noprog.intent() is None and not noprog.safe_to_autofix, \
+        "no_progress must stay unremediable — a restart cannot fix working on the wrong thing"
+
+    assert not (d / "state" / ".progress-cursor.json").exists(), \
+        "polling must NOT advance the goal cursor (it would eat the agent's goal-drop credit)"
+
+    (d / "state" / "paused").write_text("")
+    assert not noprog.match({}, str(d), snap, ctx), "a PAUSED pod not progressing is operator intent"
+    print("ok: L4 progress verdicts reach the playbook layer (blind vs stalled, paused spared, cursor pure)")
+
+
+test_l4_progress_playbooks()

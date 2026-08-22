@@ -109,7 +109,10 @@ def attribution(home, verdicts, records):
                                   "waiting on, inbox directive age, and the idle_pod anomaly (pacing)")
 
 
-def compute(home, n=12):
+def compute(home, n=12, advance_cursor=True):
+    """advance_cursor=False = a PURE read. fleet_monitor polls this every cycle; if those polls
+    moved the cursor they would consume the goal-DROP credit before the agent's own tick could be
+    graded with it, and the CLI would then never show the forward verdict. Pollers pass False."""
     home = pathlib.Path(home)
     cfg = load_config(home)
     if cfg is None:
@@ -138,10 +141,11 @@ def compute(home, n=12):
         last = i == len(records) - 1
         verdicts.append(tick_verdict(r, cfg["focus"], goal_n if last else None,
                                      prev_goal if last else None))
-    try:
-        cur.write_text(json.dumps({"goal_open": goal_n}))
-    except OSError:
-        pass
+    if advance_cursor:
+        try:
+            cur.write_text(json.dumps({"goal_open": goal_n}))
+        except OSError:
+            pass
     stall_n = int(cfg.get("stall_ticks", 3))
     stalled = len(verdicts) >= stall_n and "forward" not in verdicts[-stall_n:]
     why = attribution(home, verdicts, records)
