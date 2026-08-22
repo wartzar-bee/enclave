@@ -175,6 +175,10 @@ def compute(home, n=12, advance_cursor=True):
     # Per-tick goal history is not recorded, so the metric-drop credit applies to the NEWEST tick
     # only (we compare against the previous invocation via a tiny cursor file).
     cur = home / "state" / ".progress-cursor.json"
+    # NO goal_file configured is a legitimate state ("no directive has defined one yet"), and it is
+    # NOT the same as a metric that matches nothing. Conflating them made progress_blind alarm on a
+    # correctly-configured pod — caught the first time this ran against a second agent.
+    goal_configured = bool(cfg.get("goal_file"))
     prev_goal, metric_seen = None, False
     try:
         _c = json.loads(cur.read_text())
@@ -183,7 +187,7 @@ def compute(home, n=12, advance_cursor=True):
         pass
     # "the metric matched at some point" is sticky. Without it, 0 is ambiguous between GOAL MET and
     # METRIC BROKEN — and the ambiguity resolved to green, which is the wrong way for a detector to fail.
-    metric_ok = metric_seen or matched_now
+    metric_ok = (not goal_configured) or metric_seen or matched_now
     verdicts = []
     for i, r in enumerate(records):
         last = i == len(records) - 1
@@ -202,8 +206,9 @@ def compute(home, n=12, advance_cursor=True):
             "verdicts": verdicts, "stalled": stalled,
             # goal_reached requires the metric to have PROVEN it can match. A metric that never
             # matched anything is not a met goal; it is an instrument reading zero because it is broken.
-            "goal_reached": bool(goal_n == 0 and metric_ok),
-            "metric": "ok" if metric_ok else "unmatched",
+            # goal_reached needs a goal to reach: unconfigured is not "achieved".
+            "goal_reached": bool(goal_configured and goal_n == 0 and metric_ok),
+            "metric": ("n/a" if not goal_configured else ("ok" if metric_ok else "unmatched")),
             "cause": why[0], "detail": why[1],
             "proposal_file": prop_f, "proposal_pending": prop_pending}
 

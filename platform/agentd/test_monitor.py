@@ -543,3 +543,24 @@ def test_goal_metric_cannot_fail_green():
 
 
 test_goal_metric_cannot_fail_green()
+
+
+def test_no_goal_file_is_not_a_broken_metric():
+    """`goal_file` unset is a legitimate state — no directive has defined one yet. It is NOT the same
+    as a metric that matches nothing, and conflating them made progress_blind alarm on a correctly
+    configured pod. Found by running the new check against a second agent, not by unit test."""
+    import json as _j, pathlib as _pl, tempfile as _tf, time as _t
+    from monitor import progress as _pr
+    from monitor import playbooks as _pb
+    d = _pl.Path(_tf.mkdtemp()) / "h"; (d / "state").mkdir(parents=True)
+    (d / "state" / "tick-scorecard.jsonl").write_text(_j.dumps({"ts": "x"}) + "\n")
+    (d / "state" / "progress-config.json").write_text(_j.dumps({"focus": ["work/**"]}))  # no goal_file
+    r = _pr.compute(str(d), advance_cursor=False)
+    assert r["metric"] == "n/a", f"unset goal_file must be n/a, not unmatched: {r['metric']}"
+    assert r["goal_reached"] is False, "no goal configured is not a goal achieved"
+    assert not _pb.BY_KEY["progress_blind"].match({}, str(d), {"up": True, "tick": "running"}, {"now": _t.time()}), \
+        "progress_blind must NOT fire on a pod that simply has no goal file yet"
+    print("ok: an unset goal_file is 'n/a', not a broken metric (and does not alarm)")
+
+
+test_no_goal_file_is_not_a_broken_metric()
