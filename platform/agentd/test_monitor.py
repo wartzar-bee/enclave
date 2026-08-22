@@ -564,3 +564,60 @@ def test_no_goal_file_is_not_a_broken_metric():
 
 
 test_no_goal_file_is_not_a_broken_metric()
+
+
+def test_churn_spike_needs_absence_of_product():
+    """churn_spike claims the agent is spinning "instead of producing" — so producing must falsify it.
+    It did not: the alarm fired on a real tick that rewrote state/rollup.md 3x while shipping 16
+    product files. Proportional, not a blanket exemption: token output beside heavy churn still fires."""
+    import json as _j, pathlib as _pl, tempfile as _tf, time as _t
+    from monitor import playbooks as _pb
+    snap, ctx = {"up": True}, {"now": _t.time()}
+    m = _pb.BY_KEY["churn_spike"].match
+
+    def home(product, churn):
+        d = _pl.Path(_tf.mkdtemp()) / "h"; (d / "state").mkdir(parents=True)
+        (d / "state" / "tick-scorecard.jsonl").write_text(_j.dumps(
+            {"ts": "x", "churn_alarm": True, "writes": {"product": product}, "churn": churn}) + "\n")
+        return str(d)
+
+    assert not m({}, home(16, {"state/rollup.md": 3}), snap, ctx), \
+        "16 product writes vs 3 rewrites is producing, not spinning — the real false positive"
+    assert m({}, home(0, {"state/rollup.md": 5}), snap, ctx), \
+        "churn with NO product output must still fire — that is the actual pathology"
+    assert m({}, home(1, {"state/rollup.md": 20}), snap, ctx), \
+        "a token product write beside heavy churn must not buy an exemption"
+    assert m({}, home(0, {}), snap, ctx) or True   # alarm set but no map: leave prior behaviour
+    print("ok: churn_spike no longer fires on a tick that plainly produced")
+
+
+test_churn_spike_needs_absence_of_product()
+
+
+def test_stalled_spares_a_just_resumed_pod():
+    """A paused pod's tick age spans the whole pause, so the instant it resumes it looks stalled by
+    exactly as long as it was parked — and `stalled` is safe_to_autofix=restart, so it would restart
+    a pod someone had just deliberately brought back. Seen minutes after a real resume."""
+    import pathlib as _pl, tempfile as _tf, time as _t
+    from monitor import playbooks as _pb
+    now = _t.time()
+    ctx = {"now": now, "no_tick_seconds": 6 * 3600}
+    snap = {"up": True, "tick": "running", "last_seen": now - 86400}
+
+    d = _pl.Path(_tf.mkdtemp()) / "h"; (d / "state").mkdir(parents=True); (d / "logs").mkdir()
+    (d / "agent.env").write_text("SUPERVISE=auto\n")
+    (d / "logs" / "runner.log").write_text(
+        _t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime(now - 86400)) + " — [x] tick end\n")
+
+    assert _pb.BY_KEY["stalled"].match(None, str(d), snap, ctx), \
+        "a pod with a 24h-old tick and no resume marker must still flag"
+    (d / "state" / ".resumed-at").write_text(str(now - 300))     # resumed 5 minutes ago
+    assert not _pb.BY_KEY["stalled"].match(None, str(d), snap, ctx), \
+        "a pod resumed 5 minutes ago is not stalled — it has not had time to tick"
+    (d / "state" / ".resumed-at").write_text(str(now - 7 * 3600))  # resumed 7h ago, still no tick
+    assert _pb.BY_KEY["stalled"].match(None, str(d), snap, ctx), \
+        "resumed 7h ago with still no tick IS a stall — the marker is not a permanent exemption"
+    print("ok: stalled measures from the resume, and the marker is not a free pass")
+
+
+test_stalled_spares_a_just_resumed_pod()

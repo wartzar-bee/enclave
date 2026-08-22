@@ -281,6 +281,15 @@ _up_but_unreachable = Playbook(
 
 
 # (6) stalled — an autonomous (SUPERVISE=auto) agent that hasn't ticked in N hours.
+def _resumed_at(home):
+    """Epoch when the pod was last un-paused, from state/.resumed-at (written when `paused` is
+    cleared). Absent = never paused, or paused before this marker existed — fall back to tick age."""
+    try:
+        return float((pathlib.Path(home) / "state" / ".resumed-at").read_text().strip())
+    except Exception:
+        return None
+
+
 def _stalled_match(diag, home, snap, ctx):
     if not snap.get("up") or env_get(home, "SUPERVISE") != "auto":
         return False
@@ -301,7 +310,16 @@ def _stalled_match(diag, home, snap, ctx):
     # stall — and this playbook is safe_to_autofix=restart, so flagging it would RESTART a healthy pod.
     if _wake_gate_parked(home, now):
         return False
+    # A pod that was PAUSED carries a tick age spanning the whole pause, so the moment it is resumed
+    # it looks stalled by exactly as long as it was parked — and this playbook is safe_to_autofix=
+    # restart, so it would restart a pod that had just been deliberately brought back. Measure from
+    # the resume, not from a tick boundary that predates it. (Observed minutes after a real resume.)
+    resumed = _resumed_at(home)
     age = _last_tick_age(home, now)
+    if resumed is not None:
+        since_resume = now - resumed
+        if age is None or since_resume < age:
+            age = since_resume
     if age is not None:                    # authoritative: the tick log
         return age > ctx.get("no_tick_seconds", 6 * 3600)
     last = snap.get("last_seen") or 0      # no tick log -> fall back to rollup mtime
@@ -438,7 +456,19 @@ def _churn_match(diag, home, snap, ctx):
     if not snap.get("up"):
         return False
     recs = _jsonl_tail(home, "state/tick-scorecard.jsonl", 1)
-    return bool(recs and recs[-1].get("churn_alarm"))
+    if not (recs and recs[-1].get("churn_alarm")):
+        return False
+    # The finding's own claim is "spinning on its own files INSTEAD OF producing", so producing has
+    # to be able to falsify it. It could not: the alarm counted rewrites per file with no reference
+    # to output, and fired on a tick that rewrote state/rollup.md 3x while shipping SIXTEEN product
+    # files (game frames, paytable art). The cause string was simply false.
+    #
+    # Proportional, not a flat exemption: a token product write next to heavy churn should still
+    # fire. Suppress only when real output at least matches the worst single file's rewrite count.
+    rec = recs[-1]
+    product = int((rec.get("writes") or {}).get("product") or 0)
+    worst = max((int(n) for n in (rec.get("churn") or {}).values()), default=0)
+    return not (product and product >= worst)
 
 def _churn_diag(diag, home, snap, ctx):
     # Report what is churning in the CURRENT record — matching what triggered the finding. Scanning
