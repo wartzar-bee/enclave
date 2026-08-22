@@ -197,3 +197,43 @@ def test_epoch_bounded_context_is_not_bloat():
 
 
 test_epoch_bounded_context_is_not_bloat()
+
+
+# ── a pod doing TOO LITTLE must alarm (2026-08-22) ───────────────────────────────────────────
+# Every other detector fires on something getting bigger/slower/costlier; wake_spike even alarms on
+# waking MORE often. Nothing detected under-work, so stoneforge sat at CONTINUOUS_COOLDOWN=2400 —
+# 60s of work per 40min — looking green on every dashboard for weeks.
+def _dutyrec(now, i, dur, gap):
+    return {"ts": now - (10 - i) * gap, "turns": 10, "cache_read": 20_000, "input": 0,
+            "cache_write": 0, "output": 500, "rc": 0, "subtype": "success", "cost_usd": 0.5,
+            "duration_s": dur, "model": "claude-opus-4-8"}
+
+
+def test_idle_pod_is_detected():
+    import time as _t
+    now = _t.time()
+    idle = [_dutyrec(now, i, 60, 2400) for i in range(10)]      # 1-min ticks, 40-min gaps
+    a = [x for x in D.compute(idle, now)["anomalies"] if x["key"] == "idle_pod"]
+    assert a, "a pod working 2.8% of wall-clock MUST alarm"
+    assert a[0]["severity"] == "high"
+    assert "duty cycle" in a[0]["evidence"]
+    assert "compose" in (a[0]["fix"] or ""), "the fix must point at compose FIRST — it beats agent.env"
+
+    busy = [_dutyrec(now, i, 600, 900) for i in range(10)]      # 10-min ticks, 15-min gaps
+    keys = {x["key"] for x in D.compute(busy, now)["anomalies"]}
+    assert "idle_pod" not in keys, "a genuinely working pod must stay silent"
+
+    short = [_dutyrec(now, i, 60, 60) for i in range(3)]        # too little history to judge
+    keys = {x["key"] for x in D.compute(short, now)["anomalies"]}
+    assert "idle_pod" not in keys, "under 5 ticks / 1h of span it must not guess"
+
+    # A DELIBERATE daily cadence is not an idle pod. INTERVAL_SECONDS=86400 is a shipped default, and
+    # a once-a-day 2-minute tick is 0.14% duty — lower than stoneforge's. Duty cycle alone cannot
+    # tell the two apart, so the detector is gated on the pod re-firing on a WORK cadence.
+    daily = [_dutyrec(now, i, 120, 86400) for i in range(10)]
+    keys = {x["key"] for x in D.compute(daily, now)["anomalies"]}
+    assert "idle_pod" not in keys, "a daily-heartbeat pod must NOT be called idle"
+    print("ok: idle pods alarm, busy pods stay silent, thin history stays silent")
+
+
+test_idle_pod_is_detected()

@@ -259,6 +259,39 @@ def _anomalies(records, now, window):
                 fix="something is accumulating in the prompt (memory/log/inbox not being trimmed)")
 
     # 3) Duration spike.
+    # 2b) DUTY CYCLE — the pod is barely working. Every other detector in this engine fires on
+    # something getting BIGGER, SLOWER or MORE EXPENSIVE (context_explosion, prompt_creep,
+    # duration_spike, cost_spike, cache_churn, tool_failures, compaction_churn) and wake_spike even
+    # alerts on waking MORE often. Nothing here has ever detected a pod doing TOO LITTLE, so a pod
+    # that ticks for 60s and then idles 40 minutes reads as perfectly healthy on every dashboard —
+    # which is exactly how stoneforge sat at CONTINUOUS_COOLDOWN=2400 for weeks while looking green
+    # (2026-08-22). Cheap and unambiguous: sum the ticks' own duration over the wall-clock span they
+    # cover. Low duty cycle is nearly always a cooldown misconfiguration, not a slow agent.
+    stamps = [t for t in (parse_ts(r.get("ts")) for r in records) if t]
+    gaps = sorted(b - a for a, b in zip(stamps, stamps[1:]) if b > a)
+    med_gap = gaps[len(gaps) // 2] if gaps else None
+    span = (stamps[-1] - stamps[0]) if len(stamps) >= 2 else None
+    worked = sum(_i(r, "duration_s") for r in records)
+    # Only judge a pod that is TRYING to work continuously. A deliberate daily/heartbeat cadence
+    # (INTERVAL_SECONDS=86400 is a shipped default) is not an idle pod, and duty cycle alone cannot
+    # tell the two apart — a once-a-day 2-minute tick is 0.14% duty and perfectly healthy. A median
+    # gap inside the hour means the loop is re-firing on a work cadence, and THEN a tiny duty cycle
+    # is a real finding.
+    if span and span >= 3600 and len(records) >= 5 and med_gap and med_gap <= 3600:
+        duty = worked / span
+        if duty < 0.15:
+            add("med" if duty >= 0.05 else "high", "idle_pod",
+                "Pod spends nearly all its time waiting, not working",
+                f"worked {_dur(worked)} of {_dur(span)} wall-clock across {len(records)} ticks "
+                f"({duty*100:.1f}% duty cycle)",
+                "high" if duty < 0.05 else "med",
+                cause="pacing config, not the agent — a declared `continue` still waits "
+                      "CONTINUOUS_COOLDOWN, and a compose-file value BEATS agent.env",
+                fix="check CONTINUOUS_COOLDOWN / MIN_COOLDOWN in docker-compose*.yml FIRST (it wins "
+                    "over agent.env), then agent.env; have the tick emit tick-status "
+                    "{\"status\":\"continue\",\"remaining_min\":N} so the loop can size the "
+                    "next wait to the work left")
+
     d_now = _i(latest, "duration_s")
     d_base = _avg([_i(r, "duration_s") for r in recent_n]) or 0
     if d_base > 0 and d_now >= 2.0 * d_base and d_now > 120:
