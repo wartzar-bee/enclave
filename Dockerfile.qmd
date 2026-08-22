@@ -12,7 +12,7 @@
 # Memory model: qmd holds a DISPOSABLE, rebuildable index that points INTO the wiki (the wiki
 # stays the source of truth — see docs/MEMORY-PROVIDERS.md). Mount a corpus (ro) + an index
 # volume (rw); `qmd index && qmd embed` (re)builds it.
-FROM node:22-bookworm-slim
+FROM node:26-bookworm-slim
 
 # build-essential + python3 are needed to compile better-sqlite3 / sqlite-vec / node-llama-cpp
 # native addons against this image's node. git/ca-certificates for npm + HF model fetches.
